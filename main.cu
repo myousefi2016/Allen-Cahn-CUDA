@@ -338,7 +338,7 @@ int main(int argc, char *argv[])
     double dy = 0.4;
     double dz = 0.4;
     double dt = 0.01;
-    int t_f = 2000;
+    int t_f = 4000;
     int t_freq = 100;
     double delta = 0.8;
     double r0 = 5.0;
@@ -441,7 +441,7 @@ int main(int argc, char *argv[])
 
     int t = 0;
 
-    while (t < t_f) {
+    while (t <= t_f) {
 
     printf("Timestep is: %d\n",t);
 
