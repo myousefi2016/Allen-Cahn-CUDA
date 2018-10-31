@@ -7,6 +7,13 @@
 #include <fstream>
 #include <cmath>
 
+#include <vtkVersion.h>
+#include <vtkSmartPointer.h>
+#include <vtkXMLStructuredGridWriter.h>
+#include <vtkStructuredGrid.h>
+#include <vtkPointData.h>
+#include <vtkDoubleArray.h>
+
 // set a 3D volume
 // To compile it with nvcc execute: nvcc -O2 -o set3d set3d.cu
 //define the data set size (cubic volume)
@@ -16,6 +23,79 @@
 //define the chunk sizes that each threadblock will work on
 
 using namespace std;
+
+vtkSmartPointer<vtkDoubleArray> convertArrayToVTK(double phi[][DATAYSIZE][DATAXSIZE], char* name)
+{
+
+  int counter = 0;
+  vtkSmartPointer<vtkDoubleArray> phiVTK =
+          vtkSmartPointer<vtkDoubleArray>::New();
+
+  phiVTK->SetNumberOfComponents(1);
+  phiVTK->SetNumberOfTuples(DATAXSIZE * DATAYSIZE * DATAZSIZE);
+
+  for (unsigned int idx = 0.0; idx < DATAXSIZE; idx++) {
+  for (unsigned int idy = 0.0; idy < DATAYSIZE; idy++) {
+  for (unsigned int idz = 0.0; idz < DATAZSIZE; idz++) {
+
+          phiVTK->SetValue(counter, phi[idx][idy][idz]);
+          counter++;
+
+  }
+  }
+  }
+
+  phiVTK->SetName(name);
+
+  return phiVTK;
+
+}
+
+vtkSmartPointer<vtkPoints> createVTKGrid()
+{
+
+ vtkSmartPointer<vtkPoints> points =
+    vtkSmartPointer<vtkPoints>::New();
+
+  for (unsigned int idx = 0.0; idx < DATAXSIZE; idx++) {
+  for (unsigned int idy = 0.0; idy < DATAYSIZE; idy++) {
+  for (unsigned int idz = 0.0; idz < DATAZSIZE; idz++) {
+
+   points->InsertNextPoint(idx, idy, idz);
+
+  }
+  }
+  }
+
+  return points;
+
+}
+
+void writeVTKFile(std::vector<vtkSmartPointer<vtkDoubleArray>> Arrays, vtkSmartPointer<vtkPoints> points, int t)
+{
+
+   string name = "./out/output_" + to_string(t) + ".vtk";
+
+   vtkSmartPointer<vtkStructuredGrid> structuredGrid =
+    vtkSmartPointer<vtkStructuredGrid>::New();
+
+  structuredGrid->SetDimensions(DATAXSIZE,DATAYSIZE,DATAZSIZE);
+  structuredGrid->SetPoints(points);
+  for (int i = 0; i < Arrays.size(); i++)
+  {
+  structuredGrid->GetPointData()->AddArray(Arrays[i]);
+  }
+
+  vtkSmartPointer<vtkXMLStructuredGridWriter> writer =
+    vtkSmartPointer<vtkXMLStructuredGridWriter>::New();
+
+  writer->SetFileName(name.c_str());
+
+  writer->SetInputData(structuredGrid);
+
+  writer->Update();
+
+}
 
 // for cuda error checking
 #define cudaCheckErrors(msg) \
@@ -286,52 +366,6 @@ void initializationU(double u[][DATAYSIZE][DATAXSIZE], double r0, double delta)
       }
 }
 
-void write_output_vtk(double c1[][DATAYSIZE][DATAXSIZE], double c2[][DATAYSIZE][DATAXSIZE], int t, int nx, int ny, int nz)
-{
-    string name = "./out/output_" + to_string(t) + ".vtk";
-    ofstream ofile (name);
-
-    // vtk preamble
-    ofile << "# vtk DataFile Version 2.0" << endl;
-    ofile << "OUTPUT by LIBM\n";
-    ofile << "ASCII" << endl;
-
-    // write grid
-    ofile << "DATASET RECTILINEAR_GRID" << endl;
-    ofile << "DIMENSIONS " << nx << " " << ny << " " << nz << endl;
-    ofile << "X_COORDINATES " << nx << " float" << endl;
-    for(size_t i = 0; i < nx; i++)
-        ofile << i << "\t";
-    ofile << endl;
-    ofile << "Y_COORDINATES " << ny << " float" << endl;
-    for(size_t i = 0; i < ny; i++)
-        ofile << i << "\t";
-    ofile << endl;
-    ofile << "Z_COORDINATES " << nz << " float" << endl;
-    for(size_t i = 0; i < nz; i++)
-        ofile << i << "\t";
-    ofile << endl;
-
-    // point data
-    ofile << "POINT_DATA " << nx*ny*nz << endl;
-
-    // write rho
-    ofile << "SCALARS " << "phi" << " double" << endl;
-    ofile << "LOOKUP_TABLE default" << endl;
-  for (int k = 0; k < nz; k++) 
-    for(int j = 0; j < ny; j++)
-        for(int i = 0; i < nx; i++)
-            ofile << c1[i][j][k] << endl;
-
-    ofile << "SCALARS " << "u" << " double" << endl;
-    ofile << "LOOKUP_TABLE default" << endl;
-  for (int k = 0; k < nz; k++)
-    for(int j = 0; j < ny; j++)
-        for(int i = 0; i < nx; i++)
-            ofile << c2[i][j][k] << endl;
-
-}
-
 int main(int argc, char *argv[])
 {
     double dx = 0.4;
@@ -351,6 +385,7 @@ int main(int argc, char *argv[])
     double a2 = 0.64;
     double lambda = (W0*a1)/(d0);
     double tau0 = ((W0*W0*W0*a1*a2)/(d0*D)) + ((W0*W0*beta0)/(d0));
+    vtkSmartPointer<vtkPoints> points = createVTKGrid();
     cudaSetDevice(0.0);
     typedef double nRarray[DATAYSIZE][DATAXSIZE];
     const int BLOCK_SIZE = 1024;
@@ -418,7 +453,12 @@ int main(int argc, char *argv[])
     initializationPhi(phi_host,r0);
     initializationU(u_host,r0,delta);
 
-    write_output_vtk(phi_host,u_host,0,nx,ny,nz);
+    std::vector<vtkSmartPointer<vtkDoubleArray>> ArraysInitial;
+
+    ArraysInitial.push_back(convertArrayToVTK(phi_host,"phi"));
+    ArraysInitial.push_back(convertArrayToVTK(u_host,"u"));
+
+    writeVTKFile(ArraysInitial,points,0);
 
     cudaMemcpyAsync(d_phiold, phi_host, ((nx*ny*nz)*sizeof(double)), cudaMemcpyHostToDevice);
     cudaCheckErrors("CUDA memcpy failure");
@@ -465,7 +505,12 @@ int main(int argc, char *argv[])
      cudaMemcpyAsync(u_host, d_unew, ((nx*ny*nz)*sizeof(double)), cudaMemcpyDeviceToHost);
      cudaCheckErrors("CUDA memcpy failure");
 
-     write_output_vtk(phi_host,u_host,t,nx,ny,nz);
+     std::vector<vtkSmartPointer<vtkDoubleArray>> Arrays;
+
+     Arrays.push_back(convertArrayToVTK(phi_host,"phi"));
+     Arrays.push_back(convertArrayToVTK(u_host,"u"));
+
+     writeVTKFile(Arrays,points,t);
 
     }
     
