@@ -17,9 +17,9 @@
 // set a 3D volume
 // To compile it with nvcc execute: nvcc -O2 -o set3d set3d.cu
 //define the data set size (cubic volume)
-#define DATAXSIZE 512
-#define DATAYSIZE 512
-#define DATAZSIZE 512
+#define DATAXSIZE 600
+#define DATAYSIZE 600
+#define DATAZSIZE 600
 //define the chunk sizes that each threadblock will work on
 
 using namespace std;
@@ -372,7 +372,7 @@ int main(int argc, char *argv[])
     double dy = 0.4;
     double dz = 0.4;
     double dt = 0.01;
-    int t_f = 4000;
+    int t_f = 6000;
     int t_freq = 100;
     double delta = 0.8;
     double r0 = 5.0;
