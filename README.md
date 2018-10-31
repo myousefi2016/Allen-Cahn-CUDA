@@ -6,7 +6,7 @@ Description: This CUDA program does phase-field simulation of dendritic solidifi
 
 2. [Anand Kumar, Isotropic finite-differences, Journal of Computational Physics, Volume 201, Issue 1, 20 November 2004, Pages 109-118](https://www.sciencedirect.com/science/article/pii/S0021999104002037)
 
-Dependecies: CUDA Toolkit 9.2, GCC 6.3, VTK 8.2, CMake 3.10.0
+Dependencies: CUDA Toolkit 9.2, GCC 6.3, VTK 8.2, CMake 3.10.0
 
 In order to compile the program use these commands in UNIX shell terminals:
 
