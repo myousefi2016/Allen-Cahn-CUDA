@@ -22,6 +22,12 @@ To run the program after compilation just running this command:
 mkdir out && ./Allen-Cahn-CUDA
 ```
 
-It will store the results in out directory as vtk files. Good luck and if you use this piece of code for your research don't forget to give attribute to this github repository.
+It will store the results in ```out``` directory as vtk files. Good luck and if you use this piece of code for your research don't forget to give attribute to this github repository. Also this program is tested on a cluster with Tesla V100 gpus. If you don't have access to this type of gpu, you could reduce the simulation size by changing these lines in ```main.cu``` file.
+
+```
+#define DATAXSIZE 600
+#define DATAYSIZE 600
+#define DATAZSIZE 600
+```
 
 ![alt text](https://raw.githubusercontent.com/myousefi2016/Allen-Cahn-CUDA/master/result/img.png)
