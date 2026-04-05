@@ -106,7 +106,7 @@ TEST_F(ReductionTest, MaxAbsReduction)
     d_data.copy_from_host(data.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    launch_max_abs_reduction(d_data.data(), nullptr, d_result.data(), N);
+    launch_max_abs_reduction(d_data.data(), d_result.data(), N);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     double result;
