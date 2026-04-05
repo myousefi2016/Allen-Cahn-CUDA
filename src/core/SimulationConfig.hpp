@@ -2,6 +2,7 @@
 
 #include "core/Grid.hpp"
 
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <optional>
@@ -91,10 +92,42 @@ struct InitialCondition {
     Real seed_radius = 5.0;
 };
 
+/// Face identifiers for per-face boundary conditions.
+enum class Face : int { XLo = 0, XHi = 1, YLo = 2, YHi = 3, ZLo = 4, ZHi = 5 };
+
+/// Per-face boundary conditions for a single field.
+/// Supports uniform (same for all 6 faces) or per-face specification.
+struct PerFaceBoundary {
+    std::array<BoundaryConfig, 6> faces;  ///< [x_lo, x_hi, y_lo, y_hi, z_lo, z_hi]
+
+    /// Construct with uniform BC on all faces.
+    static PerFaceBoundary uniform(const BoundaryConfig& bc) {
+        PerFaceBoundary p;
+        p.faces.fill(bc);
+        return p;
+    }
+
+    /// Access by face index.
+    [[nodiscard]] const BoundaryConfig& operator[](Face f) const {
+        return faces[static_cast<int>(f)];
+    }
+    [[nodiscard]] BoundaryConfig& operator[](Face f) {
+        return faces[static_cast<int>(f)];
+    }
+
+    /// Access by axis (0-2) and side (0=lo, 1=hi).
+    [[nodiscard]] const BoundaryConfig& get(int axis, int side) const {
+        return faces[static_cast<std::size_t>(axis * 2 + side)];
+    }
+};
+
 // ── Boundary conditions (per-face: x_lo, x_hi, y_lo, y_hi, z_lo, z_hi) ──
 struct BoundaryParams {
-    BoundaryConfig phi_bc;  ///< Applied to all faces for phi
-    BoundaryConfig u_bc;    ///< Applied to all faces for u
+    BoundaryConfig phi_bc;  ///< Uniform BC for phi (backward compat)
+    BoundaryConfig u_bc;    ///< Uniform BC for u (backward compat)
+    PerFaceBoundary phi_faces;  ///< Per-face BCs for phi
+    PerFaceBoundary u_faces;    ///< Per-face BCs for u
+    bool per_face = false;       ///< Whether per-face BCs are specified
 };
 
 // ── Top-level configuration ────────────────────────────────────────────────

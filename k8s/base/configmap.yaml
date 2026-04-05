@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: allen-cahn-config
+  labels:
+    app.kubernetes.io/name: allen-cahn-cuda
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: allen-cahn-cuda
+data:
+  simulation.json: |
+    {
+        "physics": {
+            "delta": 0.8,
+            "epsilon": 0.07,
+            "W0": 1.0,
+            "beta0": 0.0,
+            "D": 2.0,
+            "d0": 0.5
+        },
+        "grid": {
+            "Nx": 600,
+            "Ny": 600,
+            "Nz": 600,
+            "dx": 0.4,
+            "dy": 0.4,
+            "dz": 0.4
+        },
+        "time": {
+            "dt": 0.01,
+            "dt_min": 1e-6,
+            "dt_max": 0.1,
+            "max_steps": 6000,
+            "scheme": "euler",
+            "adaptive": false,
+            "cfl_safety": 0.9
+        },
+        "stencil": "7pt",
+        "output": {
+            "frequency": 100,
+            "output_dir": "/data/output",
+            "format": "vts",
+            "async_io": true
+        },
+        "checkpoint": {
+            "frequency": 500,
+            "checkpoint_dir": "/data/output/checkpoints",
+            "keep_last": 3
+        },
+        "gpu": {
+            "device_ids": [0],
+            "block_size": 256,
+            "multi_gpu": false
+        },
+        "initial": {
+            "seed_radius": 5.0
+        },
+        "boundary": {
+            "phi": {
+                "type": "dirichlet",
+                "value": -1.0
+            },
+            "u": {
+                "type": "dirichlet",
+                "value": -0.8
+            }
+        }
+    }

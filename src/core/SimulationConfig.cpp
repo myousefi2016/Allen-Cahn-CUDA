@@ -127,8 +127,35 @@ static SimulationConfig parse_config(const json& j)
     // Boundary conditions
     if (j.contains("boundary")) {
         const auto& b = j["boundary"];
-        if (b.contains("phi")) cfg.boundary.phi_bc = parse_boundary_config(b["phi"]);
-        if (b.contains("u"))   cfg.boundary.u_bc   = parse_boundary_config(b["u"]);
+        // Uniform BC (backward compatible)
+        if (b.contains("phi") && b["phi"].is_object() && !b["phi"].contains("x_lo")) {
+            cfg.boundary.phi_bc = parse_boundary_config(b["phi"]);
+            cfg.boundary.phi_faces = PerFaceBoundary::uniform(cfg.boundary.phi_bc);
+        }
+        if (b.contains("u") && b["u"].is_object() && !b["u"].contains("x_lo")) {
+            cfg.boundary.u_bc = parse_boundary_config(b["u"]);
+            cfg.boundary.u_faces = PerFaceBoundary::uniform(cfg.boundary.u_bc);
+        }
+        // Per-face BC (new format)
+        static constexpr const char* face_names[] = {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"};
+        if (b.contains("phi") && b["phi"].is_object() && b["phi"].contains("x_lo")) {
+            cfg.boundary.per_face = true;
+            const auto& p = b["phi"];
+            for (int i = 0; i < 6; ++i) {
+                if (p.contains(face_names[i])) {
+                    cfg.boundary.phi_faces.faces[i] = parse_boundary_config(p[face_names[i]]);
+                }
+            }
+        }
+        if (b.contains("u") && b["u"].is_object() && b["u"].contains("x_lo")) {
+            cfg.boundary.per_face = true;
+            const auto& u = b["u"];
+            for (int i = 0; i < 6; ++i) {
+                if (u.contains(face_names[i])) {
+                    cfg.boundary.u_faces.faces[i] = parse_boundary_config(u[face_names[i]]);
+                }
+            }
+        }
     }
 
     return cfg;

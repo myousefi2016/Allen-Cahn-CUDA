@@ -1,0 +1,90 @@
+# ============================================================================
+# Allen-Cahn-CUDA Docker Compose Configuration
+# ----------------------------------------------------------------------------
+# Profiles:
+#   dev   - Interactive development environment with source mounted
+#   test  - Run the full test suite in a clean environment
+#   prod  - Run production simulation
+#
+# Examples:
+#   docker compose --profile dev up dev
+#   docker compose --profile test run test
+#   docker compose --profile prod run prod config/default.json
+# ============================================================================
+
+services:
+
+  # ── Development Environment ───────────────────────────────────────────────
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    image: allencahn-cuda:dev
+    container_name: allencahn-dev
+    profiles:
+      - dev
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/workspace
+      # Named volume for build artifacts to survive container restarts
+      - dev-build-cache:/workspace/build
+      # Persist ccache across sessions
+      - dev-ccache:/workspace/.ccache
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Test Runner ───────────────────────────────────────────────────────────
+  test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    image: allencahn-cuda:test
+    container_name: allencahn-test
+    profiles:
+      - test
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Production Simulation ─────────────────────────────────────────────────
+  prod:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.prod
+    image: allencahn-cuda:prod
+    container_name: allencahn-prod
+    profiles:
+      - prod
+    volumes:
+      # Bind-mount for simulation output on the host
+      - ./output:/output
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  dev-build-cache:
+  dev-ccache:

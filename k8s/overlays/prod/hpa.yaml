@@ -1,0 +1,47 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: allen-cahn-simulation-hpa
+  labels:
+    app.kubernetes.io/name: allen-cahn-cuda
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: allen-cahn-cuda
+  annotations:
+    description: >-
+      Scales simulation job replicas based on GPU utilization.
+      Intended for batch job queue pattern where multiple simulations
+      with different parameters run concurrently.
+spec:
+  scaleTargetRef:
+    apiVersion: batch/v1
+    kind: Job
+    name: allen-cahn-simulation
+  minReplicas: 1
+  maxReplicas: 4
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: nvidia_gpu_utilization
+        target:
+          type: AverageValue
+          averageValue: "80"
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75

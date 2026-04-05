@@ -1,0 +1,94 @@
+# ============================================================================
+# Allen-Cahn-CUDA Test Runner Image
+# ----------------------------------------------------------------------------
+# Builds the project in Debug mode with all tests enabled, then runs ctest.
+#
+# Usage:
+#   docker compose --profile test run test
+#   docker run --gpus all allencahn-test
+# ============================================================================
+
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS test-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cmake \
+        ninja-build \
+        gcc-13 \
+        g++-13 \
+        git \
+        pkg-config \
+        libvtk9-dev \
+        libhdf5-dev \
+        ca-certificates \
+    && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-13 && \
+    update-alternatives --set gcc /usr/bin/gcc-13
+
+WORKDIR /build
+
+# Copy full source tree (tests included)
+COPY CMakeLists.txt CMakePresets.json main.cu ./
+COPY cmake/ cmake/
+COPY src/ src/
+COPY config/ config/
+COPY tests/ tests/
+
+# Build debug configuration with tests enabled
+RUN --mount=type=cache,target=/build/build/debug,id=cmake-build-debug \
+    --mount=type=cache,target=/build/_deps,id=cmake-fetchcontent \
+    cmake --preset debug \
+        -G Ninja \
+        -DCMAKE_CUDA_ARCHITECTURES="70;75;80;86;89;90" \
+        -DAC_BUILD_TESTS=ON \
+    && \
+    cmake --build build/debug --parallel $(nproc) && \
+    # Copy built artifacts out of cache mount
+    cp -r build/debug /build/test-build
+
+# ── Test runner stage ─────────────────────────────────────────────────────
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS test-runner
+
+LABEL maintainer="Allen-Cahn-CUDA Contributors"
+LABEL description="Allen-Cahn-CUDA test runner"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cmake \
+        libvtk9.1 \
+        libvtk9-dev \
+        libhdf5-dev \
+        libgomp1 \
+    && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create non-root test user
+RUN groupadd --gid 1000 tester && \
+    useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash tester
+
+WORKDIR /build
+
+# Copy the built test tree
+COPY --from=test-builder --chown=tester:tester /build/test-build /build/build/debug
+COPY --from=test-builder --chown=tester:tester /build/config /build/config
+
+USER tester
+
+# Run all tests with verbose output
+ENTRYPOINT ["ctest", "--test-dir", "/build/build/debug", "--output-on-failure", "--parallel"]
+CMD ["4"]

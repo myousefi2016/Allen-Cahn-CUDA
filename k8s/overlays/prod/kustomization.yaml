@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: allen-cahn-cuda-prod
+
+namespace: allen-cahn-prod
+
+namePrefix: prod-
+
+commonLabels:
+  environment: prod
+
+commonAnnotations:
+  note: "Production configuration with full grid resolution"
+
+resources:
+  - ../../base
+  - hpa.yaml
+
+patches:
+  # Increase resource limits for production workloads
+  - target:
+      kind: Job
+      name: allen-cahn-simulation
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "4"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "16Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "8"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "32Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: allen-cahn-cuda:latest
+
+  # Larger PVC for production output
+  - target:
+      kind: PersistentVolumeClaim
+      name: allen-cahn-output
+    patch: |
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 200Gi

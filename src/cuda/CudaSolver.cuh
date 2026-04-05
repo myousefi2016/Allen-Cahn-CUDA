@@ -2,6 +2,7 @@
 
 #include "core/SimulationConfig.hpp"
 #include "core/FieldData.hpp"
+#include "cuda/ISolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
 #include "cuda/Kernels.cuh"
@@ -12,53 +13,45 @@ namespace ac::cuda {
 
 /// GPU solver facade. Owns all device memory and launches kernels.
 /// Supports Euler, Heun (RK2), RK4, and IMEX time integration.
-class CudaSolver {
+class CudaSolver : public ISolver {
 public:
     explicit CudaSolver(const SimulationConfig& config);
-    ~CudaSolver() = default;  // RAII handles all cleanup
+    ~CudaSolver() override = default;
 
-    /// Upload initial conditions to the GPU.
-    void initialize(const FieldData& phi0, const FieldData& u0);
+    // ISolver interface
+    void initialize(const FieldData& phi0, const FieldData& u0) override;
+    void step(double dt) override;
+    [[nodiscard]] double compute_max_dphi() const override;
+    void copy_phi_to_host(FieldData& out) const override;
+    void copy_u_to_host(FieldData& out) const override;
+    void apply_boundary_conditions() override;
+    void synchronize() const override;
+    [[nodiscard]] cudaStream_t stream() const override { return compute_stream_.get(); }
 
-    /// Perform one complete time step (dispatches to selected scheme).
-    void step(double dt);
-
-    /// Explicit Euler step.
+    // Time integration methods
     void step_euler(double dt);
-
-    /// Heun's method (RK2, 2nd order).
     void step_heun(double dt);
-
-    /// Classical Runge-Kutta (RK4, 4th order).
     void step_rk4(double dt);
-
-    /// IMEX: implicit diffusion, explicit reaction.
     void step_imex(double dt);
-
-    /// Compute max |phi_new - phi_old| for adaptive time stepping.
-    [[nodiscard]] double compute_max_dphi() const;
-
-    /// Copy phi from device to host.
-    void copy_phi_to_host(FieldData& out) const;
-
-    /// Copy u from device to host.
-    void copy_u_to_host(FieldData& out) const;
-
-    /// Apply boundary conditions to both fields.
-    void apply_boundary_conditions();
 
     /// Get the kernel parameters (for testing).
     [[nodiscard]] const KernelParams& params() const { return params_; }
 
-    /// Synchronize the compute stream.
-    void synchronize() const;
+    /// Direct access to device field pointers (for multi-GPU halo exchange).
+    [[nodiscard]] double* phi_data() { return phi_old_.data(); }
+    [[nodiscard]] double* u_data() { return u_old_.data(); }
+    [[nodiscard]] const double* phi_data() const { return phi_old_.data(); }
+    [[nodiscard]] const double* u_data() const { return u_old_.data(); }
 
-    /// Get compute stream handle.
-    [[nodiscard]] cudaStream_t stream() const { return compute_stream_.get(); }
+    /// Get total number of grid points.
+    [[nodiscard]] std::size_t total_points() const { return total_points_; }
 
 private:
-    /// Apply BCs to a single field.
+    /// Apply uniform BCs to a single field.
     void apply_bc(double* field, const BoundaryConfig& bc);
+
+    /// Apply per-face BCs to a single field.
+    void apply_bc_per_face(double* field, const PerFaceBoundary& face_bcs);
 
     /// One Euler sub-step for phi: phi_out = phi_in + dt * RHS(phi_in, u_in)
     void euler_substep_phi(const double* phi_in, double* phi_out,

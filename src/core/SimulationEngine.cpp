@@ -1,5 +1,7 @@
 #include "core/SimulationEngine.hpp"
+#include "cuda/ISolver.cuh"
 #include "cuda/CudaSolver.cuh"
+#include "cuda/MultiGPUSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 
 #include <spdlog/spdlog.h>
@@ -9,14 +11,24 @@
 
 namespace ac {
 
+std::unique_ptr<cuda::ISolver> SimulationEngine::create_solver()
+{
+    if (config_.gpu.multi_gpu && config_.gpu.device_ids.size() >= 2) {
+        spdlog::info("Creating MultiGPUSolver with {} GPUs",
+                     config_.gpu.device_ids.size());
+        return std::make_unique<cuda::MultiGPUSolver>(config_);
+    }
+    return std::make_unique<cuda::CudaSolver>(config_);
+}
+
 SimulationEngine::SimulationEngine(SimulationConfig config)
     : config_(std::move(config))
     , grid_(config_.make_grid())
     , phi_host_(grid_, "phi")
     , u_host_(grid_, "u")
 {
-    // Create CUDA solver
-    solver_ = std::make_unique<cuda::CudaSolver>(config_);
+    // Create CUDA solver (single or multi-GPU based on config)
+    solver_ = create_solver();
 
     // Create VTK writer
     vtk_writer_ = std::make_unique<VTKWriter>(grid_, config_.output);

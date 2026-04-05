@@ -1,8 +1,11 @@
 #include "io/VTKWriter.hpp"
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <filesystem>
+#include <numeric>
 
 #ifdef AC_HAS_VTK
 #include <vtkNew.h>
@@ -81,10 +84,24 @@ void VTKWriter::writer_loop()
         // Notify flush() that queue shrunk
         queue_cv_.notify_all();
 
-        if (params_.format == "vts") {
-            write_vtk_file(job);
-        } else {
-            write_raw_file(job);
+        try {
+            // Compute and cache field statistics
+            auto phi_stats = compute_statistics(job.phi_data, job.step, "phi");
+            auto u_stats = compute_statistics(job.u_data, job.step, "u");
+
+            spdlog::debug("Step {} stats: phi=[{:.4f}, {:.4f}], u=[{:.4f}, {:.4f}]",
+                          job.step, phi_stats.min_val, phi_stats.max_val,
+                          u_stats.min_val, u_stats.max_val);
+
+            if (params_.format == "vts") {
+                write_vtk_file(job);
+            } else {
+                write_raw_file(job);
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("VTK writer failed for step {}: {}", job.step, e.what());
+        } catch (...) {
+            spdlog::error("VTK writer failed for step {} with unknown error", job.step);
         }
     }
 }
@@ -166,6 +183,42 @@ void VTKWriter::write_raw_file(const WriteJob& job)
 
     spdlog::info("Wrote raw files: {}_phi.raw, {}_u.raw (step={}, time={:.4f})",
                  base, base, job.step, job.time);
+}
+
+FieldStatistics VTKWriter::compute_statistics(const std::vector<Real>& data,
+                                               int step, const std::string& name)
+{
+    std::string key = std::to_string(step) + ":" + name;
+
+    // Check cache first
+    auto cached = stats_cache_.get(key);
+    if (cached) return *cached;
+
+    FieldStatistics stats;
+    if (data.empty()) return stats;
+
+    stats.min_val = *std::min_element(data.begin(), data.end());
+    stats.max_val = *std::max_element(data.begin(), data.end());
+
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    for (auto v : data) {
+        sum += v;
+        sum_sq += v * v;
+    }
+    auto n = static_cast<double>(data.size());
+    stats.mean_val = sum / n;
+    stats.l2_norm = std::sqrt(sum_sq / n);
+
+    stats_cache_.put(key, stats);
+    return stats;
+}
+
+std::optional<FieldStatistics> VTKWriter::get_cached_stats(
+    int step, const std::string& field_name) const
+{
+    std::string key = std::to_string(step) + ":" + field_name;
+    return stats_cache_.get(key);
 }
 
 } // namespace ac

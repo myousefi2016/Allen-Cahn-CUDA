@@ -106,34 +106,62 @@ apply_bc_face_kernel(
 
 // ── Launch wrapper ─────────────────────────────────────────────────────────
 
+static void launch_bc_face(
+    double* field, const KernelParams& params,
+    int axis, int side,
+    const BoundaryConfig& bc,
+    cudaStream_t stream)
+{
+    int dim1, dim2;
+    if (axis == 0) { dim1 = params.Ny; dim2 = params.Nz; }
+    else if (axis == 1) { dim1 = params.Nx; dim2 = params.Nz; }
+    else { dim1 = params.Nx; dim2 = params.Ny; }
+
+    dim3 block(16, 16);
+    dim3 grid(
+        (static_cast<unsigned>(dim1) + block.x - 1) / block.x,
+        (static_cast<unsigned>(dim2) + block.y - 1) / block.y
+    );
+
+    apply_bc_face_kernel<<<grid, block, 0, stream>>>(
+        field, params.Nx, params.Ny, params.Nz,
+        params.dx, params.dy, params.dz,
+        axis, side, static_cast<int>(bc.type),
+        bc.value, bc.flux,
+        bc.alpha, bc.beta, bc.gamma);
+}
+
 void launch_boundary_conditions(
     double* field, const KernelParams& params,
     BCType bc_type, double bc_value, double bc_flux,
     double bc_alpha, double bc_beta, double bc_gamma,
     cudaStream_t stream)
 {
-    int bc_int = static_cast<int>(bc_type);
+    BoundaryConfig bc;
+    bc.type = bc_type;
+    bc.value = bc_value;
+    bc.flux = bc_flux;
+    bc.alpha = bc_alpha;
+    bc.beta = bc_beta;
+    bc.gamma = bc_gamma;
 
-    // Launch one 2D kernel per face (6 faces total)
     for (int axis = 0; axis < 3; ++axis) {
         for (int side = 0; side < 2; ++side) {
-            int dim1, dim2;
-            if (axis == 0) { dim1 = params.Ny; dim2 = params.Nz; }
-            else if (axis == 1) { dim1 = params.Nx; dim2 = params.Nz; }
-            else { dim1 = params.Nx; dim2 = params.Ny; }
+            launch_bc_face(field, params, axis, side, bc, stream);
+        }
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
 
-            dim3 block(16, 16);
-            dim3 grid(
-                (static_cast<unsigned>(dim1) + block.x - 1) / block.x,
-                (static_cast<unsigned>(dim2) + block.y - 1) / block.y
-            );
-
-            apply_bc_face_kernel<<<grid, block, 0, stream>>>(
-                field, params.Nx, params.Ny, params.Nz,
-                params.dx, params.dy, params.dz,
-                axis, side, bc_int,
-                bc_value, bc_flux,
-                bc_alpha, bc_beta, bc_gamma);
+void launch_boundary_conditions_per_face(
+    double* field, const KernelParams& params,
+    const PerFaceBoundary& face_bcs,
+    cudaStream_t stream)
+{
+    for (int axis = 0; axis < 3; ++axis) {
+        for (int side = 0; side < 2; ++side) {
+            const auto& bc = face_bcs.get(axis, side);
+            launch_bc_face(field, params, axis, side, bc, stream);
         }
     }
     CUDA_CHECK(cudaGetLastError());

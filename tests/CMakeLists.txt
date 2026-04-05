@@ -2,15 +2,22 @@ include(GoogleTest)
 
 # ── Unit tests ──────────────────────────────────────────────────────────────
 add_executable(unit_tests
+    # Core (CPU-only)
     unit/test_Grid.cpp
     unit/test_SimulationConfig.cpp
     unit/test_FieldData.cpp
     unit/test_CheckpointIO.cpp
+    unit/test_LRUCache.cpp
+    unit/test_SpatialHash.cpp
+    unit/test_ConcurrentMap.cpp
+    unit/test_VTKWriter.cpp
+    # CUDA
     unit/test_DeviceField.cu
     unit/test_Laplacian.cu
     unit/test_Anisotropy.cu
     unit/test_BoundaryConditions.cu
     unit/test_Reduction.cu
+    unit/test_CudaSolver.cu
 )
 
 target_link_libraries(unit_tests PRIVATE
@@ -32,6 +39,7 @@ add_executable(integration_tests
     integration/test_SphereRegression.cu
     integration/test_EulerConvergence.cu
     integration/test_EnergyConservation.cu
+    integration/test_SchemeComparison.cu
 )
 
 target_link_libraries(integration_tests PRIVATE

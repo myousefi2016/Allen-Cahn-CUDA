@@ -195,11 +195,17 @@ void launch_thermal_equation(
     const double* phi_new, const double* phi_old,
     const KernelParams& params, cudaStream_t stream = nullptr);
 
-/// Boundary condition kernels (Dirichlet, Neumann, Periodic, Robin).
+/// Boundary condition kernels (uniform BC on all faces).
 void launch_boundary_conditions(
     double* field, const KernelParams& params,
     BCType bc_type, double bc_value, double bc_flux,
     double bc_alpha, double bc_beta, double bc_gamma,
+    cudaStream_t stream = nullptr);
+
+/// Boundary condition kernels (per-face BC specification).
+void launch_boundary_conditions_per_face(
+    double* field, const KernelParams& params,
+    const PerFaceBoundary& face_bcs,
     cudaStream_t stream = nullptr);
 
 /// Compute maximum absolute value via parallel reduction (for adaptive dt).
