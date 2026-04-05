@@ -13,3 +13,4 @@ resources:
   - configmap.yaml
   - pvc.yaml
   - job.yaml
+  - deployment.yaml

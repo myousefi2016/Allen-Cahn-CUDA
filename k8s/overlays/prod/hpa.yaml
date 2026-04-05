@@ -1,21 +1,21 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: allen-cahn-simulation-hpa
+  name: allen-cahn-worker-hpa
   labels:
     app.kubernetes.io/name: allen-cahn-cuda
     app.kubernetes.io/component: autoscaler
     app.kubernetes.io/part-of: allen-cahn-cuda
   annotations:
     description: >-
-      Scales simulation job replicas based on GPU utilization.
-      Intended for batch job queue pattern where multiple simulations
-      with different parameters run concurrently.
+      Scales simulation worker replicas based on GPU utilization.
+      Workers process simulation jobs from a parameter queue.
+      Requires NVIDIA DCGM exporter for GPU metrics.
 spec:
   scaleTargetRef:
-    apiVersion: batch/v1
-    kind: Job
-    name: allen-cahn-simulation
+    apiVersion: apps/v1
+    kind: Deployment
+    name: allen-cahn-worker
   minReplicas: 1
   maxReplicas: 4
   behavior:
