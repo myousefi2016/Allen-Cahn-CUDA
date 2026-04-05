@@ -1,0 +1,40 @@
+{
+    "physics": {
+        "delta": 0.8,
+        "epsilon": 0.07,
+        "W0": 1.0,
+        "D": 2.0,
+        "d0": 0.5
+    },
+    "grid": {
+        "Nx": 128,
+        "Ny": 128,
+        "Nz": 128,
+        "dx": 0.4,
+        "dy": 0.4,
+        "dz": 0.4
+    },
+    "time": {
+        "dt": 0.01,
+        "max_steps": 500,
+        "scheme": "euler",
+        "adaptive": false
+    },
+    "stencil": "7pt",
+    "output": {
+        "frequency": 50,
+        "output_dir": "./out",
+        "format": "raw",
+        "async_io": true
+    },
+    "checkpoint": {
+        "frequency": 0
+    },
+    "initial": {
+        "seed_radius": 5.0
+    },
+    "boundary": {
+        "phi": { "type": "dirichlet", "value": -1.0 },
+        "u":   { "type": "dirichlet", "value": -0.8 }
+    }
+}
