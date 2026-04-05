@@ -1,0 +1,44 @@
+# ── Build artifacts ─────────────────────────────────────────────────────────
+build/
+out/
+cmake-build-*/
+
+# ── Version control ────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitmodules
+
+# ── IDE / Editor files ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+
+# ── Docker (avoid recursive context) ──────────────────────────────────────
+docker-compose.yml
+docker-compose.*.yml
+.dockerignore
+
+# ── CI / Documentation ────────────────────────────────────────────────────
+.github/
+docs/
+*.md
+LICENSE
+PULL_REQUEST_TEMPLATE.md
+
+# ── Simulation output ─────────────────────────────────────────────────────
+output/
+result/
+*.vti
+*.vtu
+*.vtk
+*.h5
+*.hdf5
+
+# ── Misc ───────────────────────────────────────────────────────────────────
+.ccache/
+.env
+*.log
+vcpkg_installed/

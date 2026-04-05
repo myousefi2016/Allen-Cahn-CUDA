@@ -9,7 +9,7 @@
 #include <memory>
 
 namespace ac::cuda {
-class CudaSolver;
+class ISolver;
 }
 
 namespace ac {
@@ -37,12 +37,15 @@ private:
     void checkpoint_step(int step, double time, double dt);
     double adapt_time_step(double current_dt);
 
+    /// Create appropriate solver based on config (single-GPU or multi-GPU).
+    std::unique_ptr<cuda::ISolver> create_solver();
+
     SimulationConfig config_;
     Grid grid_;
     FieldData phi_host_;
     FieldData u_host_;
 
-    std::unique_ptr<cuda::CudaSolver> solver_;
+    std::unique_ptr<cuda::ISolver> solver_;
     std::unique_ptr<VTKWriter> vtk_writer_;
     std::unique_ptr<CheckpointManager> checkpoint_mgr_;
 

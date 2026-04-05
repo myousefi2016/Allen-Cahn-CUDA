@@ -1,174 +1,303 @@
-#include "cuda/CudaSolver.cuh"
+#include "cuda/MultiGPUSolver.cuh"
 #include "cuda/CudaUtils.cuh"
-#include "cuda/DeviceField.cuh"
-#include "cuda/Kernels.cuh"
 
 #include <spdlog/spdlog.h>
-#include <memory>
-#include <vector>
+#include <algorithm>
+#include <cmath>
+#include <numeric>
 
 namespace ac::cuda {
 
-/// Multi-GPU solver using domain decomposition along the X axis.
-/// Each GPU owns a sub-domain with halo regions for stencil overlap.
-class MultiGPUSolver {
-public:
-    explicit MultiGPUSolver(const SimulationConfig& config)
-        : config_(config)
-    {
-        const auto& device_ids = config.gpu.device_ids;
-        int num_gpus = static_cast<int>(device_ids.size());
+MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config)
+    : config_(config)
+{
+    const auto& device_ids = config.gpu.device_ids;
+    int num_gpus = static_cast<int>(device_ids.size());
 
-        if (num_gpus < 2) {
-            spdlog::warn("MultiGPUSolver created with {} GPUs, falling back to single GPU",
-                         num_gpus);
+    if (num_gpus < 2) {
+        throw std::runtime_error(
+            "MultiGPUSolver requires at least 2 GPUs, got " + std::to_string(num_gpus));
+    }
+
+    // Fused Allen-Cahn kernel computes gradients at neighbor points,
+    // so effective stencil reach is ±2 in each direction.
+    halo_width_ = 2;
+
+    // Enable peer access between all GPU pairs
+    for (int i = 0; i < num_gpus; ++i) {
+        for (int j = 0; j < num_gpus; ++j) {
+            if (i == j) continue;
+            int can_access = 0;
+            CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access,
+                                                device_ids[i], device_ids[j]));
+            if (can_access) {
+                CUDA_CHECK(cudaSetDevice(device_ids[i]));
+                auto err = cudaDeviceEnablePeerAccess(device_ids[j], 0);
+                if (err != cudaSuccess && err != cudaErrorPeerAccessAlreadyEnabled) {
+                    CUDA_CHECK(err);
+                }
+            } else {
+                spdlog::warn("Peer access not available between GPU {} and GPU {}; "
+                             "halo exchange will use staged copies via host",
+                             device_ids[i], device_ids[j]);
+            }
         }
+    }
 
-        // Check peer access
-        for (int i = 0; i < num_gpus; ++i) {
-            for (int j = 0; j < num_gpus; ++j) {
-                if (i != j) {
-                    int can_access = 0;
-                    CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access,
-                                                        device_ids[i],
-                                                        device_ids[j]));
-                    if (can_access) {
-                        CUDA_CHECK(cudaSetDevice(device_ids[i]));
-                        cudaDeviceEnablePeerAccess(device_ids[j], 0);
-                        // Ignore error if already enabled
-                    }
+    // Decompose domain along X axis
+    int total_Nx = config.grid.Nx;
+    int base_chunk = total_Nx / num_gpus;
+    int remainder = total_Nx % num_gpus;
+
+    int x_offset = 0;
+    for (int g = 0; g < num_gpus; ++g) {
+        GPUDomain domain;
+        domain.device_id = device_ids[g];
+        domain.halo = halo_width_;
+
+        // Distribute remainder across first 'remainder' GPUs
+        int chunk = base_chunk + (g < remainder ? 1 : 0);
+        domain.x_start = x_offset;
+        domain.x_end = x_offset + chunk;
+        domain.local_Nx = chunk + 2 * halo_width_;
+        x_offset += chunk;
+
+        // Create sub-config for this domain
+        SimulationConfig sub_config = config;
+        sub_config.grid.Nx = domain.local_Nx;
+        sub_config.gpu.device_ids = {domain.device_id};
+        sub_config.gpu.multi_gpu = false;
+
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.solver = std::make_unique<CudaSolver>(sub_config);
+        domain.halo_stream = Stream();
+
+        domains_.push_back(std::move(domain));
+    }
+
+    spdlog::info("MultiGPUSolver initialized: {} GPUs, halo_width={}, total_Nx={}",
+                 num_gpus, halo_width_, total_Nx);
+    for (const auto& d : domains_) {
+        spdlog::info("  GPU {}: x=[{}, {}), local_Nx={} (with halo)",
+                     d.device_id, d.x_start, d.x_end, d.local_Nx);
+    }
+}
+
+void MultiGPUSolver::extract_subdomain(const FieldData& global, FieldData& local,
+                                        const GPUDomain& domain) const
+{
+    int Ny = config_.grid.Ny;
+    int Nz = config_.grid.Nz;
+    int global_Nx = config_.grid.Nx;
+
+    for (int lx = 0; lx < domain.local_Nx; ++lx) {
+        // Map local x to global x (with halo offset)
+        int gx = domain.x_start - domain.halo + lx;
+        // Clamp to valid global range
+        gx = std::clamp(gx, 0, global_Nx - 1);
+
+        for (int y = 0; y < Ny; ++y) {
+            for (int z = 0; z < Nz; ++z) {
+                local(lx, y, z) = global(gx, y, z);
+            }
+        }
+    }
+}
+
+void MultiGPUSolver::initialize(const FieldData& phi0, const FieldData& u0)
+{
+    for (auto& domain : domains_) {
+        Grid sub_grid(
+            Dim3{domain.local_Nx, config_.grid.Ny, config_.grid.Nz},
+            Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz}
+        );
+        FieldData phi_sub(sub_grid, "phi_sub");
+        FieldData u_sub(sub_grid, "u_sub");
+
+        extract_subdomain(phi0, phi_sub, domain);
+        extract_subdomain(u0, u_sub, domain);
+
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.solver->initialize(phi_sub, u_sub);
+    }
+    spdlog::debug("MultiGPUSolver: initial conditions distributed to all GPUs");
+}
+
+void MultiGPUSolver::copy_slab(double* dst, int dst_device,
+                                const double* src, int src_device,
+                                int x_dst, int x_src, int slab_count,
+                                int Ny, int Nz, int dst_Nx, int src_Nx,
+                                cudaStream_t stream)
+{
+    // Copy 'slab_count' YZ-planes from src to dst
+    // Each YZ-plane is contiguous if memory is laid out as [x][y][z]
+    for (int s = 0; s < slab_count; ++s) {
+        std::size_t dst_offset = static_cast<std::size_t>(x_dst + s) * Ny * Nz;
+        std::size_t src_offset = static_cast<std::size_t>(x_src + s) * Ny * Nz;
+        std::size_t bytes = static_cast<std::size_t>(Ny) * Nz * sizeof(double);
+
+        CUDA_CHECK(cudaMemcpyPeerAsync(
+            dst + dst_offset, dst_device,
+            src + src_offset, src_device,
+            bytes, stream));
+    }
+}
+
+void MultiGPUSolver::exchange_halos()
+{
+    int Ny = config_.grid.Ny;
+    int Nz = config_.grid.Nz;
+
+    // Exchange between each pair of neighboring GPUs
+    for (std::size_t g = 0; g + 1 < domains_.size(); ++g) {
+        auto& left = domains_[g];
+        auto& right = domains_[g + 1];
+
+        int left_Nx = left.local_Nx;
+        int right_Nx = right.local_Nx;
+
+        // For phi field:
+        // Left's right boundary -> Right's left halo
+        // Left interior ends at x = left_Nx - halo_width_ - 1
+        // Right halo starts at x = 0
+        int left_src_x = left_Nx - 2 * halo_width_;  // Start of left's right interior boundary
+        int right_dst_x = 0;                           // Start of right's left halo
+
+        // Right's left boundary -> Left's right halo
+        int right_src_x = halo_width_;                 // Start of right's left interior boundary
+        int left_dst_x = left_Nx - halo_width_;        // Start of left's right halo
+
+        // Exchange phi
+        CUDA_CHECK(cudaSetDevice(left.device_id));
+        copy_slab(right.solver->phi_data(), right.device_id,
+                  left.solver->phi_data(), left.device_id,
+                  right_dst_x, left_src_x, halo_width_,
+                  Ny, Nz, right_Nx, left_Nx,
+                  left.halo_stream.get());
+
+        copy_slab(left.solver->phi_data(), left.device_id,
+                  right.solver->phi_data(), right.device_id,
+                  left_dst_x, right_src_x, halo_width_,
+                  Ny, Nz, left_Nx, right_Nx,
+                  left.halo_stream.get());
+
+        // Exchange u
+        copy_slab(right.solver->u_data(), right.device_id,
+                  left.solver->u_data(), left.device_id,
+                  right_dst_x, left_src_x, halo_width_,
+                  Ny, Nz, right_Nx, left_Nx,
+                  left.halo_stream.get());
+
+        copy_slab(left.solver->u_data(), left.device_id,
+                  right.solver->u_data(), right.device_id,
+                  left_dst_x, right_src_x, halo_width_,
+                  Ny, Nz, left_Nx, right_Nx,
+                  left.halo_stream.get());
+    }
+
+    // Synchronize all halo streams
+    for (auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.halo_stream.synchronize();
+    }
+}
+
+void MultiGPUSolver::step(double dt)
+{
+    // Exchange halos before stepping
+    exchange_halos();
+
+    // Step each sub-domain
+    for (auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.solver->step(dt);
+    }
+}
+
+double MultiGPUSolver::compute_max_dphi() const
+{
+    double global_max = 0.0;
+    for (const auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        global_max = std::max(global_max, domain.solver->compute_max_dphi());
+    }
+    return global_max;
+}
+
+void MultiGPUSolver::copy_phi_to_host(FieldData& out) const
+{
+    int Ny = config_.grid.Ny;
+    int Nz = config_.grid.Nz;
+
+    for (const auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+
+        // Create temporary for sub-domain
+        Grid sub_grid(
+            Dim3{domain.local_Nx, Ny, Nz},
+            Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz}
+        );
+        FieldData sub(sub_grid, "phi_sub");
+        domain.solver->copy_phi_to_host(sub);
+
+        // Copy interior (skip halo) to global field
+        for (int lx = domain.halo; lx < domain.local_Nx - domain.halo; ++lx) {
+            int gx = domain.x_start + (lx - domain.halo);
+            for (int y = 0; y < Ny; ++y) {
+                for (int z = 0; z < Nz; ++z) {
+                    out(gx, y, z) = sub(lx, y, z);
                 }
             }
         }
-
-        // Decompose domain along X axis
-        int total_Nx = config.grid.Nx;
-        int halo = (config.stencil == StencilType::Isotropic27Point) ? 1 : 1;
-
-        for (int g = 0; g < num_gpus; ++g) {
-            GPUDomain domain;
-            domain.device_id = device_ids[g];
-            domain.x_start = g * (total_Nx / num_gpus);
-            domain.x_end = (g == num_gpus - 1) ? total_Nx
-                                                 : (g + 1) * (total_Nx / num_gpus);
-            domain.local_Nx = domain.x_end - domain.x_start + 2 * halo;
-            domain.halo = halo;
-
-            // Create a sub-config for this domain
-            SimulationConfig sub_config = config;
-            sub_config.grid.Nx = domain.local_Nx;
-            sub_config.gpu.device_ids = {domain.device_id};
-            sub_config.gpu.multi_gpu = false;
-
-            CUDA_CHECK(cudaSetDevice(domain.device_id));
-            domain.solver = std::make_unique<CudaSolver>(sub_config);
-
-            // Allocate halo exchange buffers
-            std::size_t halo_size = static_cast<std::size_t>(halo) *
-                                    config.grid.Ny * config.grid.Nz;
-            domain.halo_send_lo = DeviceField<double>(halo_size);
-            domain.halo_send_hi = DeviceField<double>(halo_size);
-            domain.halo_recv_lo = DeviceField<double>(halo_size);
-            domain.halo_recv_hi = DeviceField<double>(halo_size);
-
-            domains_.push_back(std::move(domain));
-        }
-
-        spdlog::info("MultiGPUSolver initialized with {} GPUs, halo={}", num_gpus, halo);
     }
+}
 
-    void initialize(const FieldData& phi0, const FieldData& u0)
-    {
-        for (auto& domain : domains_) {
-            // Extract sub-domain data from full fields
-            Grid sub_grid(
-                Dim3{domain.local_Nx, config_.grid.Ny, config_.grid.Nz},
-                Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz}
-            );
-            FieldData phi_sub(sub_grid, "phi_sub");
-            FieldData u_sub(sub_grid, "u_sub");
+void MultiGPUSolver::copy_u_to_host(FieldData& out) const
+{
+    int Ny = config_.grid.Ny;
+    int Nz = config_.grid.Nz;
 
-            int src_start = domain.x_start - domain.halo;
-            for (int lx = 0; lx < domain.local_Nx; ++lx) {
-                int gx = src_start + lx;
-                gx = std::max(0, std::min(gx, config_.grid.Nx - 1));
-                for (int y = 0; y < config_.grid.Ny; ++y) {
-                    for (int z = 0; z < config_.grid.Nz; ++z) {
-                        phi_sub(lx, y, z) = phi0(gx, y, z);
-                        u_sub(lx, y, z) = u0(gx, y, z);
-                    }
+    for (const auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+
+        Grid sub_grid(
+            Dim3{domain.local_Nx, Ny, Nz},
+            Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz}
+        );
+        FieldData sub(sub_grid, "u_sub");
+        domain.solver->copy_u_to_host(sub);
+
+        for (int lx = domain.halo; lx < domain.local_Nx - domain.halo; ++lx) {
+            int gx = domain.x_start + (lx - domain.halo);
+            for (int y = 0; y < Ny; ++y) {
+                for (int z = 0; z < Nz; ++z) {
+                    out(gx, y, z) = sub(lx, y, z);
                 }
             }
-
-            CUDA_CHECK(cudaSetDevice(domain.device_id));
-            domain.solver->initialize(phi_sub, u_sub);
         }
     }
+}
 
-    void step(double dt)
-    {
-        // Exchange halos between neighboring GPUs
-        exchange_halos();
-
-        // Step each sub-domain
-        for (auto& domain : domains_) {
-            CUDA_CHECK(cudaSetDevice(domain.device_id));
-            domain.solver->step(dt);
-        }
+void MultiGPUSolver::apply_boundary_conditions()
+{
+    for (auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.solver->apply_boundary_conditions();
     }
+}
 
-    void synchronize()
-    {
-        for (auto& domain : domains_) {
-            CUDA_CHECK(cudaSetDevice(domain.device_id));
-            domain.solver->synchronize();
-        }
+void MultiGPUSolver::synchronize() const
+{
+    for (const auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.solver->synchronize();
     }
+}
 
-private:
-    struct GPUDomain {
-        int device_id = 0;
-        int x_start = 0;
-        int x_end = 0;
-        int local_Nx = 0;
-        int halo = 1;
-        std::unique_ptr<CudaSolver> solver;
-        DeviceField<double> halo_send_lo, halo_send_hi;
-        DeviceField<double> halo_recv_lo, halo_recv_hi;
-    };
-
-    void exchange_halos()
-    {
-        // For each pair of neighboring GPUs, exchange boundary data.
-        // Uses cudaMemcpyPeerAsync for NVLink or PCIe transfers.
-        for (std::size_t g = 0; g + 1 < domains_.size(); ++g) {
-            auto& left = domains_[g];
-            auto& right = domains_[g + 1];
-
-            // Left sends its high boundary to right's low halo
-            // Right sends its low boundary to left's high halo
-            // This is a simplified placeholder; full implementation would
-            // extract boundary slices from the solver's internal fields.
-            CUDA_CHECK(cudaMemcpyPeerAsync(
-                right.halo_recv_lo.data(), right.device_id,
-                left.halo_send_hi.data(), left.device_id,
-                left.halo_send_hi.bytes(), nullptr));
-
-            CUDA_CHECK(cudaMemcpyPeerAsync(
-                left.halo_recv_hi.data(), left.device_id,
-                right.halo_send_lo.data(), right.device_id,
-                right.halo_send_lo.bytes(), nullptr));
-        }
-
-        // Synchronize all devices
-        for (auto& domain : domains_) {
-            CUDA_CHECK(cudaSetDevice(domain.device_id));
-            CUDA_CHECK(cudaDeviceSynchronize());
-        }
-    }
-
-    SimulationConfig config_;
-    std::vector<GPUDomain> domains_;
-};
+cudaStream_t MultiGPUSolver::stream() const
+{
+    if (domains_.empty()) return nullptr;
+    return domains_.front().solver->stream();
+}
 
 } // namespace ac::cuda

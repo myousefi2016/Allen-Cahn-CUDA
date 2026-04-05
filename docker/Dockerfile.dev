@@ -1,0 +1,78 @@
+# ============================================================================
+# Allen-Cahn-CUDA Development Image
+# ----------------------------------------------------------------------------
+# Provides a full build environment with all dependencies pre-installed.
+# Source code is mounted as a volume at /workspace -- nothing is COPY'd.
+#
+# Usage:
+#   docker compose --profile dev up dev
+#   docker run --gpus all -v $(pwd):/workspace -it allencahn-dev
+# ============================================================================
+
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS dev
+
+LABEL maintainer="Allen-Cahn-CUDA Contributors"
+LABEL description="Development environment for Allen-Cahn-CUDA simulation"
+
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── NVIDIA container runtime configuration ────────────────────────────────
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# ── Install system packages ───────────────────────────────────────────────
+# Using cache mount to avoid re-downloading packages on rebuilds
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        # Build toolchain
+        cmake \
+        ninja-build \
+        gcc-13 \
+        g++-13 \
+        git \
+        pkg-config \
+        # VTK 9 development libraries
+        libvtk9-dev \
+        # HDF5 development libraries
+        libhdf5-dev \
+        # Useful development utilities
+        gdb \
+        valgrind \
+        ccache \
+        curl \
+        ca-certificates \
+    && \
+    # Set gcc-13/g++-13 as the default compiler
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-13 \
+        --slave /usr/bin/gcov gcov /usr/bin/gcov-13 && \
+    update-alternatives --set gcc /usr/bin/gcc-13
+
+# ── Verify cmake version meets minimum requirement ────────────────────────
+RUN cmake --version | head -1
+
+# ── Create non-root developer user ────────────────────────────────────────
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+RUN groupadd --gid ${USER_GID} developer && \
+    useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash developer && \
+    mkdir -p /workspace && \
+    chown developer:developer /workspace
+
+# ── Configure ccache ──────────────────────────────────────────────────────
+ENV CCACHE_DIR=/workspace/.ccache
+ENV CCACHE_MAXSIZE=2G
+ENV CMAKE_C_COMPILER_LAUNCHER=ccache
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+WORKDIR /workspace
+
+USER developer
+
+# Default command opens a shell for interactive development
+CMD ["/bin/bash"]

@@ -182,10 +182,65 @@ TEST_F(AnisotropyTest, dFuncZero)
     EXPECT_DOUBLE_EQ(result, 0.0);
 }
 
-// Test: dF/dphi at phi=0 should be 0 + lambda*u*(1-0)^2 = lambda*u
+/// Test kernel for dF_dphi evaluation
+__global__ void test_dfdphi_kernel(
+    const double* __restrict__ phi_vals,
+    const double* __restrict__ u_vals,
+    double lambda,
+    double* __restrict__ results, int N)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+    results[i] = dF_dphi(phi_vals[i], u_vals[i], lambda);
+}
+
+// Test: dF/dphi at phi=0 should be lambda*u
 TEST_F(AnisotropyTest, dFdphiAtZero)
 {
+    double lambda = 6.383;
+    double u_val = -0.3;
+
+    std::vector<double> phi_vals = { 0.0 };
+    std::vector<double> u_vals = { u_val };
+
+    DeviceField<double> d_phi(1), d_u(1), d_results(1);
+    d_phi.copy_from_host(phi_vals.data());
+    d_u.copy_from_host(u_vals.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    test_dfdphi_kernel<<<1, 1>>>(d_phi.data(), d_u.data(), lambda, d_results.data(), 1);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    double result;
+    d_results.copy_to_host(&result);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
     // dF_dphi(0, u, lambda) = -0*(1-0) + lambda*u*(1-0)^2 = lambda*u
-    // This is a CPU test since dF_dphi is a device function.
-    // We'll test via a kernel.
+    EXPECT_NEAR(result, lambda * u_val, 1e-12);
+}
+
+// Test: dF/dphi at phi=+/-1 should be 0 (double-well minima)
+TEST_F(AnisotropyTest, dFdphiAtMinima)
+{
+    double lambda = 6.383;
+    double u_val = -0.3;
+
+    std::vector<double> phi_vals = { 1.0, -1.0 };
+    std::vector<double> u_vals = { u_val, u_val };
+
+    DeviceField<double> d_phi(2), d_u(2), d_results(2);
+    d_phi.copy_from_host(phi_vals.data());
+    d_u.copy_from_host(u_vals.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    test_dfdphi_kernel<<<1, 2>>>(d_phi.data(), d_u.data(), lambda, d_results.data(), 2);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    std::vector<double> results(2);
+    d_results.copy_to_host(results.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // At phi=+/-1: omp2 = 1-1 = 0, so dF_dphi = 0
+    EXPECT_NEAR(results[0], 0.0, 1e-12);
+    EXPECT_NEAR(results[1], 0.0, 1e-12);
 }

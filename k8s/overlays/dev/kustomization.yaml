@@ -1,0 +1,115 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: allen-cahn-cuda-dev
+
+namespace: allen-cahn-dev
+
+namePrefix: dev-
+
+commonLabels:
+  environment: dev
+
+commonAnnotations:
+  note: "Development configuration with reduced grid and steps"
+
+resources:
+  - ../../base
+
+patches:
+  # Reduce resource requests for dev
+  - target:
+      kind: Job
+      name: allen-cahn-simulation
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "4Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "2"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "8Gi"
+      - op: replace
+        path: /spec/activeDeadlineSeconds
+        value: 3600
+
+  # Reduce PVC size for dev
+  - target:
+      kind: PersistentVolumeClaim
+      name: allen-cahn-output
+    patch: |
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 10Gi
+
+  # Override config with smaller grid and fewer steps
+  - target:
+      kind: ConfigMap
+      name: allen-cahn-config
+    patch: |
+      - op: replace
+        path: /data/simulation.json
+        value: |
+          {
+              "physics": {
+                  "delta": 0.8,
+                  "epsilon": 0.07,
+                  "W0": 1.0,
+                  "beta0": 0.0,
+                  "D": 2.0,
+                  "d0": 0.5
+              },
+              "grid": {
+                  "Nx": 128,
+                  "Ny": 128,
+                  "Nz": 128,
+                  "dx": 0.4,
+                  "dy": 0.4,
+                  "dz": 0.4
+              },
+              "time": {
+                  "dt": 0.01,
+                  "dt_min": 1e-6,
+                  "dt_max": 0.1,
+                  "max_steps": 500,
+                  "scheme": "euler",
+                  "adaptive": false,
+                  "cfl_safety": 0.9
+              },
+              "stencil": "7pt",
+              "output": {
+                  "frequency": 50,
+                  "output_dir": "/data/output",
+                  "format": "vts",
+                  "async_io": true
+              },
+              "checkpoint": {
+                  "frequency": 100,
+                  "checkpoint_dir": "/data/output/checkpoints",
+                  "keep_last": 2
+              },
+              "gpu": {
+                  "device_ids": [0],
+                  "block_size": 256,
+                  "multi_gpu": false
+              },
+              "initial": {
+                  "seed_radius": 5.0
+              },
+              "boundary": {
+                  "phi": {
+                      "type": "dirichlet",
+                      "value": -1.0
+                  },
+                  "u": {
+                      "type": "dirichlet",
+                      "value": -0.8
+                  }
+              }
+          }

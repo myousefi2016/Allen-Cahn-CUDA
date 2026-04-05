@@ -51,6 +51,19 @@ rk4_combine_kernel(double* __restrict__ y,
     }
 }
 
+/// Add latent heat coupling: u[i] += 0.5 * (phi_new[i] - phi_old[i])
+__global__ void __launch_bounds__(256)
+add_latent_heat_kernel(double* __restrict__ u,
+                       const double* __restrict__ phi_new,
+                       const double* __restrict__ phi_old,
+                       int N)
+{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < static_cast<unsigned>(N)) {
+        u[i] += 0.5 * (phi_new[i] - phi_old[i]);
+    }
+}
+
 /// Jacobi iteration kernel for IMEX: solve (I - dt*D*Laplacian) u = rhs
 __global__ void __launch_bounds__(256)
 jacobi_step_kernel(const double* __restrict__ u_old,
@@ -341,16 +354,11 @@ void CudaSolver::step_rk4(double dt)
         k1_u_.data(), k2_u_.data(), k3_u_.data(), k4_u_.data(),
         dt, N);
 
-    // Add latent heat coupling to thermal field
-    // u needs the latent heat term: += 0.5*(phi_new - phi_old)
-    // This is added after the RK4 combination
-    auto latent_cfg = LaunchConfig::for_1d(total_points_, 256);
-    // Simple kernel to add latent heat
-    // u_new += 0.5*(phi_new - phi_old)
-    // We'll use axpy: u_new = u_new + 0.5*(phi_new - phi_old)
-    // Need a fused add kernel... let's just use the formula inline
-    // For now, the thermal_rhs_kernel doesn't include latent heat,
-    // so we need to add it separately.
+    // Add latent heat coupling: u_new += 0.5*(phi_new - phi_old)
+    // thermal_rhs_kernel computes only D*lap(u), so latent heat must be added separately
+    add_latent_heat_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
+        u_new_.data(), phi_new_.data(), phi_old_.data(), N);
+    CUDA_CHECK(cudaGetLastError());
 
     apply_bc(phi_new_.data(), config_.boundary.phi_bc);
     apply_bc(u_new_.data(), config_.boundary.u_bc);
@@ -374,17 +382,9 @@ void CudaSolver::step_imex(double dt)
 
     // Implicit step for thermal diffusion
     // Solve: (I - dt*D*Laplacian) u_new = u_old + 0.5*(phi_new - phi_old)
-    // RHS = u_old + latent heat
-    // Use phi_tmp_ as RHS buffer
-    // First compute RHS
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_tmp_.data(), u_old_.data(), phi_new_.data(), 0.5, N);
-    // phi_tmp_ = u_old + 0.5 * phi_new; but we need u_old + 0.5*(phi_new - phi_old)
-    // Let's do it properly with a custom kernel or two axpy calls
-    // u_tmp_ = phi_new - phi_old
+    // Compute RHS in phi_tmp_: first u_tmp_ = phi_new - phi_old, then phi_tmp_ = u_old + 0.5*u_tmp_
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         u_tmp_.data(), phi_new_.data(), phi_old_.data(), -1.0, N);
-    // phi_tmp_ = u_old + 0.5 * u_tmp_
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_tmp_.data(), u_old_.data(), u_tmp_.data(), 0.5, N);
 
@@ -393,16 +393,14 @@ void CudaSolver::step_imex(double dt)
     u_new_.copy_from(u_old_, compute_stream_);
     constexpr int JACOBI_ITERS = 20;
     for (int iter = 0; iter < JACOBI_ITERS; ++iter) {
+        // Read from u_new_, write to u_tmp_, then swap so u_new_ holds latest result
         jacobi_step_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
             u_new_.data(), u_tmp_.data(), phi_tmp_.data(), params_, dt);
         CUDA_CHECK(cudaGetLastError());
         swap(u_new_, u_tmp_);
     }
-    // After even number of iterations, result is in u_new_ (after swap)
-    // After odd number, it's in u_tmp_. JACOBI_ITERS=20 is even, so result in u_tmp_
-    // Actually swap happens JACOBI_ITERS times. After loop, u_new_ has last input,
-    // u_tmp_ has last output. We need to swap once more:
-    swap(u_new_, u_tmp_);
+    // After each iteration, swap puts the output into u_new_.
+    // After JACOBI_ITERS swaps, u_new_ holds the final result. No extra swap needed.
 
     apply_bc(u_new_.data(), config_.boundary.u_bc);
 
@@ -419,10 +417,20 @@ void CudaSolver::apply_bc(double* field, const BoundaryConfig& bc)
         bc.alpha, bc.beta, bc.gamma, compute_stream_);
 }
 
+void CudaSolver::apply_bc_per_face(double* field, const PerFaceBoundary& face_bcs)
+{
+    launch_boundary_conditions_per_face(field, params_, face_bcs, compute_stream_);
+}
+
 void CudaSolver::apply_boundary_conditions()
 {
-    apply_bc(phi_old_.data(), config_.boundary.phi_bc);
-    apply_bc(u_old_.data(), config_.boundary.u_bc);
+    if (config_.boundary.per_face) {
+        apply_bc_per_face(phi_old_.data(), config_.boundary.phi_faces);
+        apply_bc_per_face(u_old_.data(), config_.boundary.u_faces);
+    } else {
+        apply_bc(phi_old_.data(), config_.boundary.phi_bc);
+        apply_bc(u_old_.data(), config_.boundary.u_bc);
+    }
 }
 
 double CudaSolver::compute_max_dphi() const
