@@ -7,7 +7,8 @@ checkpoints/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
+Makefile.*
+!Makefile
 *.cmake
 !cmake/*.cmake
 !CMakeLists.txt

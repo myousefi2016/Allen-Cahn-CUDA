@@ -149,6 +149,129 @@ TEST_F(BoundaryConditionsTest, PeriodicBC)
         }
 }
 
+TEST_F(BoundaryConditionsTest, RobinBC)
+{
+    // Robin: alpha*u + beta*du/dn = gamma
+    // Test with alpha=1, beta=1, gamma=0 on a uniform field u=2.0
+    // At X-lo face (side=0): du/dn ~ (u_bnd - u_inner)/(-1*dx) => sign=-1
+    // u_bnd*(alpha + beta/(sign*dx)) = gamma + beta*u_inner/(sign*dx)
+    // u_bnd*(1 + 1/(-1)) = 0 + 1*2/(-1) = -2
+    // denom = 1 - 1 = 0 => falls back to u_inner = 2.0 (singular case)
+    //
+    // Instead, test with alpha=1, beta=0.5, gamma=1.0, dx=1.0:
+    // X-lo (sign=-1): u_bnd*(1 + 0.5/(-1)) = 1.0 + 0.5*u_inner/(-1)
+    // u_bnd*(0.5) = 1.0 - 0.5*u_inner
+    // u_bnd = (1.0 - 0.5*u_inner) / 0.5 = 2.0 - u_inner
+    // With u_inner=2.0: u_bnd = 2.0 - 2.0 = 0.0
+
+    const int N = 8;
+    const double h = 1.0;
+    const double alpha = 1.0, beta = 0.5, gamma_val = 1.0;
+
+    KernelParams p{};
+    p.Nx = N; p.Ny = N; p.Nz = N;
+    p.dx = h; p.dy = h; p.dz = h;
+
+    std::size_t total = static_cast<std::size_t>(N) * N * N;
+
+    // Initialize field with uniform value 2.0
+    std::vector<double> field_host(total, 2.0);
+    DeviceField<double> d_field(total);
+    d_field.copy_from_host(field_host.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    launch_boundary_conditions(d_field.data(), p,
+                                BCType::Robin, 0.0, 0.0,
+                                alpha, beta, gamma_val);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    d_field.copy_to_host(field_host.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Check interior is untouched
+    for (int x = 1; x < N-1; ++x)
+        for (int y = 1; y < N-1; ++y)
+            for (int z = 1; z < N-1; ++z)
+                EXPECT_DOUBLE_EQ(field_host[x*N*N + y*N + z], 2.0);
+
+    // Check X-lo face: sign=-1, u_inner = field[1,y,z] = 2.0
+    // denom = alpha + beta/(sign*ds) = 1.0 + 0.5/(-1.0) = 0.5
+    // u_bnd = (gamma + beta*u_inner/(sign*ds)) / denom
+    //       = (1.0 + 0.5*2.0/(-1.0)) / 0.5 = (1.0 - 1.0) / 0.5 = 0.0
+    for (int y = 0; y < N; ++y)
+        for (int z = 0; z < N; ++z) {
+            double u_bnd = field_host[0*N*N + y*N + z];
+            EXPECT_NEAR(u_bnd, 0.0, 1e-12)
+                << "Robin X-lo at y=" << y << " z=" << z;
+        }
+
+    // Check X-hi face: sign=+1, u_inner = field[N-2,y,z] = 2.0
+    // denom = 1.0 + 0.5/(1.0) = 1.5
+    // u_bnd = (1.0 + 0.5*2.0/(1.0)) / 1.5 = (1.0 + 1.0) / 1.5 = 4/3
+    double expected_hi = (gamma_val + beta * 2.0 / (1.0 * h)) / (alpha + beta / (1.0 * h));
+    for (int y = 0; y < N; ++y)
+        for (int z = 0; z < N; ++z) {
+            double u_bnd = field_host[(N-1)*N*N + y*N + z];
+            EXPECT_NEAR(u_bnd, expected_hi, 1e-12)
+                << "Robin X-hi at y=" << y << " z=" << z;
+        }
+}
+
+TEST_F(BoundaryConditionsTest, PerFaceMixedBC)
+{
+    // Test per-face BCs: Dirichlet on X-lo, Neumann on X-hi
+    const int N = 8;
+    const double h = 1.0;
+
+    KernelParams p{};
+    p.Nx = N; p.Ny = N; p.Nz = N;
+    p.dx = h; p.dy = h; p.dz = h;
+
+    std::size_t total = static_cast<std::size_t>(N) * N * N;
+
+    std::vector<double> field_host(total);
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z)
+                field_host[x*N*N + y*N + z] = static_cast<double>(x);
+
+    DeviceField<double> d_field(total);
+    d_field.copy_from_host(field_host.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Create per-face BC: Dirichlet(-5.0) on X-lo, Neumann(0) on X-hi,
+    // Periodic on Y faces, Dirichlet(-1.0) on Z faces
+    PerFaceBoundary face_bcs;
+    face_bcs.faces[0] = {BCType::Dirichlet, -5.0, 0.0, 1.0, 0.0, 0.0};  // X-lo
+    face_bcs.faces[1] = {BCType::Neumann, 0.0, 0.0, 1.0, 0.0, 0.0};     // X-hi
+    face_bcs.faces[2] = {BCType::Periodic, 0.0, 0.0, 1.0, 0.0, 0.0};    // Y-lo
+    face_bcs.faces[3] = {BCType::Periodic, 0.0, 0.0, 1.0, 0.0, 0.0};    // Y-hi
+    face_bcs.faces[4] = {BCType::Dirichlet, -1.0, 0.0, 1.0, 0.0, 0.0};  // Z-lo
+    face_bcs.faces[5] = {BCType::Dirichlet, -1.0, 0.0, 1.0, 0.0, 0.0};  // Z-hi
+
+    launch_boundary_conditions_per_face(d_field.data(), p, face_bcs);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    d_field.copy_to_host(field_host.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Check X-lo: Dirichlet = -5.0
+    for (int y = 0; y < N; ++y)
+        for (int z = 0; z < N; ++z)
+            EXPECT_DOUBLE_EQ(field_host[0*N*N + y*N + z], -5.0);
+
+    // Check X-hi: Neumann zero flux => field[N-1] = field[N-2]
+    for (int y = 0; y < N; ++y)
+        for (int z = 0; z < N; ++z)
+            EXPECT_DOUBLE_EQ(field_host[(N-1)*N*N + y*N + z],
+                             field_host[(N-2)*N*N + y*N + z]);
+
+    // Check Z-lo: Dirichlet = -1.0
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            EXPECT_DOUBLE_EQ(field_host[x*N*N + y*N + 0], -1.0);
+}
+
 TEST_F(BoundaryConditionsTest, InteriorUnchanged)
 {
     // Verify that boundary condition application doesn't touch interior points.

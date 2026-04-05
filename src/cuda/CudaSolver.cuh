@@ -53,14 +53,6 @@ private:
     /// Apply per-face BCs to a single field.
     void apply_bc_per_face(double* field, const PerFaceBoundary& face_bcs);
 
-    /// One Euler sub-step for phi: phi_out = phi_in + dt * RHS(phi_in, u_in)
-    void euler_substep_phi(const double* phi_in, double* phi_out,
-                            const double* u_in, double dt);
-
-    /// One Euler sub-step for u: u_out = u_in + 0.5*(phi_new - phi_old) + dt*D*lap(u_in)
-    void euler_substep_u(const double* u_in, double* u_out,
-                          const double* phi_new, const double* phi_old, double dt);
-
     SimulationConfig config_;
     KernelParams params_;
 

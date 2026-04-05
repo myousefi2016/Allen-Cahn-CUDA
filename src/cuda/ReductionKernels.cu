@@ -143,8 +143,7 @@ __global__ void max_abs_kernel(
 }
 
 void launch_max_abs_reduction(
-    const double* field_a, const double* /*field_b*/,
-    double* result, std::size_t N,
+    const double* field, double* result, std::size_t N,
     cudaStream_t stream)
 {
     constexpr int BLOCK_SIZE = 256;
@@ -154,7 +153,7 @@ void launch_max_abs_reduction(
     DeviceField<double> block_results(static_cast<std::size_t>(num_blocks));
 
     max_abs_kernel<<<num_blocks, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(
-        field_a, block_results.data(), static_cast<int>(N));
+        field, block_results.data(), static_cast<int>(N));
     CUDA_CHECK(cudaGetLastError());
 
     final_max_kernel<<<1, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(

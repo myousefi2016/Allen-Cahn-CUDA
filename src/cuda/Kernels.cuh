@@ -208,10 +208,9 @@ void launch_boundary_conditions_per_face(
     const PerFaceBoundary& face_bcs,
     cudaStream_t stream = nullptr);
 
-/// Compute maximum absolute value via parallel reduction (for adaptive dt).
+/// Compute maximum absolute value of a single field via parallel reduction.
 void launch_max_abs_reduction(
-    const double* field_a, const double* field_b,
-    double* result, std::size_t N,
+    const double* field, double* result, std::size_t N,
     cudaStream_t stream = nullptr);
 
 /// Compute max absolute difference |a - b| via parallel reduction.

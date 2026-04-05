@@ -129,6 +129,7 @@ static void launch_bc_face(
         axis, side, static_cast<int>(bc.type),
         bc.value, bc.flux,
         bc.alpha, bc.beta, bc.gamma);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_boundary_conditions(
