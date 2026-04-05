@@ -245,16 +245,15 @@ void CudaSolver::step_heun(double dt)
                             params_, compute_stream_);
     apply_bc(u_new_.data(), config_.boundary.u_bc);
 
-    // Heun average: result = 0.5*(stage1 + stage2)
-    // phi_result = 0.5*(phi_tmp_ + phi_new_)
-    // u_result = 0.5*(u_tmp_ + u_new_)
-    // Store back into phi_new_ and u_new_
+    // Heun average: y_{n+1} = 0.5*(y_n + y_tilde + dt*f(y_tilde))
+    //             = 0.5*(phi_old + phi_new)  where phi_new = phi_tmp + dt*f(phi_tmp)
+    //             = phi_old + 0.5*dt*(f1 + f2)  — correct RK2 formula
     average_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_new_.data(), phi_tmp_.data(), phi_new_.data(), N);
+        phi_new_.data(), phi_old_.data(), phi_new_.data(), N);
     CUDA_CHECK(cudaGetLastError());
 
     average_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        u_new_.data(), u_tmp_.data(), u_new_.data(), N);
+        u_new_.data(), u_old_.data(), u_new_.data(), N);
     CUDA_CHECK(cudaGetLastError());
 
     apply_bc(phi_new_.data(), config_.boundary.phi_bc);
@@ -290,8 +289,10 @@ void CudaSolver::step_rk4(double dt)
     // Stage 2: k2 = f(t_n + dt/2, y_n + dt/2 * k1)
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_tmp_.data(), phi_old_.data(), k1_phi_.data(), 0.5 * dt, N);
+    CUDA_CHECK(cudaGetLastError());
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         u_tmp_.data(), u_old_.data(), k1_u_.data(), 0.5 * dt, N);
+    CUDA_CHECK(cudaGetLastError());
     apply_bc(phi_tmp_.data(), config_.boundary.phi_bc);
     apply_bc(u_tmp_.data(), config_.boundary.u_bc);
 
@@ -309,8 +310,10 @@ void CudaSolver::step_rk4(double dt)
     // Stage 3: k3 = f(t_n + dt/2, y_n + dt/2 * k2)
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_tmp_.data(), phi_old_.data(), k2_phi_.data(), 0.5 * dt, N);
+    CUDA_CHECK(cudaGetLastError());
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         u_tmp_.data(), u_old_.data(), k2_u_.data(), 0.5 * dt, N);
+    CUDA_CHECK(cudaGetLastError());
     apply_bc(phi_tmp_.data(), config_.boundary.phi_bc);
     apply_bc(u_tmp_.data(), config_.boundary.u_bc);
 
@@ -328,8 +331,10 @@ void CudaSolver::step_rk4(double dt)
     // Stage 4: k4 = f(t_n + dt, y_n + dt * k3)
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_tmp_.data(), phi_old_.data(), k3_phi_.data(), dt, N);
+    CUDA_CHECK(cudaGetLastError());
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         u_tmp_.data(), u_old_.data(), k3_u_.data(), dt, N);
+    CUDA_CHECK(cudaGetLastError());
     apply_bc(phi_tmp_.data(), config_.boundary.phi_bc);
     apply_bc(u_tmp_.data(), config_.boundary.u_bc);
 
@@ -349,10 +354,12 @@ void CudaSolver::step_rk4(double dt)
         phi_new_.data(), phi_old_.data(),
         k1_phi_.data(), k2_phi_.data(), k3_phi_.data(), k4_phi_.data(),
         dt, N);
+    CUDA_CHECK(cudaGetLastError());
     rk4_combine_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         u_new_.data(), u_old_.data(),
         k1_u_.data(), k2_u_.data(), k3_u_.data(), k4_u_.data(),
         dt, N);
+    CUDA_CHECK(cudaGetLastError());
 
     // Add latent heat coupling: u_new += 0.5*(phi_new - phi_old)
     // thermal_rhs_kernel computes only D*lap(u), so latent heat must be added separately
@@ -385,13 +392,16 @@ void CudaSolver::step_imex(double dt)
     // Compute RHS in phi_tmp_: first u_tmp_ = phi_new - phi_old, then phi_tmp_ = u_old + 0.5*u_tmp_
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         u_tmp_.data(), phi_new_.data(), phi_old_.data(), -1.0, N);
+    CUDA_CHECK(cudaGetLastError());
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_tmp_.data(), u_old_.data(), u_tmp_.data(), 0.5, N);
+    CUDA_CHECK(cudaGetLastError());
 
     // Jacobi iterations to solve (I - dt*D*Lap) u_new = phi_tmp_
-    // Start from u_old as initial guess
+    // Start from u_old as initial guess. Use 50 iterations for reliable convergence
+    // of the Jacobi iteration; spectral radius rho < 1 when dt*D/h^2 is bounded.
     u_new_.copy_from(u_old_, compute_stream_);
-    constexpr int JACOBI_ITERS = 20;
+    constexpr int JACOBI_ITERS = 50;
     for (int iter = 0; iter < JACOBI_ITERS; ++iter) {
         // Read from u_new_, write to u_tmp_, then swap so u_new_ holds latest result
         jacobi_step_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
