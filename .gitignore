@@ -1,0 +1,46 @@
+# Build directories
+build/
+out/
+checkpoints/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!cmake/*.cmake
+!CMakeLists.txt
+!CMakePresets.json
+compile_commands.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Object files
+*.o
+*.obj
+*.cu.o
+
+# Executables
+allen-cahn-cuda
+unit_tests
+integration_tests
+
+# Libraries
+*.a
+*.so
+*.dylib
+
+# Profiling
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,37 @@
+---
+Checks: >
+    -*,
+    bugprone-*,
+    -bugprone-easily-swappable-parameters,
+    -bugprone-narrowing-conversions,
+    clang-analyzer-*,
+    modernize-*,
+    -modernize-use-trailing-return-type,
+    -modernize-avoid-c-arrays,
+    performance-*,
+    readability-*,
+    -readability-magic-numbers,
+    -readability-identifier-length,
+    -readability-function-cognitive-complexity,
+    -readability-convert-member-functions-to-static
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: 'src/.*'
+
+CheckOptions:
+    - key: readability-identifier-naming.ClassCase
+      value: CamelCase
+    - key: readability-identifier-naming.NamespaceCase
+      value: lower_case
+    - key: readability-identifier-naming.FunctionCase
+      value: lower_case
+    - key: readability-identifier-naming.VariableCase
+      value: lower_case
+    - key: readability-identifier-naming.PrivateMemberSuffix
+      value: '_'
+    - key: readability-identifier-naming.ConstantCase
+      value: UPPER_CASE
+    - key: modernize-use-nullptr.NullMacros
+      value: 'NULL'
+---
