@@ -21,20 +21,6 @@ axpy_kernel(double* __restrict__ y,
     }
 }
 
-/// y = a + dt * (b1 + b2) / 2  (Heun average)
-__global__ void __launch_bounds__(256)
-heun_average_kernel(double* __restrict__ y,
-                    const double* __restrict__ a,
-                    const double* __restrict__ k1,
-                    const double* __restrict__ k2,
-                    double dt, int N)
-{
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < static_cast<unsigned>(N)) {
-        y[i] = a[i] + 0.5 * dt * (k1[i] + k2[i]);
-    }
-}
-
 /// y = a + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)  (RK4 combination)
 __global__ void __launch_bounds__(256)
 rk4_combine_kernel(double* __restrict__ y,
@@ -65,6 +51,7 @@ add_latent_heat_kernel(double* __restrict__ u,
 }
 
 /// Jacobi iteration kernel for IMEX: solve (I - dt*D*Laplacian) u = rhs
+/// Dispatches to 7-point or 27-point stencil based on p.stencil_type.
 __global__ void __launch_bounds__(256)
 jacobi_step_kernel(const double* __restrict__ u_old,
                    double* __restrict__ u_new,
@@ -84,20 +71,48 @@ jacobi_step_kernel(const double* __restrict__ u_old,
 
     int c = idx3d(x, y, z, p.Ny, p.Nz);
 
-    // (I - alpha*D*Laplacian) u = rhs
-    // Jacobi: u_new[c] = (rhs[c] + alpha*D * sum_of_neighbors / h^2) / (1 + alpha*D * 6/h^2)
-    double inv_dx2 = 1.0 / (p.dx * p.dx);
-    double inv_dy2 = 1.0 / (p.dy * p.dy);
-    double inv_dz2 = 1.0 / (p.dz * p.dz);
+    if (p.stencil_type == 1) {
+        // 27-point isotropic stencil Jacobi iteration
+        // Laplacian = (4*face + 2*edge + 1*corner - 56*center) / (26*h^2)
+        // (I - alpha*D*L) u = rhs  =>  u_c = (rhs_c + alpha*D * off_diag_sum) / (1 + alpha*D*56/(26*h^2))
+        double h2 = p.dx * p.dx;
+        double coeff = alpha * p.D / (26.0 * h2);
 
-    double neighbors =
-        (u_old[idx3d(x+1,y,z,p.Ny,p.Nz)] + u_old[idx3d(x-1,y,z,p.Ny,p.Nz)]) * inv_dx2 +
-        (u_old[idx3d(x,y+1,z,p.Ny,p.Nz)] + u_old[idx3d(x,y-1,z,p.Ny,p.Nz)]) * inv_dy2 +
-        (u_old[idx3d(x,y,z+1,p.Ny,p.Nz)] + u_old[idx3d(x,y,z-1,p.Ny,p.Nz)]) * inv_dz2;
+        double face = u_old[idx3d(x+1,y,z,p.Ny,p.Nz)] + u_old[idx3d(x-1,y,z,p.Ny,p.Nz)]
+                    + u_old[idx3d(x,y+1,z,p.Ny,p.Nz)] + u_old[idx3d(x,y-1,z,p.Ny,p.Nz)]
+                    + u_old[idx3d(x,y,z+1,p.Ny,p.Nz)] + u_old[idx3d(x,y,z-1,p.Ny,p.Nz)];
 
-    double diag = 1.0 + alpha * p.D * 2.0 * (inv_dx2 + inv_dy2 + inv_dz2);
+        double edge = u_old[idx3d(x+1,y+1,z,p.Ny,p.Nz)] + u_old[idx3d(x+1,y-1,z,p.Ny,p.Nz)]
+                    + u_old[idx3d(x-1,y+1,z,p.Ny,p.Nz)] + u_old[idx3d(x-1,y-1,z,p.Ny,p.Nz)]
+                    + u_old[idx3d(x+1,y,z+1,p.Ny,p.Nz)] + u_old[idx3d(x+1,y,z-1,p.Ny,p.Nz)]
+                    + u_old[idx3d(x-1,y,z+1,p.Ny,p.Nz)] + u_old[idx3d(x-1,y,z-1,p.Ny,p.Nz)]
+                    + u_old[idx3d(x,y+1,z+1,p.Ny,p.Nz)] + u_old[idx3d(x,y+1,z-1,p.Ny,p.Nz)]
+                    + u_old[idx3d(x,y-1,z+1,p.Ny,p.Nz)] + u_old[idx3d(x,y-1,z-1,p.Ny,p.Nz)];
 
-    u_new[c] = (rhs[c] + alpha * p.D * neighbors) / diag;
+        double corner = u_old[idx3d(x+1,y+1,z+1,p.Ny,p.Nz)] + u_old[idx3d(x+1,y+1,z-1,p.Ny,p.Nz)]
+                      + u_old[idx3d(x+1,y-1,z+1,p.Ny,p.Nz)] + u_old[idx3d(x+1,y-1,z-1,p.Ny,p.Nz)]
+                      + u_old[idx3d(x-1,y+1,z+1,p.Ny,p.Nz)] + u_old[idx3d(x-1,y+1,z-1,p.Ny,p.Nz)]
+                      + u_old[idx3d(x-1,y-1,z+1,p.Ny,p.Nz)] + u_old[idx3d(x-1,y-1,z-1,p.Ny,p.Nz)];
+
+        double off_diag = coeff * (4.0 * face + 2.0 * edge + 1.0 * corner);
+        double diag = 1.0 + coeff * 56.0;
+
+        u_new[c] = (rhs[c] + off_diag) / diag;
+    } else {
+        // Standard 7-point stencil Jacobi iteration
+        double inv_dx2 = 1.0 / (p.dx * p.dx);
+        double inv_dy2 = 1.0 / (p.dy * p.dy);
+        double inv_dz2 = 1.0 / (p.dz * p.dz);
+
+        double neighbors =
+            (u_old[idx3d(x+1,y,z,p.Ny,p.Nz)] + u_old[idx3d(x-1,y,z,p.Ny,p.Nz)]) * inv_dx2 +
+            (u_old[idx3d(x,y+1,z,p.Ny,p.Nz)] + u_old[idx3d(x,y-1,z,p.Ny,p.Nz)]) * inv_dy2 +
+            (u_old[idx3d(x,y,z+1,p.Ny,p.Nz)] + u_old[idx3d(x,y,z-1,p.Ny,p.Nz)]) * inv_dz2;
+
+        double diag = 1.0 + alpha * p.D * 2.0 * (inv_dx2 + inv_dy2 + inv_dz2);
+
+        u_new[c] = (rhs[c] + alpha * p.D * neighbors) / diag;
+    }
 }
 
 // ── CudaSolver implementation ──────────────────────────────────────────────
@@ -248,6 +263,40 @@ void CudaSolver::step_heun(double dt)
     // Heun average: y_{n+1} = 0.5*(y_n + y_tilde + dt*f(y_tilde))
     //             = 0.5*(phi_old + phi_new)  where phi_new = phi_tmp + dt*f(phi_tmp)
     //             = phi_old + 0.5*dt*(f1 + f2)  — correct RK2 formula
+    average_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
+        phi_new_.data(), phi_old_.data(), phi_new_.data(), N);
+    CUDA_CHECK(cudaGetLastError());
+
+    average_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
+        u_new_.data(), u_old_.data(), u_new_.data(), N);
+    CUDA_CHECK(cudaGetLastError());
+
+    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
+    apply_bc(u_new_.data(), config_.boundary.u_bc);
+
+    swap(phi_old_, phi_new_);
+    swap(u_old_, u_new_);
+}
+
+// ── Heun stage 2 (for multi-GPU inter-stage halo exchange) ────────────────
+
+void CudaSolver::step_heun_stage2(double dt)
+{
+    params_.dt = dt;
+    int N = static_cast<int>(total_points_);
+    auto cfg = LaunchConfig::for_1d(total_points_, 256);
+
+    // Stage 2: Euler from predicted state -> phi_new_, u_new_
+    launch_allen_cahn_fused(phi_tmp_.data(), phi_new_.data(), u_tmp_.data(),
+                            params_, compute_stream_);
+    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
+
+    launch_thermal_equation(u_tmp_.data(), u_new_.data(),
+                            phi_new_.data(), phi_tmp_.data(),
+                            params_, compute_stream_);
+    apply_bc(u_new_.data(), config_.boundary.u_bc);
+
+    // Heun average: y_{n+1} = 0.5*(y_n + y_tilde2)
     average_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_new_.data(), phi_old_.data(), phi_new_.data(), N);
     CUDA_CHECK(cudaGetLastError());

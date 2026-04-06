@@ -43,8 +43,11 @@ private:
     void extract_subdomain(const FieldData& global, FieldData& local,
                            const GPUDomain& domain) const;
 
-    /// Exchange halo data between neighboring GPUs for both phi and u.
+    /// Exchange halo data between neighboring GPUs for both phi and u (phi_old_, u_old_).
     void exchange_halos();
+
+    /// Exchange halo data for the temporary fields (phi_tmp_, u_tmp_) used in Heun stage 2.
+    void exchange_halos_for_tmp();
 
     /// Copy a YZ-slab from one device to another.
     void copy_slab(double* dst, int dst_device,
@@ -56,6 +59,7 @@ private:
     SimulationConfig config_;
     std::vector<GPUDomain> domains_;
     int halo_width_ = 0;
+    bool multi_stage_warned_ = false;
 };
 
 } // namespace ac::cuda
