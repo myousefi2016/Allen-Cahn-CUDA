@@ -2,6 +2,7 @@
 
 #include "core/Grid.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>

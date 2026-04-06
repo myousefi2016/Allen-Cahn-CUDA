@@ -91,7 +91,7 @@ TEST(LRUCacheTest, HitMissCounters) {
 }
 
 TEST(LRUCacheTest, ZeroCapacityThrows) {
-    EXPECT_THROW(LRUCache<int, int>(0), std::invalid_argument);
+    EXPECT_THROW((LRUCache<int, int>(0)), std::invalid_argument);
 }
 
 TEST(LRUCacheTest, ContainsWithoutPromotion) {
