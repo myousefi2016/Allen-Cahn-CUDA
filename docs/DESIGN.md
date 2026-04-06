@@ -13,7 +13,7 @@ tau(n) * dphi/dt = div(W(n)^2 * grad(phi)) + div(|grad(phi)|^2 * W(n) * dW/d(gra
 where:
 - `tau(n) = tau0 * A(n)^2` is the orientation-dependent relaxation time
 - `W(n) = W0 * A(n)` is the orientation-dependent interface width
-- `A(n) = (1 - 3*eps) * (1 + 4*eps/(1-3*eps) * (nx^4 + ny^4 + nz^4)/|n|^4)` is the cubic anisotropy function with 4-fold symmetry
+- `A(n) = (1 - 3*eps) * (1 + 4*eps/(1-3*eps) * (nx^4 + ny^4 + nz^4)/(nx^2 + ny^2 + nz^2)^2)` is the cubic anisotropy function with 4-fold symmetry, where `n = grad(phi)/|grad(phi)|`
 - `dF/dphi = -phi*(1-phi^2) + lambda*u*(1-phi^2)^2` is the double-well + coupling term
 
 ### Thermal Diffusion
@@ -61,18 +61,17 @@ graph LR
 Fourth-order isotropic, uses all 26 neighbors:
 
 ```
-Lap(phi) = (1/h^2) * [ (3/26) * sum_face_neighbors
-                      + (3/52) * sum_edge_neighbors
-                      + (1/52) * sum_corner_neighbors
-                      - (36/26) * phi_center ]
+Lap(phi) = (4 * sum_face + 2 * sum_edge + 1 * sum_corner - 56 * phi_center) / (26 * h^2)
 ```
 
-| Neighbor Type | Count | Weight |
-|---------------|-------|--------|
-| Face | 6 | 3/26 |
-| Edge | 12 | 3/52 |
-| Corner | 8 | 1/52 |
-| Center | 1 | -36/26 |
+| Neighbor Type | Count | Weight (per neighbor) | Total Weight |
+|---------------|-------|-----------------------|-------------|
+| Face | 6 | 4/26 | 24/26 |
+| Edge | 12 | 2/26 | 24/26 |
+| Corner | 8 | 1/26 | 8/26 |
+| Center | 1 | -56/26 | -56/26 |
+
+Verification: 24 + 24 + 8 - 56 = 0 (consistent discrete Laplacian).
 
 ### Gradient Stencils
 

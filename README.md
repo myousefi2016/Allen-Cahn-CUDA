@@ -249,11 +249,11 @@ Each field can have independent BCs on each of the 6 faces:
 
 | Component | Original Code | Optimized | Savings |
 |-----------|--------------|-----------|---------|
-| IDx, IDy, IDz (index arrays) | 2.4 GB | 0 GB (computed from thread ID) | 100% |
+| IDx, IDy, IDz (index arrays) | 4.8 GB | 0 GB (computed from thread ID) | 100% |
 | Fx, Fy, Fz (force arrays) | 4.8 GB | 0 GB (fused kernel recomputation) | 100% |
 | phi_old, phi_new, u_old, u_new | 6.4 GB | 6.4 GB | -- |
 | Swap kernel | O(N) memcpy | O(1) pointer swap | ~100% |
-| **Total** | **13.6 GB** | **6.4 GB** | **53%** |
+| **Total** | **16.0 GB** | **6.4 GB** | **60%** |
 
 ## Docker
 
@@ -344,7 +344,7 @@ Allen-Cahn-CUDA/
 
 1. Kim, S.G., Kim, W.T., & Suzuki, T. (1999). Phase-field model for binary alloys. *Physical Review E*, 60(6), 7186.
 2. Provatas, N., Goldenfeld, N., & Dantzig, J. (1998). Efficient computation of dendritic microstructures using adaptive mesh refinement. *Physical Review Letters*, 80(15), 3308.
-3. Kumar, A. (2004). Isotropic finite-differences. *Journal of Computational Physics*, 201(1), 109-118.
+3. Kumar, S. (2004). Isotropic finite-differences. *Journal of Computational Physics*, 201(1), 109–118.
 
 ## License
 

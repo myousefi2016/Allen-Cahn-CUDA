@@ -45,10 +45,15 @@ CheckpointIO::RestoreData CheckpointManager::restore() const
                 auto stem = entry.path().stem().string();
                 auto pos = stem.rfind('_');
                 if (pos != std::string::npos) {
-                    int step = std::stoi(stem.substr(pos + 1));
-                    if (step > latest_step) {
-                        latest_step = step;
-                        latest = entry.path();
+                    try {
+                        int step = std::stoi(stem.substr(pos + 1));
+                        if (step > latest_step) {
+                            latest_step = step;
+                            latest = entry.path();
+                        }
+                    } catch (const std::exception&) {
+                        spdlog::warn("Skipping checkpoint with malformed name: {}",
+                                     entry.path().string());
                     }
                 }
             }
