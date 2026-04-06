@@ -10,7 +10,6 @@ add_library(ac_core STATIC
     core/SimulationConfig.cpp
     core/Grid.cpp
     core/FieldData.cpp
-    core/CheckpointManager.cpp
 )
 target_include_directories(ac_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ac_core
@@ -41,6 +40,7 @@ set_target_properties(ac_cuda PROPERTIES
 add_library(ac_io STATIC
     io/VTKWriter.cpp
     io/CheckpointIO.cpp
+    core/CheckpointManager.cpp
 )
 target_include_directories(ac_io PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ac_io PUBLIC ac_core)
