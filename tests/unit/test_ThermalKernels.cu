@@ -18,6 +18,9 @@ protected:
     static constexpr double D = 1.0;
 
     void SetUp() override {
+        int device_count = 0;
+        cudaGetDeviceCount(&device_count);
+        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
         total_ = static_cast<std::size_t>(N) * N * N;
     }

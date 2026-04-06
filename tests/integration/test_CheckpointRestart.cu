@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 using namespace ac;
@@ -17,6 +18,9 @@ using namespace ac::cuda;
 class CheckpointRestartTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        int device_count = 0;
+        cudaGetDeviceCount(&device_count);
+        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
 
         // Create a unique temporary directory for this test run

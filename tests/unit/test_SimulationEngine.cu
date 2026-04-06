@@ -11,6 +11,9 @@ using namespace ac;
 class SimulationEngineTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        int device_count = 0;
+        cudaGetDeviceCount(&device_count);
+        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
         test_dir_ = std::filesystem::temp_directory_path() / "test_sim_engine";
         std::filesystem::create_directories(test_dir_);

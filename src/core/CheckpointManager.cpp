@@ -1,7 +1,9 @@
 #include "core/CheckpointManager.hpp"
 
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <filesystem>
+#include <vector>
 
 namespace ac {
 
@@ -9,6 +11,33 @@ CheckpointManager::CheckpointManager(const CheckpointParams& params, const Grid&
     : params_(params), grid_(grid)
 {
     std::filesystem::create_directories(params_.checkpoint_dir);
+    scan_existing_checkpoints();
+}
+
+void CheckpointManager::scan_existing_checkpoints()
+{
+    if (!std::filesystem::exists(params_.checkpoint_dir)) return;
+
+    // Collect existing checkpoint files with their step numbers
+    std::vector<std::pair<int, std::filesystem::path>> existing;
+    for (const auto& entry : std::filesystem::directory_iterator(params_.checkpoint_dir)) {
+        if (entry.path().extension() != ".acbin") continue;
+        auto stem = entry.path().stem().string();
+        auto pos = stem.rfind('_');
+        if (pos == std::string::npos) continue;
+        try {
+            int step = std::stoi(stem.substr(pos + 1));
+            existing.emplace_back(step, entry.path());
+        } catch (const std::exception&) {
+            // Skip malformed filenames
+        }
+    }
+
+    // Sort by step number so deque is in chronological order
+    std::sort(existing.begin(), existing.end());
+    for (auto& [step, path] : existing) {
+        checkpoint_files_.push_back(std::move(path));
+    }
 }
 
 bool CheckpointManager::should_checkpoint(int step) const

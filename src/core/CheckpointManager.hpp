@@ -29,6 +29,7 @@ public:
     [[nodiscard]] bool has_restart_file() const;
 
 private:
+    void scan_existing_checkpoints();
     void enforce_retention();
 
     CheckpointParams params_;
