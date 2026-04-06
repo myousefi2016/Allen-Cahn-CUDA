@@ -8,13 +8,15 @@ namespace: allen-cahn-dev
 
 namePrefix: dev-
 
-commonLabels:
-  environment: dev
+labels:
+  - pairs:
+      environment: dev
 
 commonAnnotations:
   note: "Development configuration with reduced grid and steps"
 
 resources:
+  - namespace.yaml
   - ../../base
 
 patches:

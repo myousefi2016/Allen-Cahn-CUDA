@@ -118,8 +118,8 @@ void MultiGPUSolver::initialize(const FieldData& phi0, const FieldData& u0) {
 }
 
 void MultiGPUSolver::copy_slab(double* dst, int dst_device, const double* src, int src_device,
-                               int x_dst, int x_src, int slab_count, int Ny, int Nz, int dst_Nx,
-                               int src_Nx, cudaStream_t stream) {
+                               int x_dst, int x_src, int slab_count, int Ny, int Nz,
+                               cudaStream_t stream) {
     // Copy 'slab_count' YZ-planes from src to dst
     // Each YZ-plane is contiguous if memory is laid out as [x][y][z]
     for (int s = 0; s < slab_count; ++s) {
@@ -142,7 +142,6 @@ void MultiGPUSolver::exchange_halos() {
         auto& right = domains_[g + 1];
 
         int left_Nx = left.local_Nx;
-        int right_Nx = right.local_Nx;
 
         // For phi field:
         // Left's right boundary -> Right's left halo
@@ -158,21 +157,19 @@ void MultiGPUSolver::exchange_halos() {
         // Exchange phi
         CUDA_CHECK(cudaSetDevice(left.device_id));
         copy_slab(right.solver->phi_data(), right.device_id, left.solver->phi_data(),
-                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz, right_Nx, left_Nx,
+                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz,
                   left.halo_stream.get());
 
         copy_slab(left.solver->phi_data(), left.device_id, right.solver->phi_data(),
-                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz, left_Nx, right_Nx,
+                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz,
                   left.halo_stream.get());
 
         // Exchange u
         copy_slab(right.solver->u_data(), right.device_id, left.solver->u_data(), left.device_id,
-                  right_dst_x, left_src_x, halo_width_, Ny, Nz, right_Nx, left_Nx,
-                  left.halo_stream.get());
+                  right_dst_x, left_src_x, halo_width_, Ny, Nz, left.halo_stream.get());
 
         copy_slab(left.solver->u_data(), left.device_id, right.solver->u_data(), right.device_id,
-                  left_dst_x, right_src_x, halo_width_, Ny, Nz, left_Nx, right_Nx,
-                  left.halo_stream.get());
+                  left_dst_x, right_src_x, halo_width_, Ny, Nz, left.halo_stream.get());
     }
 
     // Synchronize all halo streams
@@ -191,7 +188,6 @@ void MultiGPUSolver::exchange_halos_for_tmp() {
         auto& right = domains_[g + 1];
 
         int left_Nx = left.local_Nx;
-        int right_Nx = right.local_Nx;
 
         int left_src_x = left_Nx - 2 * halo_width_;
         int right_dst_x = 0;
@@ -202,18 +198,18 @@ void MultiGPUSolver::exchange_halos_for_tmp() {
 
         // Exchange phi_tmp_
         copy_slab(right.solver->phi_tmp_.data(), right.device_id, left.solver->phi_tmp_.data(),
-                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz, right_Nx, left_Nx,
+                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz,
                   left.halo_stream.get());
         copy_slab(left.solver->phi_tmp_.data(), left.device_id, right.solver->phi_tmp_.data(),
-                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz, left_Nx, right_Nx,
+                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz,
                   left.halo_stream.get());
 
         // Exchange u_tmp_
         copy_slab(right.solver->u_tmp_.data(), right.device_id, left.solver->u_tmp_.data(),
-                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz, right_Nx, left_Nx,
+                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz,
                   left.halo_stream.get());
         copy_slab(left.solver->u_tmp_.data(), left.device_id, right.solver->u_tmp_.data(),
-                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz, left_Nx, right_Nx,
+                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz,
                   left.halo_stream.get());
     }
 

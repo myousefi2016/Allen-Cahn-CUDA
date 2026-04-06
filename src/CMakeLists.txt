@@ -58,7 +58,10 @@ endif()
 
 # ── Simulation engine library ──────────────────────────────────────────────
 add_library(ac_engine STATIC
-    core/SimulationEngine.cpp
+    core/SimulationEngine.cu
+)
+set_target_properties(ac_engine PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
 )
 target_link_libraries(ac_engine PUBLIC ac_core ac_cuda ac_io ac_logging)
 

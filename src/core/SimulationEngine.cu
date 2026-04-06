@@ -1,5 +1,4 @@
 #include "core/SimulationEngine.hpp"
-
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/ISolver.cuh"
