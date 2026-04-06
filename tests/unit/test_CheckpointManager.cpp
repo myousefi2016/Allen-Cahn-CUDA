@@ -1,12 +1,12 @@
 #include "core/CheckpointManager.hpp"
-#include "core/Grid.hpp"
 #include "core/FieldData.hpp"
+#include "core/Grid.hpp"
 #include "io/CheckpointIO.hpp"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
-#include <filesystem>
 #include <cmath>
+#include <filesystem>
+#include <gtest/gtest.h>
 #include <random>
 
 using namespace ac;
@@ -23,9 +23,7 @@ protected:
         grid_ = Grid(Dim3{N, N, N}, Spacing{1.0, 1.0, 1.0});
     }
 
-    void TearDown() override {
-        std::filesystem::remove_all(test_dir_);
-    }
+    void TearDown() override { std::filesystem::remove_all(test_dir_); }
 
     CheckpointParams make_params(int frequency = 10, int keep_last = 3) {
         CheckpointParams p;
@@ -47,8 +45,7 @@ protected:
     Grid grid_;
 };
 
-TEST_F(CheckpointManagerTest, ShouldCheckpoint)
-{
+TEST_F(CheckpointManagerTest, ShouldCheckpoint) {
     auto params = make_params(10);
     CheckpointManager mgr(params, grid_);
 
@@ -75,8 +72,7 @@ TEST_F(CheckpointManagerTest, ShouldCheckpoint)
     EXPECT_FALSE(mgr_disabled.should_checkpoint(100));
 }
 
-TEST_F(CheckpointManagerTest, SaveCreatesFile)
-{
+TEST_F(CheckpointManagerTest, SaveCreatesFile) {
     auto params = make_params(10);
     CheckpointManager mgr(params, grid_);
 
@@ -91,9 +87,8 @@ TEST_F(CheckpointManagerTest, SaveCreatesFile)
     EXPECT_TRUE(CheckpointIO::is_valid_checkpoint(expected_path));
 }
 
-TEST_F(CheckpointManagerTest, RollingRetention)
-{
-    auto params = make_params(10, 2);  // keep_last = 2
+TEST_F(CheckpointManagerTest, RollingRetention) {
+    auto params = make_params(10, 2); // keep_last = 2
     CheckpointManager mgr(params, grid_);
 
     FieldData phi(grid_, "phi"), u(grid_, "u");
@@ -113,8 +108,7 @@ TEST_F(CheckpointManagerTest, RollingRetention)
     EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_50.acbin"));
 }
 
-TEST_F(CheckpointManagerTest, RestoreFromExplicitFile)
-{
+TEST_F(CheckpointManagerTest, RestoreFromExplicitFile) {
     FieldData phi(grid_, "phi"), u(grid_, "u");
     fill_field(phi, 7.0);
     fill_field(u, -3.0);
@@ -139,8 +133,7 @@ TEST_F(CheckpointManagerTest, RestoreFromExplicitFile)
             }
 }
 
-TEST_F(CheckpointManagerTest, RestoreLatestFromDir)
-{
+TEST_F(CheckpointManagerTest, RestoreLatestFromDir) {
     auto params = make_params(10);
     CheckpointManager mgr(params, grid_);
 
@@ -167,8 +160,7 @@ TEST_F(CheckpointManagerTest, RestoreLatestFromDir)
             }
 }
 
-TEST_F(CheckpointManagerTest, RestoreEmptyDirThrows)
-{
+TEST_F(CheckpointManagerTest, RestoreEmptyDirThrows) {
     // Create a fresh empty directory
     auto empty_dir = std::filesystem::temp_directory_path() / "test_ckpt_empty";
     std::filesystem::create_directories(empty_dir);

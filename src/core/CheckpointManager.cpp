@@ -1,30 +1,31 @@
 #include "core/CheckpointManager.hpp"
 
-#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <filesystem>
+#include <spdlog/spdlog.h>
 #include <vector>
 
 namespace ac {
 
 CheckpointManager::CheckpointManager(const CheckpointParams& params, const Grid& grid)
-    : params_(params), grid_(grid)
-{
+    : params_(params), grid_(grid) {
     std::filesystem::create_directories(params_.checkpoint_dir);
     scan_existing_checkpoints();
 }
 
-void CheckpointManager::scan_existing_checkpoints()
-{
-    if (!std::filesystem::exists(params_.checkpoint_dir)) return;
+void CheckpointManager::scan_existing_checkpoints() {
+    if (!std::filesystem::exists(params_.checkpoint_dir))
+        return;
 
     // Collect existing checkpoint files with their step numbers
     std::vector<std::pair<int, std::filesystem::path>> existing;
     for (const auto& entry : std::filesystem::directory_iterator(params_.checkpoint_dir)) {
-        if (entry.path().extension() != ".acbin") continue;
+        if (entry.path().extension() != ".acbin")
+            continue;
         auto stem = entry.path().stem().string();
         auto pos = stem.rfind('_');
-        if (pos == std::string::npos) continue;
+        if (pos == std::string::npos)
+            continue;
         try {
             int step = std::stoi(stem.substr(pos + 1));
             existing.emplace_back(step, entry.path());
@@ -40,24 +41,20 @@ void CheckpointManager::scan_existing_checkpoints()
     }
 }
 
-bool CheckpointManager::should_checkpoint(int step) const
-{
+bool CheckpointManager::should_checkpoint(int step) const {
     return params_.frequency > 0 && step > 0 && (step % params_.frequency == 0);
 }
 
-void CheckpointManager::save(int step, double time, double dt,
-                              const FieldData& phi, const FieldData& u)
-{
-    auto path = params_.checkpoint_dir /
-        ("checkpoint_" + std::to_string(step) + ".acbin");
+void CheckpointManager::save(int step, double time, double dt, const FieldData& phi,
+                             const FieldData& u) {
+    auto path = params_.checkpoint_dir / ("checkpoint_" + std::to_string(step) + ".acbin");
 
     CheckpointIO::write(path, step, time, dt, grid_, phi, u);
     checkpoint_files_.push_back(path);
     enforce_retention();
 }
 
-CheckpointIO::RestoreData CheckpointManager::restore() const
-{
+CheckpointIO::RestoreData CheckpointManager::restore() const {
     if (params_.restart_file.has_value()) {
         return CheckpointIO::read(params_.restart_file.value());
     }
@@ -96,16 +93,14 @@ CheckpointIO::RestoreData CheckpointManager::restore() const
     return CheckpointIO::read(latest);
 }
 
-bool CheckpointManager::has_restart_file() const
-{
+bool CheckpointManager::has_restart_file() const {
     if (params_.restart_file.has_value()) {
         return std::filesystem::exists(params_.restart_file.value());
     }
     return false;
 }
 
-void CheckpointManager::enforce_retention()
-{
+void CheckpointManager::enforce_retention() {
     while (static_cast<int>(checkpoint_files_.size()) > params_.keep_last) {
         auto& oldest = checkpoint_files_.front();
         if (std::filesystem::exists(oldest)) {

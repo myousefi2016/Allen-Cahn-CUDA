@@ -1,10 +1,10 @@
-#include "cuda/DeviceField.cuh"
 #include "cuda/CudaUtils.cuh"
+#include "cuda/DeviceField.cuh"
 #include "logging/Logger.hpp"
 
 #include <gtest/gtest.h>
-#include <vector>
 #include <numeric>
+#include <vector>
 
 using namespace ac::cuda;
 
@@ -13,13 +13,13 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         ac::Logger::init(spdlog::level::off);
     }
 };
 
-TEST_F(DeviceFieldTest, Construction)
-{
+TEST_F(DeviceFieldTest, Construction) {
     DeviceField<double> field(100);
     EXPECT_EQ(field.size(), 100u);
     EXPECT_EQ(field.bytes(), 100 * sizeof(double));
@@ -27,16 +27,14 @@ TEST_F(DeviceFieldTest, Construction)
     EXPECT_FALSE(field.empty());
 }
 
-TEST_F(DeviceFieldTest, DefaultConstruction)
-{
+TEST_F(DeviceFieldTest, DefaultConstruction) {
     DeviceField<double> field;
     EXPECT_EQ(field.size(), 0u);
     EXPECT_EQ(field.data(), nullptr);
     EXPECT_TRUE(field.empty());
 }
 
-TEST_F(DeviceFieldTest, MoveConstruction)
-{
+TEST_F(DeviceFieldTest, MoveConstruction) {
     DeviceField<double> a(50);
     double* ptr = a.data();
 
@@ -47,8 +45,7 @@ TEST_F(DeviceFieldTest, MoveConstruction)
     EXPECT_EQ(a.size(), 0u);
 }
 
-TEST_F(DeviceFieldTest, MoveAssignment)
-{
+TEST_F(DeviceFieldTest, MoveAssignment) {
     DeviceField<double> a(50);
     DeviceField<double> b(100);
 
@@ -57,14 +54,13 @@ TEST_F(DeviceFieldTest, MoveAssignment)
     EXPECT_EQ(a.data(), nullptr);
 }
 
-TEST_F(DeviceFieldTest, CopyRoundTrip)
-{
+TEST_F(DeviceFieldTest, CopyRoundTrip) {
     const std::size_t N = 256;
     DeviceField<double> field(N);
 
     // Upload
     std::vector<double> host_data(N);
-    std::iota(host_data.begin(), host_data.end(), 0.0);  // 0, 1, 2, ...
+    std::iota(host_data.begin(), host_data.end(), 0.0); // 0, 1, 2, ...
     field.copy_from_host(host_data.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -78,8 +74,7 @@ TEST_F(DeviceFieldTest, CopyRoundTrip)
     }
 }
 
-TEST_F(DeviceFieldTest, ZeroAsync)
-{
+TEST_F(DeviceFieldTest, ZeroAsync) {
     const std::size_t N = 128;
     DeviceField<double> field(N);
 
@@ -102,8 +97,7 @@ TEST_F(DeviceFieldTest, ZeroAsync)
     }
 }
 
-TEST_F(DeviceFieldTest, Swap)
-{
+TEST_F(DeviceFieldTest, Swap) {
     DeviceField<double> a(10);
     DeviceField<double> b(20);
 
@@ -124,12 +118,13 @@ TEST_F(DeviceFieldTest, Swap)
     b.copy_to_host(result_b.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    for (auto v : result_a) EXPECT_DOUBLE_EQ(v, 2.0);
-    for (auto v : result_b) EXPECT_DOUBLE_EQ(v, 1.0);
+    for (auto v : result_a)
+        EXPECT_DOUBLE_EQ(v, 2.0);
+    for (auto v : result_b)
+        EXPECT_DOUBLE_EQ(v, 1.0);
 }
 
-TEST_F(DeviceFieldTest, CopyFrom)
-{
+TEST_F(DeviceFieldTest, CopyFrom) {
     const std::size_t N = 64;
     DeviceField<double> src(N);
     DeviceField<double> dst(N);
@@ -145,11 +140,11 @@ TEST_F(DeviceFieldTest, CopyFrom)
     dst.copy_to_host(result.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    for (auto v : result) EXPECT_DOUBLE_EQ(v, 99.0);
+    for (auto v : result)
+        EXPECT_DOUBLE_EQ(v, 99.0);
 }
 
-TEST_F(DeviceFieldTest, LargeAllocation)
-{
+TEST_F(DeviceFieldTest, LargeAllocation) {
     // Allocate 1M doubles (~8 MB)
     const std::size_t N = 1024 * 1024;
     DeviceField<double> field(N);
@@ -166,5 +161,5 @@ TEST_F(DeviceFieldTest, LargeAllocation)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     EXPECT_DOUBLE_EQ(result[0], 3.14);
-    EXPECT_DOUBLE_EQ(result[N-1], 3.14);
+    EXPECT_DOUBLE_EQ(result[N - 1], 3.14);
 }

@@ -1,10 +1,10 @@
-#include "cuda/Kernels.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
+#include "cuda/Kernels.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 #include <vector>
 
 using namespace ac;
@@ -12,16 +12,13 @@ using namespace ac::cuda;
 
 // Test kernel: computes 2nd-order gradient at interior points
 // direction: 0=x, 1=y, 2=z
-__global__ void test_gradient_2nd_kernel(
-    const double* __restrict__ phi,
-    double* __restrict__ grad_out,
-    int Nx, int Ny, int Nz,
-    double dx, double dy, double dz,
-    int direction)
-{
+__global__ void test_gradient_2nd_kernel(const double* __restrict__ phi,
+                                         double* __restrict__ grad_out, int Nx, int Ny, int Nz,
+                                         double dx, double dy, double dz, int direction) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total = Nx * Ny * Nz;
-    if (tid >= static_cast<unsigned>(total)) return;
+    if (tid >= static_cast<unsigned>(total))
+        return;
 
     int x, y, z;
     linear_to_3d(static_cast<int>(tid), Ny, Nz, x, y, z);
@@ -41,16 +38,13 @@ __global__ void test_gradient_2nd_kernel(
 }
 
 // Test kernel: computes 4th-order gradient at interior points (needs +-2 neighbors)
-__global__ void test_gradient_4th_kernel(
-    const double* __restrict__ phi,
-    double* __restrict__ grad_out,
-    int Nx, int Ny, int Nz,
-    double dx, double dy, double dz,
-    int direction)
-{
+__global__ void test_gradient_4th_kernel(const double* __restrict__ phi,
+                                         double* __restrict__ grad_out, int Nx, int Ny, int Nz,
+                                         double dx, double dy, double dz, int direction) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total = Nx * Ny * Nz;
-    if (tid >= static_cast<unsigned>(total)) return;
+    if (tid >= static_cast<unsigned>(total))
+        return;
 
     int x, y, z;
     linear_to_3d(static_cast<int>(tid), Ny, Nz, x, y, z);
@@ -74,18 +68,16 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
     }
 
-    int idx(int x, int y, int z, int Ny, int Nz) const {
-        return x * Ny * Nz + y * Nz + z;
-    }
+    int idx(int x, int y, int z, int Ny, int Nz) const { return x * Ny * Nz + y * Nz + z; }
 };
 
 // phi = 3*x*dx -> gradient_x = 3.0
-TEST_F(GradientTest, LinearFieldX_2nd)
-{
+TEST_F(GradientTest, LinearFieldX_2nd) {
     const int N = 16;
     const double h = 1.0;
     std::size_t total = static_cast<std::size_t>(N) * N * N;
@@ -101,8 +93,8 @@ TEST_F(GradientTest, LinearFieldX_2nd)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto cfg = LaunchConfig::for_1d(total);
-    test_gradient_2nd_kernel<<<cfg.grid, cfg.block>>>(
-        d_phi.data(), d_grad.data(), N, N, N, h, h, h, 0);
+    test_gradient_2nd_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_grad.data(), N, N, N, h, h, h,
+                                                      0);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<double> grad_h(total);
@@ -118,8 +110,7 @@ TEST_F(GradientTest, LinearFieldX_2nd)
 }
 
 // phi = 2*y*dy -> gradient_y = 2.0
-TEST_F(GradientTest, LinearFieldY_2nd)
-{
+TEST_F(GradientTest, LinearFieldY_2nd) {
     const int N = 16;
     const double h = 1.0;
     std::size_t total = static_cast<std::size_t>(N) * N * N;
@@ -135,8 +126,8 @@ TEST_F(GradientTest, LinearFieldY_2nd)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto cfg = LaunchConfig::for_1d(total);
-    test_gradient_2nd_kernel<<<cfg.grid, cfg.block>>>(
-        d_phi.data(), d_grad.data(), N, N, N, h, h, h, 1);
+    test_gradient_2nd_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_grad.data(), N, N, N, h, h, h,
+                                                      1);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<double> grad_h(total);
@@ -152,8 +143,7 @@ TEST_F(GradientTest, LinearFieldY_2nd)
 }
 
 // phi = 5*z*dz -> gradient_z = 5.0
-TEST_F(GradientTest, LinearFieldZ_2nd)
-{
+TEST_F(GradientTest, LinearFieldZ_2nd) {
     const int N = 16;
     const double h = 1.0;
     std::size_t total = static_cast<std::size_t>(N) * N * N;
@@ -169,8 +159,8 @@ TEST_F(GradientTest, LinearFieldZ_2nd)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto cfg = LaunchConfig::for_1d(total);
-    test_gradient_2nd_kernel<<<cfg.grid, cfg.block>>>(
-        d_phi.data(), d_grad.data(), N, N, N, h, h, h, 2);
+    test_gradient_2nd_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_grad.data(), N, N, N, h, h, h,
+                                                      2);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<double> grad_h(total);
@@ -186,8 +176,7 @@ TEST_F(GradientTest, LinearFieldZ_2nd)
 }
 
 // phi = (x*dx)^2 -> gradient_x = 2*x*dx (central diff is exact for quadratic)
-TEST_F(GradientTest, QuadraticFieldX_2nd)
-{
+TEST_F(GradientTest, QuadraticFieldX_2nd) {
     const int N = 16;
     const double h = 1.0;
     std::size_t total = static_cast<std::size_t>(N) * N * N;
@@ -203,8 +192,8 @@ TEST_F(GradientTest, QuadraticFieldX_2nd)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto cfg = LaunchConfig::for_1d(total);
-    test_gradient_2nd_kernel<<<cfg.grid, cfg.block>>>(
-        d_phi.data(), d_grad.data(), N, N, N, h, h, h, 0);
+    test_gradient_2nd_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_grad.data(), N, N, N, h, h, h,
+                                                      0);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<double> grad_h(total);
@@ -222,8 +211,7 @@ TEST_F(GradientTest, QuadraticFieldX_2nd)
 }
 
 // phi = 3*x*dx -> gradient_x_4th = 3.0 (exact for linear)
-TEST_F(GradientTest, LinearFieldX_4th)
-{
+TEST_F(GradientTest, LinearFieldX_4th) {
     const int N = 32;
     const double h = 1.0;
     std::size_t total = static_cast<std::size_t>(N) * N * N;
@@ -239,8 +227,8 @@ TEST_F(GradientTest, LinearFieldX_4th)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto cfg = LaunchConfig::for_1d(total);
-    test_gradient_4th_kernel<<<cfg.grid, cfg.block>>>(
-        d_phi.data(), d_grad.data(), N, N, N, h, h, h, 0);
+    test_gradient_4th_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_grad.data(), N, N, N, h, h, h,
+                                                      0);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<double> grad_h(total);
@@ -257,8 +245,7 @@ TEST_F(GradientTest, LinearFieldX_4th)
 
 // phi = (x*dx)^3 -> exact derivative = 3*(x*dx)^2
 // 4th-order stencil should be exact for cubic polynomials
-TEST_F(GradientTest, CubicFieldX_4th)
-{
+TEST_F(GradientTest, CubicFieldX_4th) {
     const int N = 32;
     const double h = 1.0;
     std::size_t total = static_cast<std::size_t>(N) * N * N;
@@ -276,8 +263,8 @@ TEST_F(GradientTest, CubicFieldX_4th)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     auto cfg = LaunchConfig::for_1d(total);
-    test_gradient_4th_kernel<<<cfg.grid, cfg.block>>>(
-        d_phi.data(), d_grad.data(), N, N, N, h, h, h, 0);
+    test_gradient_4th_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_grad.data(), N, N, N, h, h, h,
+                                                      0);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     std::vector<double> grad_h(total);

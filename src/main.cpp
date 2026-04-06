@@ -2,15 +2,13 @@
 #include "core/SimulationEngine.hpp"
 #include "logging/Logger.hpp"
 
-#include <spdlog/spdlog.h>
-
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <spdlog/spdlog.h>
 #include <string>
 
-static void print_usage(const char* prog)
-{
+static void print_usage(const char* prog) {
     std::cout << "Allen-Cahn CUDA Phase-Field Simulation v2.0.0\n"
               << "Usage: " << prog << " [config.json]\n"
               << "\n"
@@ -18,8 +16,7 @@ static void print_usage(const char* prog)
               << "See config/default.json for an example configuration.\n";
 }
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char* argv[]) {
     try {
         ac::Logger::init(spdlog::level::info);
 

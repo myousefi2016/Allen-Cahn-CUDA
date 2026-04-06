@@ -1,20 +1,17 @@
 #include "core/SimulationConfig.hpp"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 
 using namespace ac;
 
 class SimulationConfigTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-        Logger::init(spdlog::level::off);
-    }
+    void SetUp() override { Logger::init(spdlog::level::off); }
 };
 
-TEST_F(SimulationConfigTest, DefaultValues)
-{
+TEST_F(SimulationConfigTest, DefaultValues) {
     SimulationConfig cfg;
     EXPECT_DOUBLE_EQ(cfg.physics.delta, 0.8);
     EXPECT_DOUBLE_EQ(cfg.physics.epsilon, 0.07);
@@ -27,18 +24,17 @@ TEST_F(SimulationConfigTest, DefaultValues)
     EXPECT_EQ(cfg.time.max_steps, 6000);
 }
 
-TEST_F(SimulationConfigTest, DerivedQuantities)
-{
+TEST_F(SimulationConfigTest, DerivedQuantities) {
     PhysicsParams p;
     double expected_lambda = p.W0 * p.a1 / p.d0;
-    double expected_tau0 = (p.W0*p.W0*p.W0*p.a1*p.a2)/(p.d0*p.D) + (p.W0*p.W0*p.beta0)/p.d0;
+    double expected_tau0 =
+        (p.W0 * p.W0 * p.W0 * p.a1 * p.a2) / (p.d0 * p.D) + (p.W0 * p.W0 * p.beta0) / p.d0;
 
     EXPECT_NEAR(p.lambda(), expected_lambda, 1e-12);
     EXPECT_NEAR(p.tau0(), expected_tau0, 1e-12);
 }
 
-TEST_F(SimulationConfigTest, ParseFromJsonString)
-{
+TEST_F(SimulationConfigTest, ParseFromJsonString) {
     std::string json = R"({
         "physics": {
             "delta": 0.5,
@@ -92,8 +88,7 @@ TEST_F(SimulationConfigTest, ParseFromJsonString)
     EXPECT_EQ(cfg.boundary.u_bc.type, BCType::Neumann);
 }
 
-TEST_F(SimulationConfigTest, ValidationPasses)
-{
+TEST_F(SimulationConfigTest, ValidationPasses) {
     SimulationConfig cfg;
     cfg.grid.Nx = 10;
     cfg.grid.Ny = 10;
@@ -101,41 +96,44 @@ TEST_F(SimulationConfigTest, ValidationPasses)
     EXPECT_NO_THROW(cfg.validate());
 }
 
-TEST_F(SimulationConfigTest, ValidationFailsSmallGrid)
-{
+TEST_F(SimulationConfigTest, ValidationFailsSmallGrid) {
     SimulationConfig cfg;
     cfg.grid.Nx = 2;
     EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-TEST_F(SimulationConfigTest, ValidationFailsNegativeSpacing)
-{
+TEST_F(SimulationConfigTest, ValidationFailsNegativeSpacing) {
     SimulationConfig cfg;
     cfg.grid.dx = -1.0;
     EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-TEST_F(SimulationConfigTest, ValidationFailsInvalidEpsilon)
-{
+TEST_F(SimulationConfigTest, ValidationFailsInvalidEpsilon) {
     SimulationConfig cfg;
-    cfg.grid.Nx = 10; cfg.grid.Ny = 10; cfg.grid.Nz = 10;
-    cfg.physics.epsilon = 0.5;  // >= 1/3
+    cfg.grid.Nx = 10;
+    cfg.grid.Ny = 10;
+    cfg.grid.Nz = 10;
+    cfg.physics.epsilon = 0.5; // >= 1/3
     EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-TEST_F(SimulationConfigTest, ValidationFailsNegativeDt)
-{
+TEST_F(SimulationConfigTest, ValidationFailsNegativeDt) {
     SimulationConfig cfg;
-    cfg.grid.Nx = 10; cfg.grid.Ny = 10; cfg.grid.Nz = 10;
+    cfg.grid.Nx = 10;
+    cfg.grid.Ny = 10;
+    cfg.grid.Nz = 10;
     cfg.time.dt = -0.01;
     EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-TEST_F(SimulationConfigTest, MakeGrid)
-{
+TEST_F(SimulationConfigTest, MakeGrid) {
     SimulationConfig cfg;
-    cfg.grid.Nx = 50; cfg.grid.Ny = 60; cfg.grid.Nz = 70;
-    cfg.grid.dx = 0.3; cfg.grid.dy = 0.4; cfg.grid.dz = 0.5;
+    cfg.grid.Nx = 50;
+    cfg.grid.Ny = 60;
+    cfg.grid.Nz = 70;
+    cfg.grid.dx = 0.3;
+    cfg.grid.dy = 0.4;
+    cfg.grid.dz = 0.5;
     auto grid = cfg.make_grid();
     EXPECT_EQ(grid.Nx(), 50);
     EXPECT_EQ(grid.Ny(), 60);
@@ -143,8 +141,7 @@ TEST_F(SimulationConfigTest, MakeGrid)
     EXPECT_DOUBLE_EQ(grid.dx(), 0.3);
 }
 
-TEST_F(SimulationConfigTest, ParseTimeSchemes)
-{
+TEST_F(SimulationConfigTest, ParseTimeSchemes) {
     auto test_scheme = [](const std::string& scheme_str, TimeScheme expected) {
         std::string json = R"({"time": {"scheme": ")" + scheme_str + R"("}})";
         auto cfg = SimulationConfig::from_json_string(json);
@@ -157,8 +154,7 @@ TEST_F(SimulationConfigTest, ParseTimeSchemes)
     test_scheme("imex", TimeScheme::IMEX);
 }
 
-TEST_F(SimulationConfigTest, ParseBCTypes)
-{
+TEST_F(SimulationConfigTest, ParseBCTypes) {
     auto test_bc = [](const std::string& bc_str, BCType expected) {
         std::string json = R"({"boundary": {"phi": {"type": ")" + bc_str + R"("}}})";
         auto cfg = SimulationConfig::from_json_string(json);
@@ -171,8 +167,7 @@ TEST_F(SimulationConfigTest, ParseBCTypes)
     test_bc("robin", BCType::Robin);
 }
 
-TEST_F(SimulationConfigTest, ParseGPUConfig)
-{
+TEST_F(SimulationConfigTest, ParseGPUConfig) {
     std::string json = R"({
         "gpu": {
             "device_ids": [0, 1],

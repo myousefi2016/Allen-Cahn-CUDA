@@ -1,9 +1,9 @@
-#include "cuda/Kernels.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
+#include "cuda/Kernels.cuh"
 
-#include <cfloat>
 #include <algorithm>
+#include <cfloat>
 
 namespace ac::cuda {
 
@@ -18,12 +18,8 @@ __device__ double warp_reduce_max_val(double val) {
 }
 
 /// Compute max(|a[i] - b[i]|) across all elements via block reduction.
-__global__ void max_abs_diff_kernel(
-    const double* __restrict__ a,
-    const double* __restrict__ b,
-    double* __restrict__ block_results,
-    int N)
-{
+__global__ void max_abs_diff_kernel(const double* __restrict__ a, const double* __restrict__ b,
+                                    double* __restrict__ block_results, int N) {
     extern __shared__ double sdata[];
 
     unsigned int tid = threadIdx.x;
@@ -49,18 +45,17 @@ __global__ void max_abs_diff_kernel(
     // Final warp reduction using shuffle
     if (tid < 32) {
         double val = sdata[tid];
-        if (blockDim.x >= 64) val = fmax(val, sdata[tid + 32]);
+        if (blockDim.x >= 64)
+            val = fmax(val, sdata[tid + 32]);
         val = warp_reduce_max_val(val);
-        if (tid == 0) block_results[blockIdx.x] = val;
+        if (tid == 0)
+            block_results[blockIdx.x] = val;
     }
 }
 
 /// Second-pass reduction: find max across block results.
-__global__ void final_max_kernel(
-    const double* __restrict__ block_results,
-    double* __restrict__ result,
-    int num_blocks)
-{
+__global__ void final_max_kernel(const double* __restrict__ block_results,
+                                 double* __restrict__ result, int num_blocks) {
     extern __shared__ double sdata[];
 
     unsigned int tid = threadIdx.x;
@@ -82,19 +77,18 @@ __global__ void final_max_kernel(
 
     if (tid < 32) {
         double val = sdata[tid];
-        if (blockDim.x >= 64) val = fmax(val, sdata[tid + 32]);
+        if (blockDim.x >= 64)
+            val = fmax(val, sdata[tid + 32]);
         val = warp_reduce_max_val(val);
-        if (tid == 0) result[0] = val;
+        if (tid == 0)
+            result[0] = val;
     }
 }
 
 // ── Launch wrapper ─────────────────────────────────────────────────────────
 
-void launch_max_abs_diff(
-    const double* a, const double* b,
-    double* d_result, std::size_t N,
-    cudaStream_t stream)
-{
+void launch_max_abs_diff(const double* a, const double* b, double* d_result, std::size_t N,
+                         cudaStream_t stream) {
     constexpr int BLOCK_SIZE = 256;
     int num_blocks = static_cast<int>((N + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2));
     num_blocks = std::max(num_blocks, 1);
@@ -107,17 +101,14 @@ void launch_max_abs_diff(
     CUDA_CHECK(cudaGetLastError());
 
     // Final reduction pass
-    final_max_kernel<<<1, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(
-        block_results.data(), d_result, num_blocks);
+    final_max_kernel<<<1, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(block_results.data(),
+                                                                             d_result, num_blocks);
     CUDA_CHECK(cudaGetLastError());
 }
 
 /// Max absolute value reduction: max(|a[i]|)
-__global__ void max_abs_kernel(
-    const double* __restrict__ data,
-    double* __restrict__ block_results,
-    int N)
-{
+__global__ void max_abs_kernel(const double* __restrict__ data, double* __restrict__ block_results,
+                               int N) {
     extern __shared__ double sdata[];
 
     unsigned int tid = threadIdx.x;
@@ -133,22 +124,23 @@ __global__ void max_abs_kernel(
     __syncthreads();
 
     for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
-        if (tid < s) sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+        if (tid < s)
+            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
         __syncthreads();
     }
 
     if (tid < 32) {
         double val = sdata[tid];
-        if (blockDim.x >= 64) val = fmax(val, sdata[tid + 32]);
+        if (blockDim.x >= 64)
+            val = fmax(val, sdata[tid + 32]);
         val = warp_reduce_max_val(val);
-        if (tid == 0) block_results[blockIdx.x] = val;
+        if (tid == 0)
+            block_results[blockIdx.x] = val;
     }
 }
 
-void launch_max_abs_reduction(
-    const double* field, double* result, std::size_t N,
-    cudaStream_t stream)
-{
+void launch_max_abs_reduction(const double* field, double* result, std::size_t N,
+                              cudaStream_t stream) {
     constexpr int BLOCK_SIZE = 256;
     int num_blocks = static_cast<int>((N + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2));
     num_blocks = std::max(num_blocks, 1);
@@ -159,8 +151,8 @@ void launch_max_abs_reduction(
         field, block_results.data(), static_cast<int>(N));
     CUDA_CHECK(cudaGetLastError());
 
-    final_max_kernel<<<1, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(
-        block_results.data(), result, num_blocks);
+    final_max_kernel<<<1, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(block_results.data(),
+                                                                             result, num_blocks);
     CUDA_CHECK(cudaGetLastError());
 }
 

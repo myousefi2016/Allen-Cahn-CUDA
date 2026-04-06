@@ -14,8 +14,7 @@ namespace ac {
 /// Thread-safe LRU cache with configurable capacity.
 /// Uses a doubly-linked list for O(1) eviction and a hash map for O(1) lookup.
 /// Read operations use shared locks; write operations use exclusive locks.
-template <typename Key, typename Value, typename Hash = std::hash<Key>>
-class LRUCache {
+template <typename Key, typename Value, typename Hash = std::hash<Key>> class LRUCache {
 public:
     explicit LRUCache(std::size_t capacity) : capacity_(capacity) {
         if (capacity == 0) {
@@ -73,7 +72,8 @@ public:
     bool erase(const Key& key) {
         std::unique_lock lock(mutex_);
         auto it = map_.find(key);
-        if (it == map_.end()) return false;
+        if (it == map_.end())
+            return false;
         order_.erase(it->second);
         map_.erase(it);
         return true;
@@ -119,7 +119,7 @@ private:
     using MapType = std::unordered_map<Key, typename ListType::iterator, Hash>;
 
     std::size_t capacity_;
-    ListType order_;           // Front = most recently used
+    ListType order_; // Front = most recently used
     MapType map_;
 
     mutable std::shared_mutex mutex_;

@@ -1,22 +1,20 @@
-#include "cuda/MultiGPUSolver.cuh"
 #include "cuda/CudaUtils.cuh"
+#include "cuda/MultiGPUSolver.cuh"
 
-#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <spdlog/spdlog.h>
 
 namespace ac::cuda {
 
-MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config)
-    : config_(config)
-{
+MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config) : config_(config) {
     const auto& device_ids = config.gpu.device_ids;
     int num_gpus = static_cast<int>(device_ids.size());
 
     if (num_gpus < 2) {
-        throw std::runtime_error(
-            "MultiGPUSolver requires at least 2 GPUs, got " + std::to_string(num_gpus));
+        throw std::runtime_error("MultiGPUSolver requires at least 2 GPUs, got " +
+                                 std::to_string(num_gpus));
     }
 
     // Fused Allen-Cahn kernel computes gradients at neighbor points,
@@ -26,10 +24,10 @@ MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config)
     // Enable peer access between all GPU pairs
     for (int i = 0; i < num_gpus; ++i) {
         for (int j = 0; j < num_gpus; ++j) {
-            if (i == j) continue;
+            if (i == j)
+                continue;
             int can_access = 0;
-            CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access,
-                                                device_ids[i], device_ids[j]));
+            CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access, device_ids[i], device_ids[j]));
             if (can_access) {
                 CUDA_CHECK(cudaSetDevice(device_ids[i]));
                 auto err = cudaDeviceEnablePeerAccess(device_ids[j], 0);
@@ -75,17 +73,16 @@ MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config)
         domains_.push_back(std::move(domain));
     }
 
-    spdlog::info("MultiGPUSolver initialized: {} GPUs, halo_width={}, total_Nx={}",
-                 num_gpus, halo_width_, total_Nx);
+    spdlog::info("MultiGPUSolver initialized: {} GPUs, halo_width={}, total_Nx={}", num_gpus,
+                 halo_width_, total_Nx);
     for (const auto& d : domains_) {
-        spdlog::info("  GPU {}: x=[{}, {}), local_Nx={} (with halo)",
-                     d.device_id, d.x_start, d.x_end, d.local_Nx);
+        spdlog::info("  GPU {}: x=[{}, {}), local_Nx={} (with halo)", d.device_id, d.x_start,
+                     d.x_end, d.local_Nx);
     }
 }
 
 void MultiGPUSolver::extract_subdomain(const FieldData& global, FieldData& local,
-                                        const GPUDomain& domain) const
-{
+                                       const GPUDomain& domain) const {
     int Ny = config_.grid.Ny;
     int Nz = config_.grid.Nz;
     int global_Nx = config_.grid.Nx;
@@ -104,13 +101,10 @@ void MultiGPUSolver::extract_subdomain(const FieldData& global, FieldData& local
     }
 }
 
-void MultiGPUSolver::initialize(const FieldData& phi0, const FieldData& u0)
-{
+void MultiGPUSolver::initialize(const FieldData& phi0, const FieldData& u0) {
     for (auto& domain : domains_) {
-        Grid sub_grid(
-            Dim3{domain.local_Nx, config_.grid.Ny, config_.grid.Nz},
-            Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz}
-        );
+        Grid sub_grid(Dim3{domain.local_Nx, config_.grid.Ny, config_.grid.Nz},
+                      Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz});
         FieldData phi_sub(sub_grid, "phi_sub");
         FieldData u_sub(sub_grid, "u_sub");
 
@@ -123,12 +117,9 @@ void MultiGPUSolver::initialize(const FieldData& phi0, const FieldData& u0)
     spdlog::debug("MultiGPUSolver: initial conditions distributed to all GPUs");
 }
 
-void MultiGPUSolver::copy_slab(double* dst, int dst_device,
-                                const double* src, int src_device,
-                                int x_dst, int x_src, int slab_count,
-                                int Ny, int Nz, int dst_Nx, int src_Nx,
-                                cudaStream_t stream)
-{
+void MultiGPUSolver::copy_slab(double* dst, int dst_device, const double* src, int src_device,
+                               int x_dst, int x_src, int slab_count, int Ny, int Nz, int dst_Nx,
+                               int src_Nx, cudaStream_t stream) {
     // Copy 'slab_count' YZ-planes from src to dst
     // Each YZ-plane is contiguous if memory is laid out as [x][y][z]
     for (int s = 0; s < slab_count; ++s) {
@@ -136,15 +127,12 @@ void MultiGPUSolver::copy_slab(double* dst, int dst_device,
         std::size_t src_offset = static_cast<std::size_t>(x_src + s) * Ny * Nz;
         std::size_t bytes = static_cast<std::size_t>(Ny) * Nz * sizeof(double);
 
-        CUDA_CHECK(cudaMemcpyPeerAsync(
-            dst + dst_offset, dst_device,
-            src + src_offset, src_device,
-            bytes, stream));
+        CUDA_CHECK(cudaMemcpyPeerAsync(dst + dst_offset, dst_device, src + src_offset, src_device,
+                                       bytes, stream));
     }
 }
 
-void MultiGPUSolver::exchange_halos()
-{
+void MultiGPUSolver::exchange_halos() {
     int Ny = config_.grid.Ny;
     int Nz = config_.grid.Nz;
 
@@ -160,38 +148,30 @@ void MultiGPUSolver::exchange_halos()
         // Left's right boundary -> Right's left halo
         // Left interior ends at x = left_Nx - halo_width_ - 1
         // Right halo starts at x = 0
-        int left_src_x = left_Nx - 2 * halo_width_;  // Start of left's right interior boundary
-        int right_dst_x = 0;                           // Start of right's left halo
+        int left_src_x = left_Nx - 2 * halo_width_; // Start of left's right interior boundary
+        int right_dst_x = 0;                        // Start of right's left halo
 
         // Right's left boundary -> Left's right halo
-        int right_src_x = halo_width_;                 // Start of right's left interior boundary
-        int left_dst_x = left_Nx - halo_width_;        // Start of left's right halo
+        int right_src_x = halo_width_;          // Start of right's left interior boundary
+        int left_dst_x = left_Nx - halo_width_; // Start of left's right halo
 
         // Exchange phi
         CUDA_CHECK(cudaSetDevice(left.device_id));
-        copy_slab(right.solver->phi_data(), right.device_id,
-                  left.solver->phi_data(), left.device_id,
-                  right_dst_x, left_src_x, halo_width_,
-                  Ny, Nz, right_Nx, left_Nx,
+        copy_slab(right.solver->phi_data(), right.device_id, left.solver->phi_data(),
+                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz, right_Nx, left_Nx,
                   left.halo_stream.get());
 
-        copy_slab(left.solver->phi_data(), left.device_id,
-                  right.solver->phi_data(), right.device_id,
-                  left_dst_x, right_src_x, halo_width_,
-                  Ny, Nz, left_Nx, right_Nx,
+        copy_slab(left.solver->phi_data(), left.device_id, right.solver->phi_data(),
+                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz, left_Nx, right_Nx,
                   left.halo_stream.get());
 
         // Exchange u
-        copy_slab(right.solver->u_data(), right.device_id,
-                  left.solver->u_data(), left.device_id,
-                  right_dst_x, left_src_x, halo_width_,
-                  Ny, Nz, right_Nx, left_Nx,
+        copy_slab(right.solver->u_data(), right.device_id, left.solver->u_data(), left.device_id,
+                  right_dst_x, left_src_x, halo_width_, Ny, Nz, right_Nx, left_Nx,
                   left.halo_stream.get());
 
-        copy_slab(left.solver->u_data(), left.device_id,
-                  right.solver->u_data(), right.device_id,
-                  left_dst_x, right_src_x, halo_width_,
-                  Ny, Nz, left_Nx, right_Nx,
+        copy_slab(left.solver->u_data(), left.device_id, right.solver->u_data(), right.device_id,
+                  left_dst_x, right_src_x, halo_width_, Ny, Nz, left_Nx, right_Nx,
                   left.halo_stream.get());
     }
 
@@ -202,8 +182,7 @@ void MultiGPUSolver::exchange_halos()
     }
 }
 
-void MultiGPUSolver::exchange_halos_for_tmp()
-{
+void MultiGPUSolver::exchange_halos_for_tmp() {
     int Ny = config_.grid.Ny;
     int Nz = config_.grid.Nz;
 
@@ -222,27 +201,19 @@ void MultiGPUSolver::exchange_halos_for_tmp()
         CUDA_CHECK(cudaSetDevice(left.device_id));
 
         // Exchange phi_tmp_
-        copy_slab(right.solver->phi_tmp_.data(), right.device_id,
-                  left.solver->phi_tmp_.data(), left.device_id,
-                  right_dst_x, left_src_x, halo_width_,
-                  Ny, Nz, right_Nx, left_Nx,
+        copy_slab(right.solver->phi_tmp_.data(), right.device_id, left.solver->phi_tmp_.data(),
+                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz, right_Nx, left_Nx,
                   left.halo_stream.get());
-        copy_slab(left.solver->phi_tmp_.data(), left.device_id,
-                  right.solver->phi_tmp_.data(), right.device_id,
-                  left_dst_x, right_src_x, halo_width_,
-                  Ny, Nz, left_Nx, right_Nx,
+        copy_slab(left.solver->phi_tmp_.data(), left.device_id, right.solver->phi_tmp_.data(),
+                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz, left_Nx, right_Nx,
                   left.halo_stream.get());
 
         // Exchange u_tmp_
-        copy_slab(right.solver->u_tmp_.data(), right.device_id,
-                  left.solver->u_tmp_.data(), left.device_id,
-                  right_dst_x, left_src_x, halo_width_,
-                  Ny, Nz, right_Nx, left_Nx,
+        copy_slab(right.solver->u_tmp_.data(), right.device_id, left.solver->u_tmp_.data(),
+                  left.device_id, right_dst_x, left_src_x, halo_width_, Ny, Nz, right_Nx, left_Nx,
                   left.halo_stream.get());
-        copy_slab(left.solver->u_tmp_.data(), left.device_id,
-                  right.solver->u_tmp_.data(), right.device_id,
-                  left_dst_x, right_src_x, halo_width_,
-                  Ny, Nz, left_Nx, right_Nx,
+        copy_slab(left.solver->u_tmp_.data(), left.device_id, right.solver->u_tmp_.data(),
+                  right.device_id, left_dst_x, right_src_x, halo_width_, Ny, Nz, left_Nx, right_Nx,
                   left.halo_stream.get());
     }
 
@@ -252,8 +223,7 @@ void MultiGPUSolver::exchange_halos_for_tmp()
     }
 }
 
-void MultiGPUSolver::step(double dt)
-{
+void MultiGPUSolver::step(double dt) {
     auto scheme = config_.time.scheme;
 
     if (scheme == TimeScheme::Euler) {
@@ -271,13 +241,11 @@ void MultiGPUSolver::step(double dt)
             CUDA_CHECK(cudaSetDevice(domain.device_id));
             auto& s = *domain.solver;
             s.mutable_params().dt = dt;
-            launch_allen_cahn_fused(s.phi_old_.data(), s.phi_tmp_.data(),
-                                    s.u_old_.data(), s.params_,
-                                    s.compute_stream_);
-            s.apply_bc(s.phi_tmp_.data(), s.config_.boundary.phi_bc);
-            launch_thermal_equation(s.u_old_.data(), s.u_tmp_.data(),
-                                    s.phi_tmp_.data(), s.phi_old_.data(),
+            launch_allen_cahn_fused(s.phi_old_.data(), s.phi_tmp_.data(), s.u_old_.data(),
                                     s.params_, s.compute_stream_);
+            s.apply_bc(s.phi_tmp_.data(), s.config_.boundary.phi_bc);
+            launch_thermal_equation(s.u_old_.data(), s.u_tmp_.data(), s.phi_tmp_.data(),
+                                    s.phi_old_.data(), s.params_, s.compute_stream_);
             s.apply_bc(s.u_tmp_.data(), s.config_.boundary.u_bc);
         }
 
@@ -308,8 +276,7 @@ void MultiGPUSolver::step(double dt)
     }
 }
 
-double MultiGPUSolver::compute_max_dphi() const
-{
+double MultiGPUSolver::compute_max_dphi() const {
     double global_max = 0.0;
     for (const auto& domain : domains_) {
         CUDA_CHECK(cudaSetDevice(domain.device_id));
@@ -318,8 +285,7 @@ double MultiGPUSolver::compute_max_dphi() const
     return global_max;
 }
 
-void MultiGPUSolver::copy_phi_to_host(FieldData& out) const
-{
+void MultiGPUSolver::copy_phi_to_host(FieldData& out) const {
     int Ny = config_.grid.Ny;
     int Nz = config_.grid.Nz;
 
@@ -327,10 +293,8 @@ void MultiGPUSolver::copy_phi_to_host(FieldData& out) const
         CUDA_CHECK(cudaSetDevice(domain.device_id));
 
         // Create temporary for sub-domain
-        Grid sub_grid(
-            Dim3{domain.local_Nx, Ny, Nz},
-            Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz}
-        );
+        Grid sub_grid(Dim3{domain.local_Nx, Ny, Nz},
+                      Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz});
         FieldData sub(sub_grid, "phi_sub");
         domain.solver->copy_phi_to_host(sub);
 
@@ -346,18 +310,15 @@ void MultiGPUSolver::copy_phi_to_host(FieldData& out) const
     }
 }
 
-void MultiGPUSolver::copy_u_to_host(FieldData& out) const
-{
+void MultiGPUSolver::copy_u_to_host(FieldData& out) const {
     int Ny = config_.grid.Ny;
     int Nz = config_.grid.Nz;
 
     for (const auto& domain : domains_) {
         CUDA_CHECK(cudaSetDevice(domain.device_id));
 
-        Grid sub_grid(
-            Dim3{domain.local_Nx, Ny, Nz},
-            Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz}
-        );
+        Grid sub_grid(Dim3{domain.local_Nx, Ny, Nz},
+                      Spacing{config_.grid.dx, config_.grid.dy, config_.grid.dz});
         FieldData sub(sub_grid, "u_sub");
         domain.solver->copy_u_to_host(sub);
 
@@ -372,25 +333,23 @@ void MultiGPUSolver::copy_u_to_host(FieldData& out) const
     }
 }
 
-void MultiGPUSolver::apply_boundary_conditions()
-{
+void MultiGPUSolver::apply_boundary_conditions() {
     for (auto& domain : domains_) {
         CUDA_CHECK(cudaSetDevice(domain.device_id));
         domain.solver->apply_boundary_conditions();
     }
 }
 
-void MultiGPUSolver::synchronize() const
-{
+void MultiGPUSolver::synchronize() const {
     for (const auto& domain : domains_) {
         CUDA_CHECK(cudaSetDevice(domain.device_id));
         domain.solver->synchronize();
     }
 }
 
-cudaStream_t MultiGPUSolver::stream() const
-{
-    if (domains_.empty()) return nullptr;
+cudaStream_t MultiGPUSolver::stream() const {
+    if (domains_.empty())
+        return nullptr;
     return domains_.front().solver->stream();
 }
 

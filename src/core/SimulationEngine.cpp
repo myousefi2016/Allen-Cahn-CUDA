@@ -1,32 +1,28 @@
 #include "core/SimulationEngine.hpp"
-#include "cuda/ISolver.cuh"
-#include "cuda/CudaSolver.cuh"
-#include "cuda/MultiGPUSolver.cuh"
-#include "cuda/CudaUtils.cuh"
 
-#include <spdlog/spdlog.h>
+#include "cuda/CudaSolver.cuh"
+#include "cuda/CudaUtils.cuh"
+#include "cuda/ISolver.cuh"
+#include "cuda/MultiGPUSolver.cuh"
+
 #include <algorithm>
-#include <cmath>
 #include <chrono>
+#include <cmath>
+#include <spdlog/spdlog.h>
 
 namespace ac {
 
-std::unique_ptr<cuda::ISolver> SimulationEngine::create_solver()
-{
+std::unique_ptr<cuda::ISolver> SimulationEngine::create_solver() {
     if (config_.gpu.multi_gpu && config_.gpu.device_ids.size() >= 2) {
-        spdlog::info("Creating MultiGPUSolver with {} GPUs",
-                     config_.gpu.device_ids.size());
+        spdlog::info("Creating MultiGPUSolver with {} GPUs", config_.gpu.device_ids.size());
         return std::make_unique<cuda::MultiGPUSolver>(config_);
     }
     return std::make_unique<cuda::CudaSolver>(config_);
 }
 
 SimulationEngine::SimulationEngine(SimulationConfig config)
-    : config_(std::move(config))
-    , grid_(config_.make_grid())
-    , phi_host_(grid_, "phi")
-    , u_host_(grid_, "u")
-{
+    : config_(std::move(config)), grid_(config_.make_grid()), phi_host_(grid_, "phi"),
+      u_host_(grid_, "u") {
     // Create CUDA solver (single or multi-GPU based on config)
     solver_ = create_solver();
 
@@ -34,20 +30,18 @@ SimulationEngine::SimulationEngine(SimulationConfig config)
     vtk_writer_ = std::make_unique<VTKWriter>(grid_, config_.output);
 
     // Create checkpoint manager
-    checkpoint_mgr_ = std::make_unique<CheckpointManager>(
-        config_.checkpoint, grid_);
+    checkpoint_mgr_ = std::make_unique<CheckpointManager>(config_.checkpoint, grid_);
 
-    spdlog::info("SimulationEngine created: {}x{}x{} grid, {} steps",
-                 grid_.Nx(), grid_.Ny(), grid_.Nz(), config_.time.max_steps);
+    spdlog::info("SimulationEngine created: {}x{}x{} grid, {} steps", grid_.Nx(), grid_.Ny(),
+                 grid_.Nz(), config_.time.max_steps);
 }
 
-SimulationEngine::~SimulationEngine()
-{
-    if (vtk_writer_) vtk_writer_->flush();
+SimulationEngine::~SimulationEngine() {
+    if (vtk_writer_)
+        vtk_writer_->flush();
 }
 
-void SimulationEngine::run()
-{
+void SimulationEngine::run() {
     auto wall_start = std::chrono::high_resolution_clock::now();
 
     if (checkpoint_mgr_->has_restart_file()) {
@@ -69,16 +63,15 @@ void SimulationEngine::run()
 
     // Final synchronization
     solver_->synchronize();
-    if (vtk_writer_) vtk_writer_->flush();
+    if (vtk_writer_)
+        vtk_writer_->flush();
 
     auto wall_end = std::chrono::high_resolution_clock::now();
     double wall_s = std::chrono::duration<double>(wall_end - wall_start).count();
-    spdlog::info("Simulation completed in {:.2f} seconds ({:.2f} minutes)",
-                 wall_s, wall_s / 60.0);
+    spdlog::info("Simulation completed in {:.2f} seconds ({:.2f} minutes)", wall_s, wall_s / 60.0);
 }
 
-void SimulationEngine::initialize_fields()
-{
+void SimulationEngine::initialize_fields() {
     Real r0 = config_.initial.seed_radius;
     Real delta = config_.physics.delta;
     int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
@@ -87,10 +80,7 @@ void SimulationEngine::initialize_fields()
     for (int x = 0; x < Nx; ++x) {
         for (int y = 0; y < Ny; ++y) {
             for (int z = 0; z < Nz; ++z) {
-                Real r = std::sqrt(
-                    (x - cx) * (x - cx) +
-                    (y - cy) * (y - cy) +
-                    (z - cz) * (z - cz));
+                Real r = std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
 
                 phi_host_(x, y, z) = (r < r0) ? 1.0 : -1.0;
                 u_host_(x, y, z) = (r < r0) ? 0.0 : -delta * (1.0 - std::exp(-(r - r0)));
@@ -101,8 +91,7 @@ void SimulationEngine::initialize_fields()
     spdlog::info("Initial conditions: spherical seed at center, r0={}", r0);
 }
 
-void SimulationEngine::initialize_from_checkpoint()
-{
+void SimulationEngine::initialize_from_checkpoint() {
     auto data = checkpoint_mgr_->restore();
     phi_host_ = std::move(data.phi);
     u_host_ = std::move(data.u);
@@ -110,12 +99,10 @@ void SimulationEngine::initialize_from_checkpoint()
     start_time_ = data.time;
     config_.time.dt = data.dt;
 
-    spdlog::info("Restarted from checkpoint: step={}, time={:.4f}",
-                 start_step_, start_time_);
+    spdlog::info("Restarted from checkpoint: step={}, time={:.4f}", start_step_, start_time_);
 }
 
-void SimulationEngine::time_loop()
-{
+void SimulationEngine::time_loop() {
     double dt = config_.time.dt;
     double time = start_time_;
     int max_steps = config_.time.max_steps;
@@ -141,8 +128,8 @@ void SimulationEngine::time_loop()
 
         // Periodic logging
         if (step % 100 == 0 || step == max_steps) {
-            spdlog::info("Step {}/{}: time={:.6f}, dt={:.6e}, step_time={:.2f}ms",
-                         step, max_steps, time, dt, step_ms);
+            spdlog::info("Step {}/{}: time={:.6f}, dt={:.6e}, step_time={:.2f}ms", step, max_steps,
+                         time, dt, step_ms);
         }
 
         // Output
@@ -157,24 +144,22 @@ void SimulationEngine::time_loop()
     }
 }
 
-void SimulationEngine::output_step(int step, double time)
-{
+void SimulationEngine::output_step(int step, double time) {
     solver_->copy_phi_to_host(phi_host_);
     solver_->copy_u_to_host(u_host_);
     vtk_writer_->write_async(step, time, phi_host_, u_host_);
 }
 
-void SimulationEngine::checkpoint_step(int step, double time, double dt)
-{
+void SimulationEngine::checkpoint_step(int step, double time, double dt) {
     solver_->copy_phi_to_host(phi_host_);
     solver_->copy_u_to_host(u_host_);
     checkpoint_mgr_->save(step, time, dt, phi_host_, u_host_);
 }
 
-double SimulationEngine::adapt_time_step(double current_dt)
-{
+double SimulationEngine::adapt_time_step(double current_dt) {
     double max_dphi = solver_->compute_max_dphi();
-    if (max_dphi < 1e-30) return current_dt;
+    if (max_dphi < 1e-30)
+        return current_dt;
 
     double target = config_.time.adaptive_tolerance;
     double ratio = target / max_dphi;
@@ -188,8 +173,8 @@ double SimulationEngine::adapt_time_step(double current_dt)
     new_dt = std::clamp(new_dt, config_.time.dt_min, config_.time.dt_max);
 
     if (std::abs(new_dt - current_dt) / current_dt > 0.1) {
-        spdlog::debug("Adaptive dt: {:.6e} -> {:.6e} (max_dphi={:.6e})",
-                      current_dt, new_dt, max_dphi);
+        spdlog::debug("Adaptive dt: {:.6e} -> {:.6e} (max_dphi={:.6e})", current_dt, new_dt,
+                      max_dphi);
     }
 
     return new_dt;

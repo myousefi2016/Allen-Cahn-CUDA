@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/Grid.hpp"
 #include "core/FieldData.hpp"
+#include "core/Grid.hpp"
 #include "core/LRUCache.hpp"
 #include "core/SimulationConfig.hpp"
 
@@ -36,8 +36,7 @@ public:
     VTKWriter& operator=(const VTKWriter&) = delete;
 
     /// Enqueue a write job (non-blocking: copies data internally).
-    void write_async(int step, double time,
-                     const FieldData& phi, const FieldData& u);
+    void write_async(int step, double time, const FieldData& phi, const FieldData& u);
 
     /// Wait for all pending writes to complete.
     void flush();
@@ -46,8 +45,8 @@ public:
     [[nodiscard]] int pending_jobs() const;
 
     /// Get cached statistics for a step/field combo.
-    [[nodiscard]] std::optional<FieldStatistics> get_cached_stats(
-        int step, const std::string& field_name) const;
+    [[nodiscard]] std::optional<FieldStatistics>
+    get_cached_stats(int step, const std::string& field_name) const;
 
 private:
     struct WriteJob {
@@ -62,8 +61,8 @@ private:
     void write_raw_file(const WriteJob& job);
 
     /// Compute and cache field statistics.
-    FieldStatistics compute_statistics(const std::vector<Real>& data,
-                                       int step, const std::string& name);
+    FieldStatistics compute_statistics(const std::vector<Real>& data, int step,
+                                       const std::string& name);
 
     Grid grid_;
     OutputParams params_;

@@ -1,13 +1,13 @@
+#include "core/FieldData.hpp"
+#include "core/Grid.hpp"
 #include "core/SimulationConfig.hpp"
 #include "core/SimulationEngine.hpp"
-#include "core/Grid.hpp"
-#include "core/FieldData.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 #include <numeric>
 
 using namespace ac;
@@ -18,7 +18,8 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
     }
 };
@@ -26,17 +27,20 @@ protected:
 /// Run a small simulation and verify the phase field evolves correctly.
 /// The sphere should remain roughly spherical and the solid fraction should
 /// change monotonically (shrink or grow depending on undercooling).
-TEST_F(SphereRegressionTest, SphereEvolvesConsistently)
-{
+TEST_F(SphereRegressionTest, SphereEvolvesConsistently) {
     SimulationConfig cfg;
-    cfg.grid.Nx = 32; cfg.grid.Ny = 32; cfg.grid.Nz = 32;
-    cfg.grid.dx = 0.4; cfg.grid.dy = 0.4; cfg.grid.dz = 0.4;
+    cfg.grid.Nx = 32;
+    cfg.grid.Ny = 32;
+    cfg.grid.Nz = 32;
+    cfg.grid.dx = 0.4;
+    cfg.grid.dy = 0.4;
+    cfg.grid.dz = 0.4;
     cfg.time.dt = 0.01;
     cfg.time.max_steps = 50;
     cfg.time.scheme = TimeScheme::Euler;
     cfg.physics.delta = 0.8;
     cfg.initial.seed_radius = 5.0;
-    cfg.output.frequency = 1000;  // Don't output during test
+    cfg.output.frequency = 1000; // Don't output during test
     cfg.checkpoint.frequency = 0;
     cfg.boundary.phi_bc = {BCType::Dirichlet, -1.0, 0.0, 0.0, 0.0, 0.0};
     cfg.boundary.u_bc = {BCType::Dirichlet, -cfg.physics.delta, 0.0, 0.0, 0.0, 0.0};
@@ -53,9 +57,9 @@ TEST_F(SphereRegressionTest, SphereEvolvesConsistently)
     for (int x = 0; x < Nx; ++x)
         for (int y = 0; y < Ny; ++y)
             for (int z = 0; z < Nz; ++z) {
-                Real r = std::sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy) + (z-cz)*(z-cz));
+                Real r = std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
                 phi(x, y, z) = (r < r0) ? 1.0 : -1.0;
-                u(x, y, z) = (r < r0) ? 0.0 : -cfg.physics.delta * (1.0 - std::exp(-(r-r0)));
+                u(x, y, z) = (r < r0) ? 0.0 : -cfg.physics.delta * (1.0 - std::exp(-(r - r0)));
             }
 
     // Compute initial solid fraction
@@ -100,18 +104,21 @@ TEST_F(SphereRegressionTest, SphereEvolvesConsistently)
     }
 
     // The center should still be solid-ish (phi > 0)
-    EXPECT_GT(phi(Nx/2, Ny/2, Nz/2), 0.0);
+    EXPECT_GT(phi(Nx / 2, Ny / 2, Nz / 2), 0.0);
 
     // Far corners should be liquid (phi < 0)
     EXPECT_LT(phi(0, 0, 0), 0.0);
 }
 
 /// Test that the Heun scheme produces smoother evolution than Euler.
-TEST_F(SphereRegressionTest, HeunSchemeRuns)
-{
+TEST_F(SphereRegressionTest, HeunSchemeRuns) {
     SimulationConfig cfg;
-    cfg.grid.Nx = 16; cfg.grid.Ny = 16; cfg.grid.Nz = 16;
-    cfg.grid.dx = 0.4; cfg.grid.dy = 0.4; cfg.grid.dz = 0.4;
+    cfg.grid.Nx = 16;
+    cfg.grid.Ny = 16;
+    cfg.grid.Nz = 16;
+    cfg.grid.dx = 0.4;
+    cfg.grid.dy = 0.4;
+    cfg.grid.dz = 0.4;
     cfg.time.dt = 0.01;
     cfg.time.scheme = TimeScheme::Heun;
     cfg.physics.delta = 0.8;
@@ -124,13 +131,13 @@ TEST_F(SphereRegressionTest, HeunSchemeRuns)
     FieldData phi(grid, "phi"), u(grid, "u");
 
     int Nx = grid.Nx(), Ny = grid.Ny(), Nz = grid.Nz();
-    Real cx = 0.5*Nx, cy = 0.5*Ny, cz = 0.5*Nz;
+    Real cx = 0.5 * Nx, cy = 0.5 * Ny, cz = 0.5 * Nz;
     for (int x = 0; x < Nx; ++x)
         for (int y = 0; y < Ny; ++y)
             for (int z = 0; z < Nz; ++z) {
-                Real r = std::sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy) + (z-cz)*(z-cz));
-                phi(x,y,z) = (r < cfg.initial.seed_radius) ? 1.0 : -1.0;
-                u(x,y,z) = (r < cfg.initial.seed_radius) ? 0.0 : -cfg.physics.delta;
+                Real r = std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
+                phi(x, y, z) = (r < cfg.initial.seed_radius) ? 1.0 : -1.0;
+                u(x, y, z) = (r < cfg.initial.seed_radius) ? 0.0 : -cfg.physics.delta;
             }
 
     CudaSolver solver(cfg);

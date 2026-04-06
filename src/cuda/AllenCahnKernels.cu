@@ -1,5 +1,5 @@
-#include "cuda/Kernels.cuh"
 #include "cuda/CudaUtils.cuh"
+#include "cuda/Kernels.cuh"
 
 namespace ac::cuda {
 
@@ -8,15 +8,12 @@ namespace ac::cuda {
 /// Force divergence is computed by recomputing the force at neighboring stencil
 /// points, which trades extra arithmetic for massive memory bandwidth savings.
 __global__ void __launch_bounds__(256)
-allen_cahn_fused_kernel(
-    const double* __restrict__ phi_old,
-    double* __restrict__ phi_new,
-    const double* __restrict__ u_old,
-    KernelParams p)
-{
+    allen_cahn_fused_kernel(const double* __restrict__ phi_old, double* __restrict__ phi_new,
+                            const double* __restrict__ u_old, KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total = p.Nx * p.Ny * p.Nz;
-    if (tid >= static_cast<unsigned>(total)) return;
+    if (tid >= static_cast<unsigned>(total))
+        return;
 
     int x, y, z;
     linear_to_3d(static_cast<int>(tid), p.Ny, p.Nz, x, y, z);
@@ -30,7 +27,7 @@ allen_cahn_fused_kernel(
     double phix = gradient_x(phi_old, x, y, z, p.Ny, p.Nz, p.dx);
     double phiy = gradient_y(phi_old, x, y, z, p.Ny, p.Nz, p.dy);
     double phiz = gradient_z(phi_old, x, y, z, p.Ny, p.Nz, p.dz);
-    double sqGphi = phix*phix + phiy*phiy + phiz*phiz;
+    double sqGphi = phix * phix + phiy * phiy + phiz * phiz;
 
     // Compute anisotropy ONCE (was computed 8+ times in original code)
     double an = compute_An(phix, phiy, phiz, p.epsilon);
@@ -52,27 +49,29 @@ allen_cahn_fused_kernel(
     auto compute_force_at = [&](int ox, int oy, int oz, int component) -> double {
         int nx = x + ox, ny = y + oy, nz = z + oz;
         // Clamp to valid range
-        if (nx < 1 || nx >= p.Nx-1 || ny < 1 || ny >= p.Ny-1 || nz < 1 || nz >= p.Nz-1) {
+        if (nx < 1 || nx >= p.Nx - 1 || ny < 1 || ny >= p.Ny - 1 || nz < 1 || nz >= p.Nz - 1) {
             return 0.0;
         }
         double px = gradient_x(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dx);
         double py = gradient_y(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dy);
         double pz = gradient_z(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dz);
-        double sq = px*px + py*py + pz*pz;
+        double sq = px * px + py * py + pz * pz;
         double a = compute_An(px, py, pz, p.epsilon);
         double w = p.W0 * a;
         double w2 = w * w;
         double c = sq * w * 16.0 * p.W0 * p.epsilon;
 
-        if (component == 0) return w2 * px + c * dFunc(px, py, pz);
-        if (component == 1) return w2 * py + c * dFunc(py, pz, px);
+        if (component == 0)
+            return w2 * px + c * dFunc(px, py, pz);
+        if (component == 1)
+            return w2 * py + c * dFunc(py, pz, px);
         return w2 * pz + c * dFunc(pz, px, py);
     };
 
     // Divergence via central differences of force field
-    double dFx_dx = (compute_force_at(1,0,0, 0) - compute_force_at(-1,0,0, 0)) / (2.0 * p.dx);
-    double dFy_dy = (compute_force_at(0,1,0, 1) - compute_force_at(0,-1,0, 1)) / (2.0 * p.dy);
-    double dFz_dz = (compute_force_at(0,0,1, 2) - compute_force_at(0,0,-1, 2)) / (2.0 * p.dz);
+    double dFx_dx = (compute_force_at(1, 0, 0, 0) - compute_force_at(-1, 0, 0, 0)) / (2.0 * p.dx);
+    double dFy_dy = (compute_force_at(0, 1, 0, 1) - compute_force_at(0, -1, 0, 1)) / (2.0 * p.dy);
+    double dFz_dz = (compute_force_at(0, 0, 1, 2) - compute_force_at(0, 0, -1, 2)) / (2.0 * p.dz);
     double div_F = dFx_dx + dFy_dy + dFz_dz;
 
     // Allen-Cahn update
@@ -85,18 +84,14 @@ allen_cahn_fused_kernel(
 /// Lightweight Allen-Cahn kernel using separate Fx, Fy, Fz arrays (for RK stages).
 /// This kernel reads pre-computed forces and computes the RHS of the Allen-Cahn eq.
 __global__ void __launch_bounds__(256)
-allen_cahn_rhs_kernel(
-    const double* __restrict__ phi_old,
-    double* __restrict__ rhs,
-    const double* __restrict__ u_old,
-    const double* __restrict__ Fx,
-    const double* __restrict__ Fy,
-    const double* __restrict__ Fz,
-    KernelParams p)
-{
+    allen_cahn_rhs_kernel(const double* __restrict__ phi_old, double* __restrict__ rhs,
+                          const double* __restrict__ u_old, const double* __restrict__ Fx,
+                          const double* __restrict__ Fy, const double* __restrict__ Fz,
+                          KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total = p.Nx * p.Ny * p.Nz;
-    if (tid >= static_cast<unsigned>(total)) return;
+    if (tid >= static_cast<unsigned>(total))
+        return;
 
     int x, y, z;
     linear_to_3d(static_cast<int>(tid), p.Ny, p.Nz, x, y, z);
@@ -126,16 +121,12 @@ allen_cahn_rhs_kernel(
 
 /// Compute anisotropic force field (Fx, Fy, Fz) from phi.
 __global__ void __launch_bounds__(256)
-compute_force_kernel(
-    const double* __restrict__ phi,
-    double* __restrict__ Fx,
-    double* __restrict__ Fy,
-    double* __restrict__ Fz,
-    KernelParams p)
-{
+    compute_force_kernel(const double* __restrict__ phi, double* __restrict__ Fx,
+                         double* __restrict__ Fy, double* __restrict__ Fz, KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total = p.Nx * p.Ny * p.Nz;
-    if (tid >= static_cast<unsigned>(total)) return;
+    if (tid >= static_cast<unsigned>(total))
+        return;
 
     int x, y, z;
     linear_to_3d(static_cast<int>(tid), p.Ny, p.Nz, x, y, z);
@@ -151,7 +142,7 @@ compute_force_kernel(
     double phix = gradient_x(phi, x, y, z, p.Ny, p.Nz, p.dx);
     double phiy = gradient_y(phi, x, y, z, p.Ny, p.Nz, p.dy);
     double phiz = gradient_z(phi, x, y, z, p.Ny, p.Nz, p.dz);
-    double sqGphi = phix*phix + phiy*phiy + phiz*phiz;
+    double sqGphi = phix * phix + phiy * phiy + phiz * phiz;
 
     double an = compute_An(phix, phiy, phiz, p.epsilon);
     double wn = p.W0 * an;
@@ -165,14 +156,11 @@ compute_force_kernel(
 
 // ── Launch wrappers ────────────────────────────────────────────────────────
 
-void launch_allen_cahn_fused(
-    const double* phi_old, double* phi_new, const double* u_old,
-    const KernelParams& params, cudaStream_t stream)
-{
+void launch_allen_cahn_fused(const double* phi_old, double* phi_new, const double* u_old,
+                             const KernelParams& params, cudaStream_t stream) {
     std::size_t total = static_cast<std::size_t>(params.Nx) * params.Ny * params.Nz;
     auto cfg = LaunchConfig::for_1d(total, 256);
-    allen_cahn_fused_kernel<<<cfg.grid, cfg.block, 0, stream>>>(
-        phi_old, phi_new, u_old, params);
+    allen_cahn_fused_kernel<<<cfg.grid, cfg.block, 0, stream>>>(phi_old, phi_new, u_old, params);
     CUDA_CHECK(cudaGetLastError());
 }
 

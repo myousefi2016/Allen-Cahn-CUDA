@@ -19,9 +19,7 @@ namespace ac {
 ///   - Runtime statistics accumulation from multiple threads
 ///   - Dynamic parameter overrides during simulation
 ///   - Field metadata caching
-template <typename Key, typename Value,
-          std::size_t NumStripes = 16,
-          typename Hash = std::hash<Key>>
+template <typename Key, typename Value, std::size_t NumStripes = 16, typename Hash = std::hash<Key>>
 class ConcurrentMap {
 public:
     ConcurrentMap() = default;
@@ -38,7 +36,8 @@ public:
         const auto& stripe = get_stripe(key);
         std::shared_lock lock(stripe.mutex);
         auto it = stripe.map.find(key);
-        if (it == stripe.map.end()) return std::nullopt;
+        if (it == stripe.map.end())
+            return std::nullopt;
         return it->second;
     }
 
@@ -52,8 +51,7 @@ public:
 
     /// Atomically update a value using a function: new_value = fn(old_value).
     /// If key doesn't exist, fn is called with default-constructed Value.
-    template <typename Fn>
-    void update(const Key& key, Fn&& fn) {
+    template <typename Fn> void update(const Key& key, Fn&& fn) {
         auto& stripe = get_stripe(key);
         std::unique_lock lock(stripe.mutex);
         auto [it, inserted] = stripe.map.try_emplace(key, Value{});
@@ -110,9 +108,7 @@ private:
         std::unordered_map<Key, Value, Hash> map;
     };
 
-    [[nodiscard]] Stripe& get_stripe(const Key& key) {
-        return stripes_[Hash{}(key) % NumStripes];
-    }
+    [[nodiscard]] Stripe& get_stripe(const Key& key) { return stripes_[Hash{}(key) % NumStripes]; }
 
     [[nodiscard]] const Stripe& get_stripe(const Key& key) const {
         return stripes_[Hash{}(key) % NumStripes];

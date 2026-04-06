@@ -1,12 +1,12 @@
-#include "core/SimulationConfig.hpp"
-#include "core/Grid.hpp"
 #include "core/FieldData.hpp"
+#include "core/Grid.hpp"
+#include "core/SimulationConfig.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 #include <numeric>
 
 using namespace ac;
@@ -17,13 +17,13 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
     }
 
     /// Compute total thermal energy (sum of u over all points).
-    double total_energy(const FieldData& u)
-    {
+    double total_energy(const FieldData& u) {
         double sum = 0.0;
         for (std::size_t i = 0; i < u.size(); ++i) {
             sum += u.data()[i];
@@ -32,8 +32,7 @@ protected:
     }
 
     /// Compute total solid fraction (mean of (phi+1)/2).
-    double solid_fraction(const FieldData& phi)
-    {
+    double solid_fraction(const FieldData& phi) {
         double sum = 0.0;
         for (std::size_t i = 0; i < phi.size(); ++i) {
             sum += (phi.data()[i] + 1.0) / 2.0;
@@ -44,11 +43,14 @@ protected:
 
 /// Test that a simulation with uniform initial conditions and Dirichlet BCs
 /// reaches a steady state.
-TEST_F(EnergyConservationTest, UniformFieldStaysUniform)
-{
+TEST_F(EnergyConservationTest, UniformFieldStaysUniform) {
     SimulationConfig cfg;
-    cfg.grid.Nx = 16; cfg.grid.Ny = 16; cfg.grid.Nz = 16;
-    cfg.grid.dx = 0.4; cfg.grid.dy = 0.4; cfg.grid.dz = 0.4;
+    cfg.grid.Nx = 16;
+    cfg.grid.Ny = 16;
+    cfg.grid.Nz = 16;
+    cfg.grid.dx = 0.4;
+    cfg.grid.dy = 0.4;
+    cfg.grid.dz = 0.4;
     cfg.time.dt = 0.01;
     cfg.time.scheme = TimeScheme::Euler;
     cfg.physics.delta = 0.8;
@@ -77,17 +79,19 @@ TEST_F(EnergyConservationTest, UniformFieldStaysUniform)
     // Uniform liquid state should remain uniform
     // phi should stay at -1.0 everywhere (no solidification without a seed)
     for (std::size_t i = 0; i < phi.size(); ++i) {
-        EXPECT_NEAR(phi.data()[i], -1.0, 0.01)
-            << "phi deviated from -1.0 at index " << i;
+        EXPECT_NEAR(phi.data()[i], -1.0, 0.01) << "phi deviated from -1.0 at index " << i;
     }
 }
 
 /// Test that total energy changes are correlated with phase change (latent heat).
-TEST_F(EnergyConservationTest, LatentHeatCoupling)
-{
+TEST_F(EnergyConservationTest, LatentHeatCoupling) {
     SimulationConfig cfg;
-    cfg.grid.Nx = 16; cfg.grid.Ny = 16; cfg.grid.Nz = 16;
-    cfg.grid.dx = 0.4; cfg.grid.dy = 0.4; cfg.grid.dz = 0.4;
+    cfg.grid.Nx = 16;
+    cfg.grid.Ny = 16;
+    cfg.grid.Nz = 16;
+    cfg.grid.dx = 0.4;
+    cfg.grid.dy = 0.4;
+    cfg.grid.dz = 0.4;
     cfg.time.dt = 0.005;
     cfg.time.scheme = TimeScheme::Euler;
     cfg.physics.delta = 0.8;
@@ -101,13 +105,13 @@ TEST_F(EnergyConservationTest, LatentHeatCoupling)
 
     int Nx = grid.Nx(), Ny = grid.Ny(), Nz = grid.Nz();
     Real r0 = cfg.initial.seed_radius;
-    Real cx = 0.5*Nx, cy = 0.5*Ny, cz = 0.5*Nz;
+    Real cx = 0.5 * Nx, cy = 0.5 * Ny, cz = 0.5 * Nz;
     for (int x = 0; x < Nx; ++x)
         for (int y = 0; y < Ny; ++y)
             for (int z = 0; z < Nz; ++z) {
-                Real r = std::sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy) + (z-cz)*(z-cz));
-                phi(x,y,z) = (r < r0) ? 1.0 : -1.0;
-                u(x,y,z) = (r < r0) ? 0.0 : -cfg.physics.delta;
+                Real r = std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
+                phi(x, y, z) = (r < r0) ? 1.0 : -1.0;
+                u(x, y, z) = (r < r0) ? 0.0 : -cfg.physics.delta;
             }
 
     double sf_initial = solid_fraction(phi);

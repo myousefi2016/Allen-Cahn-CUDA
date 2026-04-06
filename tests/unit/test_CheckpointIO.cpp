@@ -1,12 +1,12 @@
-#include "io/CheckpointIO.hpp"
-#include "core/Grid.hpp"
 #include "core/FieldData.hpp"
+#include "core/Grid.hpp"
+#include "io/CheckpointIO.hpp"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <cmath>
+#include <gtest/gtest.h>
 
 using namespace ac;
 
@@ -18,15 +18,12 @@ protected:
         std::filesystem::create_directories(test_dir_);
     }
 
-    void TearDown() override {
-        std::filesystem::remove_all(test_dir_);
-    }
+    void TearDown() override { std::filesystem::remove_all(test_dir_); }
 
     std::filesystem::path test_dir_;
 };
 
-TEST_F(CheckpointIOTest, WriteAndRead)
-{
+TEST_F(CheckpointIOTest, WriteAndRead) {
     Grid grid(Dim3{8, 8, 8}, Spacing{0.5, 0.5, 0.5});
     FieldData phi(grid, "phi");
     FieldData u(grid, "u");
@@ -63,8 +60,7 @@ TEST_F(CheckpointIOTest, WriteAndRead)
             }
 }
 
-TEST_F(CheckpointIOTest, InvalidFile)
-{
+TEST_F(CheckpointIOTest, InvalidFile) {
     auto path = test_dir_ / "not_a_checkpoint.bin";
     {
         std::ofstream ofs(path, std::ios::binary);
@@ -74,13 +70,11 @@ TEST_F(CheckpointIOTest, InvalidFile)
     EXPECT_THROW(CheckpointIO::read(path), std::runtime_error);
 }
 
-TEST_F(CheckpointIOTest, MissingFile)
-{
+TEST_F(CheckpointIOTest, MissingFile) {
     EXPECT_FALSE(CheckpointIO::is_valid_checkpoint("/nonexistent/file.acbin"));
 }
 
-TEST_F(CheckpointIOTest, LargerGrid)
-{
+TEST_F(CheckpointIOTest, LargerGrid) {
     Grid grid(Dim3{16, 16, 16}, Spacing{0.3, 0.3, 0.3});
     FieldData phi(grid, "phi");
     FieldData u(grid, "u");

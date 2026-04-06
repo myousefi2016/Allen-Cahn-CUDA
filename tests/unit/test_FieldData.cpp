@@ -5,8 +5,7 @@
 
 using namespace ac;
 
-TEST(FieldDataTest, Construction)
-{
+TEST(FieldDataTest, Construction) {
     Grid grid(Dim3{10, 10, 10}, Spacing{1.0, 1.0, 1.0});
     FieldData field(grid, "test_field");
 
@@ -17,8 +16,7 @@ TEST(FieldDataTest, Construction)
     EXPECT_EQ(field.name(), "test_field");
 }
 
-TEST(FieldDataTest, InitializedToZero)
-{
+TEST(FieldDataTest, InitializedToZero) {
     Grid grid(Dim3{5, 5, 5}, Spacing{1.0, 1.0, 1.0});
     FieldData field(grid);
 
@@ -28,8 +26,7 @@ TEST(FieldDataTest, InitializedToZero)
                 EXPECT_DOUBLE_EQ(field(x, y, z), 0.0);
 }
 
-TEST(FieldDataTest, ReadWrite)
-{
+TEST(FieldDataTest, ReadWrite) {
     Grid grid(Dim3{5, 5, 5}, Spacing{1.0, 1.0, 1.0});
     FieldData field(grid);
 
@@ -40,8 +37,7 @@ TEST(FieldDataTest, ReadWrite)
     EXPECT_DOUBLE_EQ(field(0, 0, 0), -1.5);
 }
 
-TEST(FieldDataTest, Fill)
-{
+TEST(FieldDataTest, Fill) {
     Grid grid(Dim3{4, 4, 4}, Spacing{1.0, 1.0, 1.0});
     FieldData field(grid);
 
@@ -51,8 +47,7 @@ TEST(FieldDataTest, Fill)
     }
 }
 
-TEST(FieldDataTest, CopyFrom)
-{
+TEST(FieldDataTest, CopyFrom) {
     Grid grid(Dim3{3, 3, 3}, Spacing{1.0, 1.0, 1.0});
     FieldData field(grid);
 
@@ -65,8 +60,7 @@ TEST(FieldDataTest, CopyFrom)
                 EXPECT_DOUBLE_EQ(field(x, y, z), 7.7);
 }
 
-TEST(FieldDataTest, IndexOrdering)
-{
+TEST(FieldDataTest, IndexOrdering) {
     // Verify row-major layout: index = x * Ny * Nz + y * Nz + z
     Grid grid(Dim3{3, 4, 5}, Spacing{1.0, 1.0, 1.0});
     FieldData field(grid);
@@ -87,8 +81,7 @@ TEST(FieldDataTest, IndexOrdering)
     }
 }
 
-TEST(FieldDataTest, DataPointerNonNull)
-{
+TEST(FieldDataTest, DataPointerNonNull) {
     Grid grid(Dim3{3, 3, 3}, Spacing{1.0, 1.0, 1.0});
     FieldData field(grid);
     EXPECT_NE(field.data(), nullptr);

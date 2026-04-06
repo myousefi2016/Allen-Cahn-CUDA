@@ -5,8 +5,7 @@
 
 using namespace ac;
 
-TEST(GridTest, Construction)
-{
+TEST(GridTest, Construction) {
     Grid grid(Dim3{10, 20, 30}, Spacing{0.5, 0.5, 0.5});
     EXPECT_EQ(grid.Nx(), 10);
     EXPECT_EQ(grid.Ny(), 20);
@@ -16,20 +15,17 @@ TEST(GridTest, Construction)
     EXPECT_DOUBLE_EQ(grid.dz(), 0.5);
 }
 
-TEST(GridTest, TotalPoints)
-{
+TEST(GridTest, TotalPoints) {
     Grid grid(Dim3{10, 20, 30}, Spacing{1.0, 1.0, 1.0});
     EXPECT_EQ(grid.total_points(), 6000);
 }
 
-TEST(GridTest, TotalBytes)
-{
+TEST(GridTest, TotalBytes) {
     Grid grid(Dim3{10, 10, 10}, Spacing{1.0, 1.0, 1.0});
     EXPECT_EQ(grid.total_bytes(), 1000 * sizeof(double));
 }
 
-TEST(GridTest, Interior)
-{
+TEST(GridTest, Interior) {
     Grid grid(Dim3{10, 10, 10}, Spacing{1.0, 1.0, 1.0});
     EXPECT_TRUE(grid.is_interior(5, 5, 5));
     EXPECT_TRUE(grid.is_interior(1, 1, 1));
@@ -42,8 +38,7 @@ TEST(GridTest, Interior)
     EXPECT_FALSE(grid.is_interior(5, 5, 9));
 }
 
-TEST(GridTest, Boundary)
-{
+TEST(GridTest, Boundary) {
     Grid grid(Dim3{10, 10, 10}, Spacing{1.0, 1.0, 1.0});
     EXPECT_TRUE(grid.is_boundary(0, 5, 5));
     EXPECT_TRUE(grid.is_boundary(9, 5, 5));
@@ -52,21 +47,18 @@ TEST(GridTest, Boundary)
     EXPECT_FALSE(grid.is_boundary(5, 5, 5));
 }
 
-TEST(GridTest, InvalidDimensionsTooSmall)
-{
+TEST(GridTest, InvalidDimensionsTooSmall) {
     EXPECT_THROW(Grid(Dim3{2, 10, 10}, Spacing{1.0, 1.0, 1.0}), std::invalid_argument);
     EXPECT_THROW(Grid(Dim3{10, 2, 10}, Spacing{1.0, 1.0, 1.0}), std::invalid_argument);
     EXPECT_THROW(Grid(Dim3{10, 10, 2}, Spacing{1.0, 1.0, 1.0}), std::invalid_argument);
 }
 
-TEST(GridTest, InvalidSpacingNonPositive)
-{
+TEST(GridTest, InvalidSpacingNonPositive) {
     EXPECT_THROW(Grid(Dim3{10, 10, 10}, Spacing{0.0, 1.0, 1.0}), std::invalid_argument);
     EXPECT_THROW(Grid(Dim3{10, 10, 10}, Spacing{1.0, -1.0, 1.0}), std::invalid_argument);
 }
 
-TEST(GridTest, Dims)
-{
+TEST(GridTest, Dims) {
     Grid grid(Dim3{5, 7, 11}, Spacing{0.1, 0.2, 0.3});
     auto d = grid.dims();
     EXPECT_EQ(d.nx, 5);
@@ -78,8 +70,7 @@ TEST(GridTest, Dims)
     EXPECT_DOUBLE_EQ(s.dz, 0.3);
 }
 
-TEST(GridTest, DefaultConstruction)
-{
+TEST(GridTest, DefaultConstruction) {
     Grid grid;
     EXPECT_EQ(grid.Nx(), 0);
     EXPECT_EQ(grid.total_points(), 0);

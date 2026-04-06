@@ -1,15 +1,15 @@
-#include "core/SimulationConfig.hpp"
-#include "core/Grid.hpp"
 #include "core/FieldData.hpp"
+#include "core/Grid.hpp"
+#include "core/SimulationConfig.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "io/CheckpointIO.hpp"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <gtest/gtest.h>
 #include <string>
 
 using namespace ac;
@@ -20,7 +20,8 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
 
         // Create a unique temporary directory for this test run
@@ -64,9 +65,8 @@ protected:
         for (int x = 0; x < N; ++x)
             for (int y = 0; y < N; ++y)
                 for (int z = 0; z < N; ++z) {
-                    double r = std::sqrt((x - cx) * (x - cx) +
-                                         (y - cy) * (y - cy) +
-                                         (z - cz) * (z - cz));
+                    double r =
+                        std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
                     phi(x, y, z) = (r < r0) ? 1.0 : -1.0;
                     u(x, y, z) = (r < r0) ? 0.0 : -delta * (1.0 - std::exp(-(r - r0)));
                 }
@@ -77,8 +77,7 @@ protected:
 
 /// Run 50 steps continuously, then run 25 + checkpoint + restart + 25.
 /// The final states must match to within floating-point round-off.
-TEST_F(CheckpointRestartTest, ExactReproducibility)
-{
+TEST_F(CheckpointRestartTest, ExactReproducibility) {
     const int N = 16;
     const int total_steps = 50;
     const int mid_step = 25;
@@ -152,8 +151,8 @@ TEST_F(CheckpointRestartTest, ExactReproducibility)
     // Allow a small tolerance for any floating-point reordering effects.
     EXPECT_LT(max_phi_diff, 1e-10)
         << "Phi mismatch after checkpoint/restart. Max diff = " << max_phi_diff;
-    EXPECT_LT(max_u_diff, 1e-10)
-        << "U mismatch after checkpoint/restart. Max diff = " << max_u_diff;
+    EXPECT_LT(max_u_diff, 1e-10) << "U mismatch after checkpoint/restart. Max diff = "
+                                 << max_u_diff;
 
     // Verify the fields are actually non-trivial (simulation did something)
     double phi_range = 0.0;
@@ -165,8 +164,7 @@ TEST_F(CheckpointRestartTest, ExactReproducibility)
 
 /// Verify that a checkpoint file can be written, validated, and read back
 /// with correct metadata and field contents.
-TEST_F(CheckpointRestartTest, CheckpointFileValid)
-{
+TEST_F(CheckpointRestartTest, CheckpointFileValid) {
     const int N = 16;
     const double dt = 0.001;
     const int step = 10;
@@ -198,8 +196,8 @@ TEST_F(CheckpointRestartTest, CheckpointFileValid)
 
     // Verify file has reasonable size: header + 2 * N^3 * sizeof(double)
     auto file_size = std::filesystem::file_size(ckpt_path);
-    std::size_t expected_min = sizeof(CheckpointIO::Header) +
-                               2 * static_cast<std::size_t>(N * N * N) * sizeof(double);
+    std::size_t expected_min =
+        sizeof(CheckpointIO::Header) + 2 * static_cast<std::size_t>(N * N * N) * sizeof(double);
     EXPECT_GE(file_size, expected_min);
 
     // Read it back
@@ -221,12 +219,10 @@ TEST_F(CheckpointRestartTest, CheckpointFileValid)
     ASSERT_EQ(restored.u.size(), u.size());
 
     for (std::size_t i = 0; i < phi.size(); ++i) {
-        EXPECT_DOUBLE_EQ(restored.phi.data()[i], phi.data()[i])
-            << "Phi mismatch at index " << i;
+        EXPECT_DOUBLE_EQ(restored.phi.data()[i], phi.data()[i]) << "Phi mismatch at index " << i;
     }
     for (std::size_t i = 0; i < u.size(); ++i) {
-        EXPECT_DOUBLE_EQ(restored.u.data()[i], u.data()[i])
-            << "U mismatch at index " << i;
+        EXPECT_DOUBLE_EQ(restored.u.data()[i], u.data()[i]) << "U mismatch at index " << i;
     }
 
     // Verify an invalid file is rejected

@@ -2,8 +2,8 @@
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 #include <vector>
 
 using namespace ac;
@@ -14,7 +14,8 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
     }
 
@@ -44,17 +45,15 @@ protected:
         for (int x = 0; x < N; ++x)
             for (int y = 0; y < N; ++y)
                 for (int z = 0; z < N; ++z) {
-                    double r = std::sqrt((x - cx) * (x - cx) +
-                                         (y - cy) * (y - cy) +
-                                         (z - cz) * (z - cz));
+                    double r =
+                        std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
                     phi(x, y, z) = (r < r0) ? 1.0 : -1.0;
                     u(x, y, z) = (r < r0) ? 0.0 : -0.8;
                 }
     }
 };
 
-TEST_F(CudaSolverTest, EulerStepPreservesSymmetry)
-{
+TEST_F(CudaSolverTest, EulerStepPreservesSymmetry) {
     int N = 16;
     auto cfg = make_config(N, TimeScheme::Euler);
     CudaSolver solver(cfg);
@@ -76,8 +75,7 @@ TEST_F(CudaSolverTest, EulerStepPreservesSymmetry)
     EXPECT_GT(sum, 0.0);
 }
 
-TEST_F(CudaSolverTest, HeunStepRuns)
-{
+TEST_F(CudaSolverTest, HeunStepRuns) {
     int N = 16;
     auto cfg = make_config(N, TimeScheme::Heun);
     CudaSolver solver(cfg);
@@ -98,8 +96,7 @@ TEST_F(CudaSolverTest, HeunStepRuns)
     EXPECT_GT(sum, 0.0);
 }
 
-TEST_F(CudaSolverTest, RK4StepIncludesLatentHeat)
-{
+TEST_F(CudaSolverTest, RK4StepIncludesLatentHeat) {
     int N = 16;
     auto cfg = make_config(N, TimeScheme::RK4);
     CudaSolver solver(cfg);
@@ -128,8 +125,7 @@ TEST_F(CudaSolverTest, RK4StepIncludesLatentHeat)
     EXPECT_TRUE(u_changed) << "u field should change due to latent heat coupling in RK4";
 }
 
-TEST_F(CudaSolverTest, IMEXStepRuns)
-{
+TEST_F(CudaSolverTest, IMEXStepRuns) {
     int N = 16;
     auto cfg = make_config(N, TimeScheme::IMEX);
     CudaSolver solver(cfg);
@@ -142,8 +138,7 @@ TEST_F(CudaSolverTest, IMEXStepRuns)
     EXPECT_NO_THROW(solver.step(0.001));
 }
 
-TEST_F(CudaSolverTest, ComputeMaxDphi)
-{
+TEST_F(CudaSolverTest, ComputeMaxDphi) {
     int N = 16;
     auto cfg = make_config(N);
     CudaSolver solver(cfg);
@@ -157,11 +152,10 @@ TEST_F(CudaSolverTest, ComputeMaxDphi)
 
     double max_dphi = solver.compute_max_dphi();
     EXPECT_GT(max_dphi, 0.0);
-    EXPECT_LT(max_dphi, 10.0);  // Sanity bound
+    EXPECT_LT(max_dphi, 10.0); // Sanity bound
 }
 
-TEST_F(CudaSolverTest, PerFaceBoundaryConditions)
-{
+TEST_F(CudaSolverTest, PerFaceBoundaryConditions) {
     int N = 16;
     auto cfg = make_config(N);
     cfg.boundary.per_face = true;
@@ -184,8 +178,7 @@ TEST_F(CudaSolverTest, PerFaceBoundaryConditions)
     EXPECT_NO_THROW(solver.apply_boundary_conditions());
 }
 
-TEST_F(CudaSolverTest, MultipleStepsConverge)
-{
+TEST_F(CudaSolverTest, MultipleStepsConverge) {
     int N = 16;
     auto cfg = make_config(N);
     CudaSolver solver(cfg);

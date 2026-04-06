@@ -4,14 +4,11 @@
 
 namespace ac::cuda {
 
-ScopedTimer::ScopedTimer(const char* label, cudaStream_t stream)
-    : stream_(stream), label_(label)
-{
+ScopedTimer::ScopedTimer(const char* label, cudaStream_t stream) : stream_(stream), label_(label) {
     start_.record(stream_);
 }
 
-ScopedTimer::~ScopedTimer()
-{
+ScopedTimer::~ScopedTimer() {
     stop_.record(stream_);
     stop_.synchronize();
     float ms = stop_.elapsed_ms(start_);

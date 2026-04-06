@@ -1,9 +1,9 @@
 #include "io/VTKWriter.hpp"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
-#include <filesystem>
 #include <cmath>
+#include <filesystem>
+#include <gtest/gtest.h>
 
 using namespace ac;
 namespace fs = std::filesystem;
@@ -16,15 +16,12 @@ protected:
         fs::create_directories(test_dir_);
     }
 
-    void TearDown() override {
-        fs::remove_all(test_dir_);
-    }
+    void TearDown() override { fs::remove_all(test_dir_); }
 
     fs::path test_dir_;
 };
 
-TEST_F(VTKWriterTest, WritesRawFiles)
-{
+TEST_F(VTKWriterTest, WritesRawFiles) {
     Grid grid(Dim3{4, 4, 4}, Spacing{1.0, 1.0, 1.0});
     OutputParams params;
     params.output_dir = test_dir_;
@@ -52,8 +49,7 @@ TEST_F(VTKWriterTest, WritesRawFiles)
     EXPECT_EQ(phi_size, 64 * sizeof(double));
 }
 
-TEST_F(VTKWriterTest, MultipleAsyncWrites)
-{
+TEST_F(VTKWriterTest, MultipleAsyncWrites) {
     Grid grid(Dim3{4, 4, 4}, Spacing{1.0, 1.0, 1.0});
     OutputParams params;
     params.output_dir = test_dir_;
@@ -74,8 +70,7 @@ TEST_F(VTKWriterTest, MultipleAsyncWrites)
     }
 }
 
-TEST_F(VTKWriterTest, PendingJobsCount)
-{
+TEST_F(VTKWriterTest, PendingJobsCount) {
     Grid grid(Dim3{4, 4, 4}, Spacing{1.0, 1.0, 1.0});
     OutputParams params;
     params.output_dir = test_dir_;
@@ -91,8 +86,7 @@ TEST_F(VTKWriterTest, PendingJobsCount)
     EXPECT_EQ(writer.pending_jobs(), 0);
 }
 
-TEST_F(VTKWriterTest, StatisticsCaching)
-{
+TEST_F(VTKWriterTest, StatisticsCaching) {
     Grid grid(Dim3{4, 4, 4}, Spacing{1.0, 1.0, 1.0});
     OutputParams params;
     params.output_dir = test_dir_;
