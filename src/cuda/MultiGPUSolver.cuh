@@ -51,8 +51,7 @@ private:
 
     /// Copy a YZ-slab from one device to another.
     void copy_slab(double* dst, int dst_device, const double* src, int src_device, int x_dst,
-                   int x_src, int slab_count, int Ny, int Nz, int dst_Nx, int src_Nx,
-                   cudaStream_t stream);
+                   int x_src, int slab_count, int Ny, int Nz, cudaStream_t stream);
 
     SimulationConfig config_;
     std::vector<GPUDomain> domains_;

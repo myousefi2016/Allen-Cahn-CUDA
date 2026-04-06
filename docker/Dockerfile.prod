@@ -80,10 +80,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for running the simulation
-RUN groupadd --gid 1000 simulator && \
-    useradd --uid 1000 --gid 1000 --create-home --shell /bin/false simulator && \
+RUN groupadd --force --gid 1000 simulator && \
+    (useradd --uid 1000 --gid 1000 --create-home --shell /bin/false simulator 2>/dev/null || true) && \
     mkdir -p /app/config /output && \
-    chown -R simulator:simulator /app /output
+    chown -R 1000:1000 /app /output
 
 WORKDIR /app
 

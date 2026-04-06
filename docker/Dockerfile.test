@@ -78,8 +78,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /var/lib/apt/lists/*
 
 # Create non-root test user
-RUN groupadd --gid 1000 tester && \
-    useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash tester
+RUN groupadd --force --gid 1000 tester && \
+    useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash tester 2>/dev/null || true
 
 WORKDIR /build
 

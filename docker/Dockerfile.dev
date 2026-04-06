@@ -59,10 +59,10 @@ RUN cmake --version | head -1
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-RUN groupadd --gid ${USER_GID} developer && \
-    useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash developer && \
+RUN groupadd --force --gid ${USER_GID} developer && \
+    useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash developer 2>/dev/null || true && \
     mkdir -p /workspace && \
-    chown developer:developer /workspace
+    chown ${USER_UID}:${USER_GID} /workspace
 
 # ── Configure ccache ──────────────────────────────────────────────────────
 ENV CCACHE_DIR=/workspace/.ccache

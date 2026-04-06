@@ -8,13 +8,15 @@ namespace: allen-cahn-prod
 
 namePrefix: prod-
 
-commonLabels:
-  environment: prod
+labels:
+  - pairs:
+      environment: prod
 
 commonAnnotations:
   note: "Production configuration with full grid resolution"
 
 resources:
+  - namespace.yaml
   - ../../base
   - hpa.yaml
 
