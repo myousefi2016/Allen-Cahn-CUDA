@@ -77,12 +77,12 @@ private:
     // Force field buffers (needed for non-fused RK stages)
     DeviceField<double> Fx_, Fy_, Fz_;
 
-    // Reduction scratch
-    DeviceField<double> d_reduction_result_;
+    // Reduction scratch (mutable: logically const methods use it as temporary)
+    mutable DeviceField<double> d_reduction_result_;
 
-    // CUDA streams
-    Stream compute_stream_;
-    Stream transfer_stream_;
+    // CUDA streams (mutable: synchronize() and copy_to_host are logically const)
+    mutable Stream compute_stream_;
+    mutable Stream transfer_stream_;
 
     TimeScheme scheme_;
     std::size_t total_points_;

@@ -189,11 +189,35 @@ void launch_allen_cahn_fused(
     const double* phi_old, double* phi_new, const double* u_old,
     const KernelParams& params, cudaStream_t stream = nullptr);
 
+/// Compute anisotropic force field (Fx, Fy, Fz) from phi (for RK stages).
+__global__ void compute_force_kernel(
+    const double* __restrict__ phi,
+    double* __restrict__ Fx,
+    double* __restrict__ Fy,
+    double* __restrict__ Fz,
+    KernelParams p);
+
+/// Allen-Cahn RHS kernel using separate force arrays (for RK stages).
+__global__ void allen_cahn_rhs_kernel(
+    const double* __restrict__ phi_old,
+    double* __restrict__ rhs,
+    const double* __restrict__ u_old,
+    const double* __restrict__ Fx,
+    const double* __restrict__ Fy,
+    const double* __restrict__ Fz,
+    KernelParams p);
+
 /// Thermal diffusion equation kernel.
 void launch_thermal_equation(
     const double* u_old, double* u_new,
     const double* phi_new, const double* phi_old,
     const KernelParams& params, cudaStream_t stream = nullptr);
+
+/// Thermal RHS kernel (diffusion only, no latent heat) for RK stages.
+__global__ void thermal_rhs_kernel(
+    const double* __restrict__ u,
+    double* __restrict__ rhs,
+    KernelParams p);
 
 /// Boundary condition kernels (uniform BC on all faces).
 void launch_boundary_conditions(
