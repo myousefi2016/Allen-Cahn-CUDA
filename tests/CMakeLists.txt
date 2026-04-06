@@ -18,10 +18,16 @@ add_executable(unit_tests
     unit/test_BoundaryConditions.cu
     unit/test_Reduction.cu
     unit/test_CudaSolver.cu
+    unit/test_ThermalKernels.cu
+    unit/test_Gradient.cu
+    unit/test_SimulationEngine.cu
+    unit/test_CheckpointManager.cpp
+    unit/test_Logger.cpp
 )
 
 target_link_libraries(unit_tests PRIVATE
     GTest::gtest_main
+    ac_engine
     ac_core
     ac_cuda
     ac_io
@@ -40,6 +46,8 @@ add_executable(integration_tests
     integration/test_EulerConvergence.cu
     integration/test_EnergyConservation.cu
     integration/test_SchemeComparison.cu
+    integration/test_CheckpointRestart.cu
+    integration/test_StencilComparison.cu
 )
 
 target_link_libraries(integration_tests PRIVATE
