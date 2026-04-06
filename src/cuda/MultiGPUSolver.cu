@@ -202,15 +202,109 @@ void MultiGPUSolver::exchange_halos()
     }
 }
 
-void MultiGPUSolver::step(double dt)
+void MultiGPUSolver::exchange_halos_for_tmp()
 {
-    // Exchange halos before stepping
-    exchange_halos();
+    int Ny = config_.grid.Ny;
+    int Nz = config_.grid.Nz;
 
-    // Step each sub-domain
+    for (std::size_t g = 0; g + 1 < domains_.size(); ++g) {
+        auto& left = domains_[g];
+        auto& right = domains_[g + 1];
+
+        int left_Nx = left.local_Nx;
+        int right_Nx = right.local_Nx;
+
+        int left_src_x = left_Nx - 2 * halo_width_;
+        int right_dst_x = 0;
+        int right_src_x = halo_width_;
+        int left_dst_x = left_Nx - halo_width_;
+
+        CUDA_CHECK(cudaSetDevice(left.device_id));
+
+        // Exchange phi_tmp_
+        copy_slab(right.solver->phi_tmp_.data(), right.device_id,
+                  left.solver->phi_tmp_.data(), left.device_id,
+                  right_dst_x, left_src_x, halo_width_,
+                  Ny, Nz, right_Nx, left_Nx,
+                  left.halo_stream.get());
+        copy_slab(left.solver->phi_tmp_.data(), left.device_id,
+                  right.solver->phi_tmp_.data(), right.device_id,
+                  left_dst_x, right_src_x, halo_width_,
+                  Ny, Nz, left_Nx, right_Nx,
+                  left.halo_stream.get());
+
+        // Exchange u_tmp_
+        copy_slab(right.solver->u_tmp_.data(), right.device_id,
+                  left.solver->u_tmp_.data(), left.device_id,
+                  right_dst_x, left_src_x, halo_width_,
+                  Ny, Nz, right_Nx, left_Nx,
+                  left.halo_stream.get());
+        copy_slab(left.solver->u_tmp_.data(), left.device_id,
+                  right.solver->u_tmp_.data(), right.device_id,
+                  left_dst_x, right_src_x, halo_width_,
+                  Ny, Nz, left_Nx, right_Nx,
+                  left.halo_stream.get());
+    }
+
     for (auto& domain : domains_) {
         CUDA_CHECK(cudaSetDevice(domain.device_id));
-        domain.solver->step(dt);
+        domain.halo_stream.synchronize();
+    }
+}
+
+void MultiGPUSolver::step(double dt)
+{
+    auto scheme = config_.time.scheme;
+
+    if (scheme == TimeScheme::Euler) {
+        // Euler: single stage, one halo exchange suffices
+        exchange_halos();
+        for (auto& domain : domains_) {
+            CUDA_CHECK(cudaSetDevice(domain.device_id));
+            domain.solver->step(dt);
+        }
+    } else if (scheme == TimeScheme::Heun) {
+        // Heun: 2 stages. Need halo exchange before each stage.
+        // Stage 1: Euler predictor (uses phi_old/u_old -> writes phi_tmp/u_tmp)
+        exchange_halos();
+        for (auto& domain : domains_) {
+            CUDA_CHECK(cudaSetDevice(domain.device_id));
+            auto& s = *domain.solver;
+            s.mutable_params().dt = dt;
+            launch_allen_cahn_fused(s.phi_old_.data(), s.phi_tmp_.data(),
+                                    s.u_old_.data(), s.params_,
+                                    s.compute_stream_);
+            s.apply_bc(s.phi_tmp_.data(), s.config_.boundary.phi_bc);
+            launch_thermal_equation(s.u_old_.data(), s.u_tmp_.data(),
+                                    s.phi_tmp_.data(), s.phi_old_.data(),
+                                    s.params_, s.compute_stream_);
+            s.apply_bc(s.u_tmp_.data(), s.config_.boundary.u_bc);
+        }
+
+        // Exchange halos for the predictor fields (phi_tmp_, u_tmp_)
+        exchange_halos_for_tmp();
+
+        // Stage 2: Euler from predicted + Heun average
+        for (auto& domain : domains_) {
+            CUDA_CHECK(cudaSetDevice(domain.device_id));
+            domain.solver->step_heun_stage2(dt);
+        }
+    } else {
+        // RK4/IMEX with multi-GPU: fall back to single exchange + warning.
+        // Full inter-stage exchange for RK4 (4 stages) is complex.
+        // The error is confined to ~2 cells at each inter-GPU boundary.
+        if (!multi_stage_warned_) {
+            spdlog::warn("Multi-GPU with {} scheme: inter-stage halo exchange not fully "
+                         "implemented. Results near GPU boundaries may have reduced accuracy. "
+                         "Use Euler or Heun for full multi-GPU correctness.",
+                         scheme == TimeScheme::RK4 ? "RK4" : "IMEX");
+            multi_stage_warned_ = true;
+        }
+        exchange_halos();
+        for (auto& domain : domains_) {
+            CUDA_CHECK(cudaSetDevice(domain.device_id));
+            domain.solver->step(dt);
+        }
     }
 }
 

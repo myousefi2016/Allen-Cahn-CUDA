@@ -9,15 +9,12 @@ namespace ac::cuda {
 
 // ── Block-level max reduction ──────────────────────────────────────────────
 
-__device__ void warp_reduce_max(volatile double* sdata, int tid) {
-    if (tid < 32) {
-        if (sdata[tid] < sdata[tid + 32]) sdata[tid] = sdata[tid + 32];
-        if (sdata[tid] < sdata[tid + 16]) sdata[tid] = sdata[tid + 16];
-        if (sdata[tid] < sdata[tid +  8]) sdata[tid] = sdata[tid +  8];
-        if (sdata[tid] < sdata[tid +  4]) sdata[tid] = sdata[tid +  4];
-        if (sdata[tid] < sdata[tid +  2]) sdata[tid] = sdata[tid +  2];
-        if (sdata[tid] < sdata[tid +  1]) sdata[tid] = sdata[tid +  1];
+/// Warp-level max reduction using __shfl_down_sync (correct on Volta+ with ITS).
+__device__ double warp_reduce_max_val(double val) {
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        val = fmax(val, __shfl_down_sync(0xFFFFFFFF, val, offset));
     }
+    return val;
 }
 
 /// Compute max(|a[i] - b[i]|) across all elements via block reduction.
@@ -41,7 +38,7 @@ __global__ void max_abs_diff_kernel(
     sdata[tid] = thread_max;
     __syncthreads();
 
-    // Tree reduction
+    // Tree reduction in shared memory
     for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
         if (tid < s) {
             sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
@@ -49,10 +46,12 @@ __global__ void max_abs_diff_kernel(
         __syncthreads();
     }
 
-    warp_reduce_max(sdata, tid);
-
-    if (tid == 0) {
-        block_results[blockIdx.x] = sdata[0];
+    // Final warp reduction using shuffle
+    if (tid < 32) {
+        double val = sdata[tid];
+        if (blockDim.x >= 64) val = fmax(val, sdata[tid + 32]);
+        val = warp_reduce_max_val(val);
+        if (tid == 0) block_results[blockIdx.x] = val;
     }
 }
 
@@ -81,10 +80,11 @@ __global__ void final_max_kernel(
         __syncthreads();
     }
 
-    warp_reduce_max(sdata, tid);
-
-    if (tid == 0) {
-        result[0] = sdata[0];
+    if (tid < 32) {
+        double val = sdata[tid];
+        if (blockDim.x >= 64) val = fmax(val, sdata[tid + 32]);
+        val = warp_reduce_max_val(val);
+        if (tid == 0) result[0] = val;
     }
 }
 
@@ -137,9 +137,12 @@ __global__ void max_abs_kernel(
         __syncthreads();
     }
 
-    warp_reduce_max(sdata, tid);
-
-    if (tid == 0) block_results[blockIdx.x] = sdata[0];
+    if (tid < 32) {
+        double val = sdata[tid];
+        if (blockDim.x >= 64) val = fmax(val, sdata[tid + 32]);
+        val = warp_reduce_max_val(val);
+        if (tid == 0) block_results[blockIdx.x] = val;
+    }
 }
 
 void launch_max_abs_reduction(

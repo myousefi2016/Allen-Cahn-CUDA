@@ -46,6 +46,15 @@ public:
     /// Get total number of grid points.
     [[nodiscard]] std::size_t total_points() const { return total_points_; }
 
+    /// Heun stage 2: corrector + average. Called by MultiGPUSolver after inter-stage halo exchange.
+    void step_heun_stage2(double dt);
+
+    /// Mutable access to kernel params (for multi-GPU dt updates).
+    KernelParams& mutable_params() { return params_; }
+
+    // Grant MultiGPUSolver access to internal fields for halo exchange
+    friend class MultiGPUSolver;
+
 private:
     /// Apply uniform BCs to a single field.
     void apply_bc(double* field, const BoundaryConfig& bc);
