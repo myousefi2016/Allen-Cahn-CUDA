@@ -737,8 +737,8 @@ Step 2: Compute ∇·F using Fx, Fy, Fz → read 3 arrays
 Step 3: Update φ
 ```
 
-Memory for 600³ grid: `3 × 600³ × 8 bytes = 5.2 GB` just for force arrays.
-Total GPU memory: ~13.6 GB.
+Memory for 600³ grid: `3 × 600³ × 8 bytes ≈ 4.8 GB` just for force arrays.
+Total GPU memory (with index + force + field arrays): ~16.0 GB.
 
 ### 11.2 Fused Approach
 
@@ -769,7 +769,7 @@ graph LR
 
 | Metric | Original | Fused | Improvement |
 |--------|----------|-------|-------------|
-| GPU Memory (600³) | 13.6 GB | 6.4 GB | **53% reduction** |
+| GPU Memory (600³) | 16.0 GB | 6.4 GB | **60% reduction** |
 | Global Memory R/W | 3 arrays | 0 arrays | **Eliminated** |
 | ALU per thread | 1× | ~7× | More compute |
 | Bandwidth utilization | Bottleneck | Below limit | **Faster** |

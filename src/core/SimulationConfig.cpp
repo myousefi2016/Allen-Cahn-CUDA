@@ -200,6 +200,10 @@ void SimulationConfig::validate() const
     // Time validation
     if (time.dt <= 0.0) throw std::invalid_argument("dt must be positive");
     if (time.max_steps < 1) throw std::invalid_argument("max_steps must be >= 1");
+    if (time.dt_min <= 0.0) throw std::invalid_argument("dt_min must be positive");
+    if (time.dt_max <= 0.0) throw std::invalid_argument("dt_max must be positive");
+    if (time.dt_min >= time.dt_max) throw std::invalid_argument("dt_min must be < dt_max");
+    if (time.cfl_safety <= 0.0) throw std::invalid_argument("cfl_safety must be positive");
 
     // CFL check
     Real min_dx = std::min({grid.dx, grid.dy, grid.dz});
