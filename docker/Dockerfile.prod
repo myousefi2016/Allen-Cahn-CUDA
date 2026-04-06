@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 WORKDIR /build
 
 # Copy source tree into the builder
-COPY CMakeLists.txt CMakePresets.json main.cu ./
+COPY CMakeLists.txt CMakePresets.json vcpkg.json ./
 COPY cmake/ cmake/
 COPY src/ src/
 COPY config/ config/

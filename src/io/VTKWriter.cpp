@@ -170,15 +170,27 @@ void VTKWriter::write_raw_file(const WriteJob& job)
     // Write phi
     {
         std::ofstream ofs(base + "_phi.raw", std::ios::binary);
+        if (!ofs.is_open()) {
+            throw std::runtime_error("Failed to open file: " + base + "_phi.raw");
+        }
         ofs.write(reinterpret_cast<const char*>(job.phi_data.data()),
                   static_cast<std::streamsize>(job.phi_data.size() * sizeof(Real)));
+        if (!ofs.good()) {
+            throw std::runtime_error("Failed to write file: " + base + "_phi.raw");
+        }
     }
 
     // Write u
     {
         std::ofstream ofs(base + "_u.raw", std::ios::binary);
+        if (!ofs.is_open()) {
+            throw std::runtime_error("Failed to open file: " + base + "_u.raw");
+        }
         ofs.write(reinterpret_cast<const char*>(job.u_data.data()),
                   static_cast<std::streamsize>(job.u_data.size() * sizeof(Real)));
+        if (!ofs.good()) {
+            throw std::runtime_error("Failed to write file: " + base + "_u.raw");
+        }
     }
 
     spdlog::info("Wrote raw files: {}_phi.raw, {}_u.raw (step={}, time={:.4f})",
