@@ -1,13 +1,13 @@
-#include "cuda/Kernels.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
+#include "cuda/Kernels.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
-#include <vector>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <gtest/gtest.h>
 #include <numeric>
+#include <vector>
 
 using namespace ac;
 using namespace ac::cuda;
@@ -17,13 +17,13 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
     }
 };
 
-TEST_F(ReductionTest, MaxAbsDiff)
-{
+TEST_F(ReductionTest, MaxAbsDiff) {
     const std::size_t N = 10000;
 
     std::vector<double> a(N), b(N);
@@ -53,8 +53,7 @@ TEST_F(ReductionTest, MaxAbsDiff)
     EXPECT_NEAR(result, expected, 1e-10);
 }
 
-TEST_F(ReductionTest, MaxAbsDiffIdentical)
-{
+TEST_F(ReductionTest, MaxAbsDiffIdentical) {
     const std::size_t N = 1000;
     std::vector<double> data(N, 3.14);
 
@@ -73,11 +72,10 @@ TEST_F(ReductionTest, MaxAbsDiffIdentical)
     EXPECT_DOUBLE_EQ(result, 0.0);
 }
 
-TEST_F(ReductionTest, MaxAbsDiffSingleDifference)
-{
+TEST_F(ReductionTest, MaxAbsDiffSingleDifference) {
     const std::size_t N = 5000;
     std::vector<double> a(N, 0.0), b(N, 0.0);
-    a[2500] = 7.5;  // The only difference
+    a[2500] = 7.5; // The only difference
 
     DeviceField<double> d_a(N), d_b(N), d_result(1);
     d_a.copy_from_host(a.data());
@@ -94,8 +92,7 @@ TEST_F(ReductionTest, MaxAbsDiffSingleDifference)
     EXPECT_DOUBLE_EQ(result, 7.5);
 }
 
-TEST_F(ReductionTest, MaxAbsReduction)
-{
+TEST_F(ReductionTest, MaxAbsReduction) {
     const std::size_t N = 8000;
     std::vector<double> data(N);
     for (std::size_t i = 0; i < N; ++i) {
@@ -103,7 +100,8 @@ TEST_F(ReductionTest, MaxAbsReduction)
     }
 
     double expected = 0.0;
-    for (auto v : data) expected = std::max(expected, std::abs(v));
+    for (auto v : data)
+        expected = std::max(expected, std::abs(v));
 
     DeviceField<double> d_data(N), d_result(1);
     d_data.copy_from_host(data.data());
@@ -119,13 +117,12 @@ TEST_F(ReductionTest, MaxAbsReduction)
     EXPECT_NEAR(result, expected, 1e-10);
 }
 
-TEST_F(ReductionTest, LargeArray)
-{
+TEST_F(ReductionTest, LargeArray) {
     // Test with > 1M elements to ensure multi-block reduction works
-    const std::size_t N = 1024 * 1024 + 37;  // Non-power-of-2
+    const std::size_t N = 1024 * 1024 + 37; // Non-power-of-2
 
     std::vector<double> a(N, 1.0), b(N, 1.0);
-    b[N / 2] = 100.0;  // Max diff = 99.0
+    b[N / 2] = 100.0; // Max diff = 99.0
 
     DeviceField<double> d_a(N), d_b(N), d_result(1);
     d_a.copy_from_host(a.data());

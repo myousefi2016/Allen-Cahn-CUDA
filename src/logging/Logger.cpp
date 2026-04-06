@@ -1,10 +1,9 @@
 #include "logging/Logger.hpp"
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/sinks/basic_file_sink.h>
-
 #include <memory>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
 #include <string>
 #include <vector>
 
@@ -12,10 +11,9 @@ namespace ac {
 
 bool Logger::initialized_ = false;
 
-void Logger::init(spdlog::level::level_enum console_level,
-                  std::string_view log_file)
-{
-    if (initialized_) return;
+void Logger::init(spdlog::level::level_enum console_level, std::string_view log_file) {
+    if (initialized_)
+        return;
 
     std::vector<spdlog::sink_ptr> sinks;
 
@@ -27,8 +25,8 @@ void Logger::init(spdlog::level::level_enum console_level,
 
     // Optional file sink
     if (!log_file.empty()) {
-        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-            std::string(log_file), true /* truncate */);
+        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(std::string(log_file),
+                                                                             true /* truncate */);
         file_sink->set_level(spdlog::level::trace);
         file_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [%s:%#] %v");
         sinks.push_back(file_sink);
@@ -45,13 +43,11 @@ void Logger::init(spdlog::level::level_enum console_level,
     spdlog::info("Allen-Cahn CUDA v2.0.0 -- logger initialized");
 }
 
-void Logger::set_level(spdlog::level::level_enum level)
-{
+void Logger::set_level(spdlog::level::level_enum level) {
     spdlog::set_level(level);
 }
 
-void Logger::flush()
-{
+void Logger::flush() {
     spdlog::default_logger()->flush();
 }
 

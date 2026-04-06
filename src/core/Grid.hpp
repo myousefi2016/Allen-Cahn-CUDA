@@ -51,15 +51,11 @@ public:
     }
 
     [[nodiscard]] bool is_interior(int x, int y, int z) const noexcept {
-        return x > 0 && x < dims_.nx - 1 &&
-               y > 0 && y < dims_.ny - 1 &&
-               z > 0 && z < dims_.nz - 1;
+        return x > 0 && x < dims_.nx - 1 && y > 0 && y < dims_.ny - 1 && z > 0 && z < dims_.nz - 1;
     }
 
     [[nodiscard]] bool is_boundary(int x, int y, int z) const noexcept {
-        return !is_interior(x, y, z) &&
-               x >= 0 && x < dims_.nx &&
-               y >= 0 && y < dims_.ny &&
+        return !is_interior(x, y, z) && x >= 0 && x < dims_.nx && y >= 0 && y < dims_.ny &&
                z >= 0 && z < dims_.nz;
     }
 

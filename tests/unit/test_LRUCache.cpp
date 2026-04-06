@@ -7,8 +7,7 @@
 
 using namespace ac;
 
-TEST(LRUCacheTest, BasicPutGet)
-{
+TEST(LRUCacheTest, BasicPutGet) {
     LRUCache<int, std::string> cache(3);
     cache.put(1, "one");
     cache.put(2, "two");
@@ -20,8 +19,7 @@ TEST(LRUCacheTest, BasicPutGet)
     EXPECT_EQ(cache.size(), 3u);
 }
 
-TEST(LRUCacheTest, EvictsLRU)
-{
+TEST(LRUCacheTest, EvictsLRU) {
     LRUCache<int, std::string> cache(2);
     cache.put(1, "one");
     cache.put(2, "two");
@@ -33,8 +31,7 @@ TEST(LRUCacheTest, EvictsLRU)
     EXPECT_EQ(cache.get(3).value(), "three");
 }
 
-TEST(LRUCacheTest, AccessPromotesEntry)
-{
+TEST(LRUCacheTest, AccessPromotesEntry) {
     LRUCache<int, std::string> cache(2);
     cache.put(1, "one");
     cache.put(2, "two");
@@ -48,8 +45,7 @@ TEST(LRUCacheTest, AccessPromotesEntry)
     EXPECT_EQ(cache.get(3).value(), "three");
 }
 
-TEST(LRUCacheTest, UpdateExistingKey)
-{
+TEST(LRUCacheTest, UpdateExistingKey) {
     LRUCache<int, std::string> cache(3);
     cache.put(1, "one");
     cache.put(1, "ONE");
@@ -58,14 +54,12 @@ TEST(LRUCacheTest, UpdateExistingKey)
     EXPECT_EQ(cache.size(), 1u);
 }
 
-TEST(LRUCacheTest, MissReturnsNullopt)
-{
+TEST(LRUCacheTest, MissReturnsNullopt) {
     LRUCache<int, int> cache(5);
     EXPECT_FALSE(cache.get(42).has_value());
 }
 
-TEST(LRUCacheTest, EraseKey)
-{
+TEST(LRUCacheTest, EraseKey) {
     LRUCache<int, int> cache(3);
     cache.put(1, 10);
     cache.put(2, 20);
@@ -75,8 +69,7 @@ TEST(LRUCacheTest, EraseKey)
     EXPECT_FALSE(cache.erase(99));
 }
 
-TEST(LRUCacheTest, Clear)
-{
+TEST(LRUCacheTest, Clear) {
     LRUCache<int, int> cache(3);
     cache.put(1, 10);
     cache.put(2, 20);
@@ -85,26 +78,23 @@ TEST(LRUCacheTest, Clear)
     EXPECT_FALSE(cache.get(1).has_value());
 }
 
-TEST(LRUCacheTest, HitMissCounters)
-{
+TEST(LRUCacheTest, HitMissCounters) {
     LRUCache<int, int> cache(3);
     cache.put(1, 10);
-    cache.get(1);  // hit
-    cache.get(2);  // miss
-    cache.get(1);  // hit
+    cache.get(1); // hit
+    cache.get(2); // miss
+    cache.get(1); // hit
 
     EXPECT_EQ(cache.hit_count(), 2u);
     EXPECT_EQ(cache.miss_count(), 1u);
     EXPECT_NEAR(cache.hit_rate(), 2.0 / 3.0, 1e-10);
 }
 
-TEST(LRUCacheTest, ZeroCapacityThrows)
-{
+TEST(LRUCacheTest, ZeroCapacityThrows) {
     EXPECT_THROW(LRUCache<int, int>(0), std::invalid_argument);
 }
 
-TEST(LRUCacheTest, ContainsWithoutPromotion)
-{
+TEST(LRUCacheTest, ContainsWithoutPromotion) {
     LRUCache<int, int> cache(2);
     cache.put(1, 10);
     cache.put(2, 20);
@@ -116,8 +106,7 @@ TEST(LRUCacheTest, ContainsWithoutPromotion)
     EXPECT_FALSE(cache.contains(1));
 }
 
-TEST(LRUCacheTest, ConcurrentAccess)
-{
+TEST(LRUCacheTest, ConcurrentAccess) {
     LRUCache<int, int> cache(1000);
 
     auto writer = [&](int start) {
@@ -137,7 +126,8 @@ TEST(LRUCacheTest, ConcurrentAccess)
         threads.emplace_back(writer, t * 100);
         threads.emplace_back(reader, t * 100);
     }
-    for (auto& t : threads) t.join();
+    for (auto& t : threads)
+        t.join();
 
     // No crash or deadlock is the test; verify some data is present
     EXPECT_GT(cache.size(), 0u);

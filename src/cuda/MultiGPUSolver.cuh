@@ -1,10 +1,10 @@
 #pragma once
 
-#include "core/SimulationConfig.hpp"
 #include "core/FieldData.hpp"
-#include "cuda/ISolver.cuh"
+#include "core/SimulationConfig.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/DeviceField.cuh"
+#include "cuda/ISolver.cuh"
 
 #include <memory>
 #include <vector>
@@ -31,12 +31,12 @@ public:
 private:
     struct GPUDomain {
         int device_id = 0;
-        int x_start = 0;       // Global X start index (exclusive of halo)
-        int x_end = 0;         // Global X end index (exclusive of halo)
-        int local_Nx = 0;      // Including halo on both sides
+        int x_start = 0;  // Global X start index (exclusive of halo)
+        int x_end = 0;    // Global X end index (exclusive of halo)
+        int local_Nx = 0; // Including halo on both sides
         int halo = 0;
         std::unique_ptr<CudaSolver> solver;
-        Stream halo_stream;     // Dedicated stream for halo exchange
+        Stream halo_stream; // Dedicated stream for halo exchange
     };
 
     /// Extract sub-domain data from global field for initialization.
@@ -50,10 +50,8 @@ private:
     void exchange_halos_for_tmp();
 
     /// Copy a YZ-slab from one device to another.
-    void copy_slab(double* dst, int dst_device,
-                   const double* src, int src_device,
-                   int x_dst, int x_src, int slab_count,
-                   int Ny, int Nz, int dst_Nx, int src_Nx,
+    void copy_slab(double* dst, int dst_device, const double* src, int src_device, int x_dst,
+                   int x_src, int slab_count, int Ny, int Nz, int dst_Nx, int src_Nx,
                    cudaStream_t stream);
 
     SimulationConfig config_;

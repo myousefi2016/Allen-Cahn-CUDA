@@ -1,26 +1,24 @@
 #include "io/VTKWriter.hpp"
 
-#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cmath>
-#include <fstream>
 #include <filesystem>
+#include <fstream>
 #include <numeric>
+#include <spdlog/spdlog.h>
 
 #ifdef AC_HAS_VTK
-#include <vtkNew.h>
 #include <vtkDoubleArray.h>
-#include <vtkPoints.h>
+#include <vtkNew.h>
 #include <vtkPointData.h>
+#include <vtkPoints.h>
 #include <vtkStructuredGrid.h>
 #include <vtkXMLStructuredGridWriter.h>
 #endif
 
 namespace ac {
 
-VTKWriter::VTKWriter(const Grid& grid, const OutputParams& params)
-    : grid_(grid), params_(params)
-{
+VTKWriter::VTKWriter(const Grid& grid, const OutputParams& params) : grid_(grid), params_(params) {
     // Ensure output directory exists
     std::filesystem::create_directories(params_.output_dir);
 
@@ -29,8 +27,7 @@ VTKWriter::VTKWriter(const Grid& grid, const OutputParams& params)
     spdlog::debug("VTKWriter initialized, output_dir={}", params_.output_dir.string());
 }
 
-VTKWriter::~VTKWriter()
-{
+VTKWriter::~VTKWriter() {
     flush();
     stop_ = true;
     queue_cv_.notify_one();
@@ -39,9 +36,7 @@ VTKWriter::~VTKWriter()
     }
 }
 
-void VTKWriter::write_async(int step, double time,
-                             const FieldData& phi, const FieldData& u)
-{
+void VTKWriter::write_async(int step, double time, const FieldData& phi, const FieldData& u) {
     WriteJob job;
     job.step = step;
     job.time = time;
@@ -55,28 +50,27 @@ void VTKWriter::write_async(int step, double time,
     queue_cv_.notify_one();
 }
 
-void VTKWriter::flush()
-{
+void VTKWriter::flush() {
     std::unique_lock<std::mutex> lock(queue_mutex_);
     queue_cv_.wait(lock, [this] { return job_queue_.empty(); });
 }
 
-int VTKWriter::pending_jobs() const
-{
+int VTKWriter::pending_jobs() const {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     return static_cast<int>(job_queue_.size());
 }
 
-void VTKWriter::writer_loop()
-{
+void VTKWriter::writer_loop() {
     while (true) {
         WriteJob job;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             queue_cv_.wait(lock, [this] { return !job_queue_.empty() || stop_; });
 
-            if (stop_ && job_queue_.empty()) return;
-            if (job_queue_.empty()) continue;
+            if (stop_ && job_queue_.empty())
+                return;
+            if (job_queue_.empty())
+                continue;
 
             job = std::move(job_queue_.front());
             job_queue_.pop();
@@ -89,9 +83,8 @@ void VTKWriter::writer_loop()
             auto phi_stats = compute_statistics(job.phi_data, job.step, "phi");
             auto u_stats = compute_statistics(job.u_data, job.step, "u");
 
-            spdlog::debug("Step {} stats: phi=[{:.4f}, {:.4f}], u=[{:.4f}, {:.4f}]",
-                          job.step, phi_stats.min_val, phi_stats.max_val,
-                          u_stats.min_val, u_stats.max_val);
+            spdlog::debug("Step {} stats: phi=[{:.4f}, {:.4f}], u=[{:.4f}, {:.4f}]", job.step,
+                          phi_stats.min_val, phi_stats.max_val, u_stats.min_val, u_stats.max_val);
 
             if (params_.format == "vts") {
                 write_vtk_file(job);
@@ -106,8 +99,7 @@ void VTKWriter::writer_loop()
     }
 }
 
-void VTKWriter::write_vtk_file(const WriteJob& job)
-{
+void VTKWriter::write_vtk_file(const WriteJob& job) {
 #ifdef AC_HAS_VTK
     int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
 
@@ -133,8 +125,7 @@ void VTKWriter::write_vtk_file(const WriteJob& job)
     for (int x = 0; x < Nx; ++x) {
         for (int y = 0; y < Ny; ++y) {
             for (int z = 0; z < Nz; ++z) {
-                points->InsertNextPoint(
-                    x * grid_.dx(), y * grid_.dy(), z * grid_.dz());
+                points->InsertNextPoint(x * grid_.dx(), y * grid_.dy(), z * grid_.dz());
             }
         }
     }
@@ -146,26 +137,23 @@ void VTKWriter::write_vtk_file(const WriteJob& job)
     sg->GetPointData()->AddArray(u_arr);
 
     // Write VTS file
-    std::string filename = (params_.output_dir /
-        ("output_" + std::to_string(job.step) + ".vts")).string();
+    std::string filename =
+        (params_.output_dir / ("output_" + std::to_string(job.step) + ".vts")).string();
 
     vtkNew<vtkXMLStructuredGridWriter> writer;
     writer->SetFileName(filename.c_str());
     writer->SetInputData(sg);
     writer->Write();
 
-    spdlog::info("Wrote VTK file: {} (step={}, time={:.4f})",
-                 filename, job.step, job.time);
+    spdlog::info("Wrote VTK file: {} (step={}, time={:.4f})", filename, job.step, job.time);
 #else
     spdlog::warn("VTK support not compiled in, falling back to raw output");
     write_raw_file(job);
 #endif
 }
 
-void VTKWriter::write_raw_file(const WriteJob& job)
-{
-    std::string base = (params_.output_dir /
-        ("output_" + std::to_string(job.step))).string();
+void VTKWriter::write_raw_file(const WriteJob& job) {
+    std::string base = (params_.output_dir / ("output_" + std::to_string(job.step))).string();
 
     // Write phi
     {
@@ -193,21 +181,22 @@ void VTKWriter::write_raw_file(const WriteJob& job)
         }
     }
 
-    spdlog::info("Wrote raw files: {}_phi.raw, {}_u.raw (step={}, time={:.4f})",
-                 base, base, job.step, job.time);
+    spdlog::info("Wrote raw files: {}_phi.raw, {}_u.raw (step={}, time={:.4f})", base, base,
+                 job.step, job.time);
 }
 
-FieldStatistics VTKWriter::compute_statistics(const std::vector<Real>& data,
-                                               int step, const std::string& name)
-{
+FieldStatistics VTKWriter::compute_statistics(const std::vector<Real>& data, int step,
+                                              const std::string& name) {
     std::string key = std::to_string(step) + ":" + name;
 
     // Check cache first
     auto cached = stats_cache_.get(key);
-    if (cached) return *cached;
+    if (cached)
+        return *cached;
 
     FieldStatistics stats;
-    if (data.empty()) return stats;
+    if (data.empty())
+        return stats;
 
     stats.min_val = *std::min_element(data.begin(), data.end());
     stats.max_val = *std::max_element(data.begin(), data.end());
@@ -226,9 +215,8 @@ FieldStatistics VTKWriter::compute_statistics(const std::vector<Real>& data,
     return stats;
 }
 
-std::optional<FieldStatistics> VTKWriter::get_cached_stats(
-    int step, const std::string& field_name) const
-{
+std::optional<FieldStatistics> VTKWriter::get_cached_stats(int step,
+                                                           const std::string& field_name) const {
     std::string key = std::to_string(step) + ":" + field_name;
     return stats_cache_.get(key);
 }

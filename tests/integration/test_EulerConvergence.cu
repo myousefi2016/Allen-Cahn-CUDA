@@ -1,12 +1,12 @@
-#include "core/SimulationConfig.hpp"
-#include "core/Grid.hpp"
 #include "core/FieldData.hpp"
+#include "core/Grid.hpp"
+#include "core/SimulationConfig.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 #include <vector>
 
 using namespace ac;
@@ -17,16 +17,20 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
     }
 
     /// Run a simulation with the given dt and return the final phi field.
-    FieldData run_simulation(double dt, int num_steps)
-    {
+    FieldData run_simulation(double dt, int num_steps) {
         SimulationConfig cfg;
-        cfg.grid.Nx = 16; cfg.grid.Ny = 16; cfg.grid.Nz = 16;
-        cfg.grid.dx = 0.4; cfg.grid.dy = 0.4; cfg.grid.dz = 0.4;
+        cfg.grid.Nx = 16;
+        cfg.grid.Ny = 16;
+        cfg.grid.Nz = 16;
+        cfg.grid.dx = 0.4;
+        cfg.grid.dy = 0.4;
+        cfg.grid.dz = 0.4;
         cfg.time.dt = dt;
         cfg.time.scheme = TimeScheme::Euler;
         cfg.physics.delta = 0.8;
@@ -40,13 +44,14 @@ protected:
 
         int Nx = grid.Nx(), Ny = grid.Ny(), Nz = grid.Nz();
         Real r0 = cfg.initial.seed_radius;
-        Real cx = 0.5*Nx, cy = 0.5*Ny, cz = 0.5*Nz;
+        Real cx = 0.5 * Nx, cy = 0.5 * Ny, cz = 0.5 * Nz;
         for (int x = 0; x < Nx; ++x)
             for (int y = 0; y < Ny; ++y)
                 for (int z = 0; z < Nz; ++z) {
-                    Real r = std::sqrt((x-cx)*(x-cx) + (y-cy)*(y-cy) + (z-cz)*(z-cz));
-                    phi(x,y,z) = (r < r0) ? 1.0 : -1.0;
-                    u(x,y,z) = (r < r0) ? 0.0 : -cfg.physics.delta * (1.0 - std::exp(-(r-r0)));
+                    Real r =
+                        std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
+                    phi(x, y, z) = (r < r0) ? 1.0 : -1.0;
+                    u(x, y, z) = (r < r0) ? 0.0 : -cfg.physics.delta * (1.0 - std::exp(-(r - r0)));
                 }
 
         CudaSolver solver(cfg);
@@ -61,8 +66,7 @@ protected:
     }
 
     /// Compute L2 norm of difference between two fields.
-    double l2_diff(const FieldData& a, const FieldData& b)
-    {
+    double l2_diff(const FieldData& a, const FieldData& b) {
         double sum = 0.0;
         for (std::size_t i = 0; i < a.size(); ++i) {
             double d = a.data()[i] - b.data()[i];
@@ -74,9 +78,8 @@ protected:
 
 /// Test that halving dt roughly halves the error (first-order convergence).
 /// We use a "reference" solution at very small dt and compare coarser solutions.
-TEST_F(EulerConvergenceTest, FirstOrderConvergence)
-{
-    double T = 0.1;  // Total simulation time
+TEST_F(EulerConvergenceTest, FirstOrderConvergence) {
+    double T = 0.1; // Total simulation time
 
     // Reference solution with small dt
     double dt_ref = 0.0005;
@@ -110,8 +113,7 @@ TEST_F(EulerConvergenceTest, FirstOrderConvergence)
 }
 
 /// Test that finer dt produces results closer to the reference.
-TEST_F(EulerConvergenceTest, FinerDtReducesError)
-{
+TEST_F(EulerConvergenceTest, FinerDtReducesError) {
     double T = 0.05;
 
     double dt_ref = 0.0002;
@@ -126,6 +128,5 @@ TEST_F(EulerConvergenceTest, FinerDtReducesError)
     double err_coarse = l2_diff(phi_coarse, phi_ref);
     double err_fine = l2_diff(phi_fine, phi_ref);
 
-    EXPECT_LT(err_fine, err_coarse)
-        << "Finer dt should produce smaller error than coarser dt";
+    EXPECT_LT(err_fine, err_coarse) << "Finer dt should produce smaller error than coarser dt";
 }

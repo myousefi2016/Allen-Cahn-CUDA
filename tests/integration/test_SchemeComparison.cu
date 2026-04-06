@@ -2,8 +2,8 @@
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 #include <vector>
 
 using namespace ac;
@@ -14,7 +14,8 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
     }
 
@@ -45,9 +46,8 @@ protected:
         for (int x = 0; x < N; ++x)
             for (int y = 0; y < N; ++y)
                 for (int z = 0; z < N; ++z) {
-                    double r = std::sqrt((x - cx) * (x - cx) +
-                                         (y - cy) * (y - cy) +
-                                         (z - cz) * (z - cz));
+                    double r =
+                        std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
                     phi(x, y, z) = (r < r0) ? 1.0 : -1.0;
                     u(x, y, z) = (r < r0) ? 0.0 : -0.8;
                 }
@@ -69,8 +69,7 @@ protected:
 
 // Test that RK4 and Euler produce different but comparable results.
 // RK4 should be more accurate, so after many steps the results diverge.
-TEST_F(SchemeComparisonTest, RK4DiffersFromEuler)
-{
+TEST_F(SchemeComparisonTest, RK4DiffersFromEuler) {
     int N = 16;
     int steps = 20;
 
@@ -81,7 +80,8 @@ TEST_F(SchemeComparisonTest, RK4DiffersFromEuler)
     FieldData phi0(grid, "phi"), u0(grid, "u");
     make_sphere_ic(phi0, u0, N);
     euler_solver.initialize(phi0, u0);
-    for (int s = 0; s < steps; ++s) euler_solver.step(0.0005);
+    for (int s = 0; s < steps; ++s)
+        euler_solver.step(0.0005);
     FieldData phi_euler(grid, "phi_e");
     euler_solver.copy_phi_to_host(phi_euler);
 
@@ -89,7 +89,8 @@ TEST_F(SchemeComparisonTest, RK4DiffersFromEuler)
     auto cfg_rk4 = make_config(N, TimeScheme::RK4);
     CudaSolver rk4_solver(cfg_rk4);
     rk4_solver.initialize(phi0, u0);
-    for (int s = 0; s < steps; ++s) rk4_solver.step(0.0005);
+    for (int s = 0; s < steps; ++s)
+        rk4_solver.step(0.0005);
     FieldData phi_rk4(grid, "phi_r");
     rk4_solver.copy_phi_to_host(phi_rk4);
 
@@ -102,8 +103,7 @@ TEST_F(SchemeComparisonTest, RK4DiffersFromEuler)
 }
 
 // Test that Heun gives results between Euler and RK4 in terms of accuracy
-TEST_F(SchemeComparisonTest, HeunIntermediateAccuracy)
-{
+TEST_F(SchemeComparisonTest, HeunIntermediateAccuracy) {
     int N = 16;
     int steps = 10;
 
@@ -115,7 +115,8 @@ TEST_F(SchemeComparisonTest, HeunIntermediateAccuracy)
         auto cfg = make_config(N, scheme);
         CudaSolver solver(cfg);
         solver.initialize(phi0, u0);
-        for (int s = 0; s < steps; ++s) solver.step(0.0005);
+        for (int s = 0; s < steps; ++s)
+            solver.step(0.0005);
         FieldData result(grid, "result");
         solver.copy_phi_to_host(result);
         return result;
@@ -136,11 +137,10 @@ TEST_F(SchemeComparisonTest, HeunIntermediateAccuracy)
 }
 
 // Test IMEX stability with larger timestep (implicit diffusion should be stable)
-TEST_F(SchemeComparisonTest, IMEXStabilityLargerDt)
-{
+TEST_F(SchemeComparisonTest, IMEXStabilityLargerDt) {
     int N = 16;
     auto cfg = make_config(N, TimeScheme::IMEX);
-    cfg.time.dt = 0.005;  // Larger dt that would be unstable for explicit diffusion
+    cfg.time.dt = 0.005; // Larger dt that would be unstable for explicit diffusion
 
     CudaSolver solver(cfg);
     Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});

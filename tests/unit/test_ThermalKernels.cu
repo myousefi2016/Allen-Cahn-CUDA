@@ -1,10 +1,10 @@
-#include "cuda/Kernels.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
+#include "cuda/Kernels.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 #include <vector>
 
 using namespace ac;
@@ -20,18 +20,23 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
         total_ = static_cast<std::size_t>(N) * N * N;
     }
 
     KernelParams make_params() {
         KernelParams p{};
-        p.Nx = N; p.Ny = N; p.Nz = N;
-        p.dx = dx; p.dy = dx; p.dz = dx;
+        p.Nx = N;
+        p.Ny = N;
+        p.Nz = N;
+        p.dx = dx;
+        p.dy = dx;
+        p.dz = dx;
         p.dt = dt;
         p.D = D;
-        p.stencil_type = 0;  // 7-point
+        p.stencil_type = 0; // 7-point
         p.epsilon = 0.0;
         p.W0 = 1.0;
         p.tau0 = 1.0;
@@ -40,22 +45,19 @@ protected:
         return p;
     }
 
-    int idx(int x, int y, int z) const {
-        return x * N * N + y * N + z;
-    }
+    int idx(int x, int y, int z) const { return x * N * N + y * N + z; }
 
     std::size_t total_ = 0;
 };
 
 // Uniform phi_new == phi_old, uniform u -> no change
-TEST_F(ThermalTest, UniformFieldNoChange)
-{
+TEST_F(ThermalTest, UniformFieldNoChange) {
     auto p = make_params();
 
     std::vector<double> u_old_h(total_, 5.0);
     std::vector<double> u_new_h(total_, 0.0);
     std::vector<double> phi_old_h(total_, 1.0);
-    std::vector<double> phi_new_h(total_, 1.0);  // same as phi_old
+    std::vector<double> phi_new_h(total_, 1.0); // same as phi_old
 
     DeviceField<double> d_u_old(total_), d_u_new(total_);
     DeviceField<double> d_phi_old(total_), d_phi_new(total_);
@@ -66,9 +68,8 @@ TEST_F(ThermalTest, UniformFieldNoChange)
     d_phi_new.copy_from_host(phi_new_h.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    launch_thermal_equation(d_u_old.data(), d_u_new.data(),
-                            d_phi_new.data(), d_phi_old.data(),
-                            p, nullptr);
+    launch_thermal_equation(d_u_old.data(), d_u_new.data(), d_phi_new.data(), d_phi_old.data(), p,
+                            nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     d_u_new.copy_to_host(u_new_h.data());
@@ -84,8 +85,7 @@ TEST_F(ThermalTest, UniformFieldNoChange)
 }
 
 // phi_new == phi_old (no latent heat), u = x^2 -> Laplacian = 2/dx^2
-TEST_F(ThermalTest, DiffusionOnly)
-{
+TEST_F(ThermalTest, DiffusionOnly) {
     auto p = make_params();
 
     std::vector<double> u_old_h(total_);
@@ -108,9 +108,8 @@ TEST_F(ThermalTest, DiffusionOnly)
     d_phi_new.copy_from_host(phi_new_h.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    launch_thermal_equation(d_u_old.data(), d_u_new.data(),
-                            d_phi_new.data(), d_phi_old.data(),
-                            p, nullptr);
+    launch_thermal_equation(d_u_old.data(), d_u_new.data(), d_phi_new.data(), d_phi_old.data(), p,
+                            nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     d_u_new.copy_to_host(u_new_h.data());
@@ -128,8 +127,7 @@ TEST_F(ThermalTest, DiffusionOnly)
 }
 
 // Uniform u (Laplacian=0), phi_new != phi_old -> verify latent heat
-TEST_F(ThermalTest, LatentHeatOnly)
-{
+TEST_F(ThermalTest, LatentHeatOnly) {
     auto p = make_params();
 
     std::vector<double> u_old_h(total_, 3.0);
@@ -146,9 +144,8 @@ TEST_F(ThermalTest, LatentHeatOnly)
     d_phi_new.copy_from_host(phi_new_h.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    launch_thermal_equation(d_u_old.data(), d_u_new.data(),
-                            d_phi_new.data(), d_phi_old.data(),
-                            p, nullptr);
+    launch_thermal_equation(d_u_old.data(), d_u_new.data(), d_phi_new.data(), d_phi_old.data(), p,
+                            nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     d_u_new.copy_to_host(u_new_h.data());
@@ -166,8 +163,7 @@ TEST_F(ThermalTest, LatentHeatOnly)
 }
 
 // Both diffusion and latent heat present
-TEST_F(ThermalTest, CombinedUpdate)
-{
+TEST_F(ThermalTest, CombinedUpdate) {
     auto p = make_params();
 
     std::vector<double> u_old_h(total_);
@@ -190,9 +186,8 @@ TEST_F(ThermalTest, CombinedUpdate)
     d_phi_new.copy_from_host(phi_new_h.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    launch_thermal_equation(d_u_old.data(), d_u_new.data(),
-                            d_phi_new.data(), d_phi_old.data(),
-                            p, nullptr);
+    launch_thermal_equation(d_u_old.data(), d_u_new.data(), d_phi_new.data(), d_phi_old.data(), p,
+                            nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     d_u_new.copy_to_host(u_new_h.data());
@@ -212,8 +207,7 @@ TEST_F(ThermalTest, CombinedUpdate)
 }
 
 // Verify boundary points remain unchanged (kernel does not write them)
-TEST_F(ThermalTest, BoundaryUntouched)
-{
+TEST_F(ThermalTest, BoundaryUntouched) {
     auto p = make_params();
 
     // Initialize u_new to a sentinel value
@@ -232,9 +226,8 @@ TEST_F(ThermalTest, BoundaryUntouched)
     d_phi_new.copy_from_host(phi_new_h.data());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    launch_thermal_equation(d_u_old.data(), d_u_new.data(),
-                            d_phi_new.data(), d_phi_old.data(),
-                            p, nullptr);
+    launch_thermal_equation(d_u_old.data(), d_u_new.data(), d_phi_new.data(), d_phi_old.data(), p,
+                            nullptr);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     d_u_new.copy_to_host(u_new_h.data());
@@ -245,9 +238,7 @@ TEST_F(ThermalTest, BoundaryUntouched)
     for (int x = 0; x < N; ++x)
         for (int y = 0; y < N; ++y)
             for (int z = 0; z < N; ++z) {
-                if (x == 0 || x == N - 1 ||
-                    y == 0 || y == N - 1 ||
-                    z == 0 || z == N - 1) {
+                if (x == 0 || x == N - 1 || y == 0 || y == N - 1 || z == 0 || z == N - 1) {
                     EXPECT_DOUBLE_EQ(u_new_h[idx(x, y, z)], sentinel)
                         << "Boundary modified at (" << x << "," << y << "," << z << ")";
                 }

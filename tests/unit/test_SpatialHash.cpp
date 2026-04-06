@@ -1,12 +1,11 @@
 #include "core/SpatialHash.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
+#include <gtest/gtest.h>
 
 using namespace ac;
 
-TEST(SpatialHashTest, InsertAndQuery)
-{
+TEST(SpatialHashTest, InsertAndQuery) {
     SpatialHash<int> hash(1.0);
     hash.insert(0.5, 0.5, 0.5, 42);
     hash.insert(0.7, 0.3, 0.8, 43);
@@ -17,11 +16,10 @@ TEST(SpatialHashTest, InsertAndQuery)
     EXPECT_EQ(hash.total_entries(), 2u);
 }
 
-TEST(SpatialHashTest, DifferentCells)
-{
+TEST(SpatialHashTest, DifferentCells) {
     SpatialHash<int> hash(1.0);
-    hash.insert(0.5, 0.5, 0.5, 1);   // cell (0,0,0)
-    hash.insert(1.5, 0.5, 0.5, 2);   // cell (1,0,0)
+    hash.insert(0.5, 0.5, 0.5, 1); // cell (0,0,0)
+    hash.insert(1.5, 0.5, 0.5, 2); // cell (1,0,0)
 
     auto* cell0 = hash.query_cell(0.5, 0.5, 0.5);
     auto* cell1 = hash.query_cell(1.5, 0.5, 0.5);
@@ -33,12 +31,11 @@ TEST(SpatialHashTest, DifferentCells)
     EXPECT_EQ(hash.num_cells(), 2u);
 }
 
-TEST(SpatialHashTest, RadiusQuery)
-{
+TEST(SpatialHashTest, RadiusQuery) {
     SpatialHash<int> hash(1.0);
-    hash.insert(0.5, 0.5, 0.5, 1);   // cell (0,0,0)
-    hash.insert(1.5, 0.5, 0.5, 2);   // cell (1,0,0)
-    hash.insert(5.5, 5.5, 5.5, 99);  // far away
+    hash.insert(0.5, 0.5, 0.5, 1);  // cell (0,0,0)
+    hash.insert(1.5, 0.5, 0.5, 2);  // cell (1,0,0)
+    hash.insert(5.5, 5.5, 5.5, 99); // far away
 
     auto result = hash.query_radius(0.5, 0.5, 0.5, 1);
     EXPECT_EQ(result.size(), 2u);
@@ -47,8 +44,7 @@ TEST(SpatialHashTest, RadiusQuery)
     EXPECT_EQ(far_result.size(), 1u);
 }
 
-TEST(SpatialHashTest, EmptyQuery)
-{
+TEST(SpatialHashTest, EmptyQuery) {
     SpatialHash<int> hash(1.0);
     auto* cell = hash.query_cell(10.0, 10.0, 10.0);
     EXPECT_EQ(cell, nullptr);
@@ -57,8 +53,7 @@ TEST(SpatialHashTest, EmptyQuery)
     EXPECT_TRUE(result.empty());
 }
 
-TEST(SpatialHashTest, NegativeCoordinates)
-{
+TEST(SpatialHashTest, NegativeCoordinates) {
     SpatialHash<int> hash(2.0);
     hash.insert(-1.5, -3.5, -0.5, 10);
 
@@ -67,8 +62,7 @@ TEST(SpatialHashTest, NegativeCoordinates)
     EXPECT_EQ(cell->size(), 1u);
 }
 
-TEST(SpatialHashTest, Clear)
-{
+TEST(SpatialHashTest, Clear) {
     SpatialHash<int> hash(1.0);
     hash.insert(0.5, 0.5, 0.5, 1);
     hash.insert(1.5, 1.5, 1.5, 2);
@@ -78,8 +72,7 @@ TEST(SpatialHashTest, Clear)
     EXPECT_EQ(hash.total_entries(), 0u);
 }
 
-TEST(SpatialHashTest, BuildFromField)
-{
+TEST(SpatialHashTest, BuildFromField) {
     SpatialHash<int> hash(2.0);
     int Nx = 10, Ny = 10, Nz = 10;
     Real dx = 0.5, dy = 0.5, dz = 0.5;
@@ -100,8 +93,7 @@ TEST(SpatialHashTest, BuildFromField)
     EXPECT_GT(hash.num_cells(), 0u);
 }
 
-TEST(SpatialHashTest, GridPointInsert)
-{
+TEST(SpatialHashTest, GridPointInsert) {
     SpatialHash<int> hash(1.0);
     hash.insert_grid_point(5, 10, 15, 0.1, 0.1, 0.1, 42);
 
@@ -111,8 +103,7 @@ TEST(SpatialHashTest, GridPointInsert)
     EXPECT_EQ((*cell)[0], 42);
 }
 
-TEST(SpatialHashTest, InvalidCellSizeThrows)
-{
+TEST(SpatialHashTest, InvalidCellSizeThrows) {
     EXPECT_THROW(SpatialHash<int>(0.0), std::invalid_argument);
     EXPECT_THROW(SpatialHash<int>(-1.0), std::invalid_argument);
 }

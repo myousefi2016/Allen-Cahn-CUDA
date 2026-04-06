@@ -1,10 +1,10 @@
 #pragma once
 
-#include "core/SimulationConfig.hpp"
 #include "core/FieldData.hpp"
-#include "cuda/ISolver.cuh"
+#include "core/SimulationConfig.hpp"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
+#include "cuda/ISolver.cuh"
 #include "cuda/Kernels.cuh"
 
 #include <memory>
@@ -70,9 +70,9 @@ private:
     DeviceField<double> u_old_, u_new_;
 
     // Temporary buffers for higher-order time integration
-    DeviceField<double> phi_tmp_, u_tmp_;     // Heun: predictor stage
-    DeviceField<double> k1_phi_, k2_phi_, k3_phi_, k4_phi_;  // RK4
-    DeviceField<double> k1_u_, k2_u_, k3_u_, k4_u_;          // RK4
+    DeviceField<double> phi_tmp_, u_tmp_;                   // Heun: predictor stage
+    DeviceField<double> k1_phi_, k2_phi_, k3_phi_, k4_phi_; // RK4
+    DeviceField<double> k1_u_, k2_u_, k3_u_, k4_u_;         // RK4
 
     // Force field buffers (needed for non-fused RK stages)
     DeviceField<double> Fx_, Fy_, Fz_;

@@ -1,13 +1,13 @@
-#include "core/SimulationConfig.hpp"
-#include "core/Grid.hpp"
 #include "core/FieldData.hpp"
+#include "core/Grid.hpp"
+#include "core/SimulationConfig.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <gtest/gtest.h>
 
 using namespace ac;
 using namespace ac::cuda;
@@ -17,7 +17,8 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
     }
 
@@ -48,9 +49,8 @@ protected:
         for (int x = 0; x < N; ++x)
             for (int y = 0; y < N; ++y)
                 for (int z = 0; z < N; ++z) {
-                    double r = std::sqrt((x - cx) * (x - cx) +
-                                         (y - cy) * (y - cy) +
-                                         (z - cz) * (z - cz));
+                    double r =
+                        std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy) + (z - cz) * (z - cz));
                     phi(x, y, z) = (r < r0) ? 1.0 : -1.0;
                     u(x, y, z) = (r < r0) ? 0.0 : -delta * (1.0 - std::exp(-(r - r0)));
                 }
@@ -82,7 +82,8 @@ protected:
     double solid_fraction(const FieldData& f) {
         double count = 0.0;
         for (std::size_t i = 0; i < f.size(); ++i) {
-            if (f.data()[i] > 0.0) count += 1.0;
+            if (f.data()[i] > 0.0)
+                count += 1.0;
         }
         return count / static_cast<double>(f.size());
     }
@@ -108,8 +109,7 @@ protected:
 
 /// Verify that both stencils produce physically valid fields:
 /// phi in [-1, 1], no NaN or Inf values.
-TEST_F(StencilComparisonTest, BothStencilsConverge)
-{
+TEST_F(StencilComparisonTest, BothStencilsConverge) {
     const int steps = 20;
 
     auto phi_7pt = run_with_stencil(StencilType::Standard7Point, steps);
@@ -146,8 +146,7 @@ TEST_F(StencilComparisonTest, BothStencilsConverge)
 /// results compared to the 7-point standard stencil. We verify this by comparing
 /// the maximum gradient magnitude: the 27-point result should have lower or equal
 /// max gradient since it better approximates the continuous Laplacian.
-TEST_F(StencilComparisonTest, IsotropicStencilSmoother)
-{
+TEST_F(StencilComparisonTest, IsotropicStencilSmoother) {
     const int steps = 20;
     const double dx = 0.4;
 
@@ -158,25 +157,21 @@ TEST_F(StencilComparisonTest, IsotropicStencilSmoother)
     double max_grad_27pt = max_gradient_magnitude(phi_27pt, dx);
 
     // Both should have non-trivial gradients (there is an interface)
-    EXPECT_GT(max_grad_7pt, 0.1)
-        << "7pt max gradient should be non-trivial (interface exists)";
-    EXPECT_GT(max_grad_27pt, 0.1)
-        << "27pt max gradient should be non-trivial (interface exists)";
+    EXPECT_GT(max_grad_7pt, 0.1) << "7pt max gradient should be non-trivial (interface exists)";
+    EXPECT_GT(max_grad_27pt, 0.1) << "27pt max gradient should be non-trivial (interface exists)";
 
     // The 27-point stencil, being more isotropic, should produce a smoother
     // interface (lower or equal max gradient). Allow a small tolerance in case
     // they are very close.
     EXPECT_LE(max_grad_27pt, max_grad_7pt * 1.05)
         << "27pt stencil should produce smoother (or comparably smooth) interface. "
-        << "7pt max grad = " << max_grad_7pt
-        << ", 27pt max grad = " << max_grad_27pt;
+        << "7pt max grad = " << max_grad_7pt << ", 27pt max grad = " << max_grad_27pt;
 }
 
 /// Both stencils should preserve consistent physics: given the same initial
 /// conditions and parameters, the solid fraction should evolve in the same
 /// direction (both growing or both shrinking).
-TEST_F(StencilComparisonTest, BothPreservePhysics)
-{
+TEST_F(StencilComparisonTest, BothPreservePhysics) {
     const int steps = 20;
 
     // Get initial solid fraction (same for both since same IC)
@@ -194,10 +189,8 @@ TEST_F(StencilComparisonTest, BothPreservePhysics)
     double sf_27pt = solid_fraction(phi_27pt);
 
     // The solid fraction should have changed from the initial state for both
-    EXPECT_NE(sf_7pt, initial_sf)
-        << "7pt: solid fraction should evolve from initial value";
-    EXPECT_NE(sf_27pt, initial_sf)
-        << "27pt: solid fraction should evolve from initial value";
+    EXPECT_NE(sf_7pt, initial_sf) << "7pt: solid fraction should evolve from initial value";
+    EXPECT_NE(sf_27pt, initial_sf) << "27pt: solid fraction should evolve from initial value";
 
     // Both stencils should show the same qualitative behavior
     // (both growing or both shrinking relative to initial)

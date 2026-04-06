@@ -9,12 +9,11 @@ namespace ac::cuda {
 // ── Error checking ─────────────────────────────────────────────────────────
 
 /// Throws std::runtime_error on CUDA failure.
-inline void check(cudaError_t err, const char* file, int line)
-{
+inline void check(cudaError_t err, const char* file, int line) {
     if (err != cudaSuccess) {
-        throw std::runtime_error(
-            std::string("CUDA error at ") + file + ":" + std::to_string(line) +
-            ": " + cudaGetErrorString(err) + " (" + cudaGetErrorName(err) + ")");
+        throw std::runtime_error(std::string("CUDA error at ") + file + ":" + std::to_string(line) +
+                                 ": " + cudaGetErrorString(err) + " (" + cudaGetErrorName(err) +
+                                 ")");
     }
 }
 
@@ -26,21 +25,19 @@ class Stream {
 public:
     Stream() { CUDA_CHECK(cudaStreamCreate(&stream_)); }
 
-    explicit Stream(unsigned int flags) {
-        CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, flags));
-    }
+    explicit Stream(unsigned int flags) { CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, flags)); }
 
     ~Stream() {
-        if (stream_) cudaStreamDestroy(stream_);
+        if (stream_)
+            cudaStreamDestroy(stream_);
     }
 
-    Stream(Stream&& other) noexcept : stream_(other.stream_) {
-        other.stream_ = nullptr;
-    }
+    Stream(Stream&& other) noexcept : stream_(other.stream_) { other.stream_ = nullptr; }
 
     Stream& operator=(Stream&& other) noexcept {
         if (this != &other) {
-            if (stream_) cudaStreamDestroy(stream_);
+            if (stream_)
+                cudaStreamDestroy(stream_);
             stream_ = other.stream_;
             other.stream_ = nullptr;
         }
@@ -51,7 +48,7 @@ public:
     Stream& operator=(const Stream&) = delete;
 
     [[nodiscard]] cudaStream_t get() const noexcept { return stream_; }
-    operator cudaStream_t() const noexcept { return stream_; }  // NOLINT
+    operator cudaStream_t() const noexcept { return stream_; } // NOLINT
 
     void synchronize() const { CUDA_CHECK(cudaStreamSynchronize(stream_)); }
 
@@ -68,16 +65,16 @@ public:
     }
 
     ~Event() {
-        if (event_) cudaEventDestroy(event_);
+        if (event_)
+            cudaEventDestroy(event_);
     }
 
-    Event(Event&& other) noexcept : event_(other.event_) {
-        other.event_ = nullptr;
-    }
+    Event(Event&& other) noexcept : event_(other.event_) { other.event_ = nullptr; }
 
     Event& operator=(Event&& other) noexcept {
         if (this != &other) {
-            if (event_) cudaEventDestroy(event_);
+            if (event_)
+                cudaEventDestroy(event_);
             event_ = other.event_;
             other.event_ = nullptr;
         }
@@ -87,9 +84,7 @@ public:
     Event(const Event&) = delete;
     Event& operator=(const Event&) = delete;
 
-    void record(cudaStream_t stream = nullptr) {
-        CUDA_CHECK(cudaEventRecord(event_, stream));
-    }
+    void record(cudaStream_t stream = nullptr) { CUDA_CHECK(cudaEventRecord(event_, stream)); }
 
     void synchronize() { CUDA_CHECK(cudaEventSynchronize(event_)); }
 
@@ -135,20 +130,17 @@ struct LaunchConfig {
     static LaunchConfig for_1d(std::size_t total_threads, int block_size = 256) {
         LaunchConfig cfg;
         cfg.block = dim3(static_cast<unsigned>(block_size));
-        cfg.grid = dim3(static_cast<unsigned>(
-            (total_threads + block_size - 1) / block_size));
+        cfg.grid = dim3(static_cast<unsigned>((total_threads + block_size - 1) / block_size));
         return cfg;
     }
 
     /// 3D launch config for structured grid.
-    static LaunchConfig for_3d(int Nx, int Ny, int Nz,
-                                dim3 block = {8, 8, 8}) {
+    static LaunchConfig for_3d(int Nx, int Ny, int Nz, dim3 block = {8, 8, 8}) {
         LaunchConfig cfg;
         cfg.block = block;
-        cfg.grid = dim3(
-            (static_cast<unsigned>(Nx) + block.x - 1) / block.x,
-            (static_cast<unsigned>(Ny) + block.y - 1) / block.y,
-            (static_cast<unsigned>(Nz) + block.z - 1) / block.z);
+        cfg.grid = dim3((static_cast<unsigned>(Nx) + block.x - 1) / block.x,
+                        (static_cast<unsigned>(Ny) + block.y - 1) / block.y,
+                        (static_cast<unsigned>(Nz) + block.z - 1) / block.z);
         return cfg;
     }
 };

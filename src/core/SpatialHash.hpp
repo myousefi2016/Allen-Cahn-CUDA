@@ -44,14 +44,10 @@ struct CellCoordHash {
 ///
 /// Cell size should be chosen based on the expected query radius.
 /// A cell_size of ~10*dx gives good balance between memory and query speed.
-template <typename Value = int>
-class SpatialHash {
+template <typename Value = int> class SpatialHash {
 public:
     /// Construct with given cell size in physical units.
-    explicit SpatialHash(Real cell_size)
-        : cell_size_(cell_size)
-        , inv_cell_size_(1.0 / cell_size)
-    {
+    explicit SpatialHash(Real cell_size) : cell_size_(cell_size), inv_cell_size_(1.0 / cell_size) {
         if (cell_size <= 0.0) {
             throw std::invalid_argument("SpatialHash cell_size must be positive");
         }
@@ -65,9 +61,7 @@ public:
     }
 
     /// Insert a grid point by its (ix, iy, iz) indices and grid spacing.
-    void insert_grid_point(int ix, int iy, int iz,
-                           Real dx, Real dy, Real dz,
-                           const Value& value) {
+    void insert_grid_point(int ix, int iy, int iz, Real dx, Real dy, Real dz, const Value& value) {
         insert(ix * dx, iy * dy, iz * dz, value);
     }
 
@@ -81,7 +75,7 @@ public:
     /// Query all values within a radius (in cell coordinates).
     /// Returns values from all cells within 'radius_cells' of the query point.
     [[nodiscard]] std::vector<Value> query_radius(Real x, Real y, Real z,
-                                                   int radius_cells = 1) const {
+                                                  int radius_cells = 1) const {
         std::vector<Value> result;
         auto center = to_cell(x, y, z);
 
@@ -91,8 +85,7 @@ public:
                     CellCoord c{center.cx + dx, center.cy + dy, center.cz + dz};
                     auto it = buckets_.find(c);
                     if (it != buckets_.end()) {
-                        result.insert(result.end(),
-                                      it->second.begin(), it->second.end());
+                        result.insert(result.end(), it->second.begin(), it->second.end());
                     }
                 }
             }
@@ -103,18 +96,15 @@ public:
     /// Build spatial hash from a field, inserting all grid points where
     /// the predicate returns true. Useful for extracting interface points.
     template <typename FieldAccessor, typename Predicate>
-    void build_from_field(int Nx, int Ny, int Nz,
-                          Real dx, Real dy, Real dz,
-                          FieldAccessor&& accessor,
-                          Predicate&& pred) {
+    void build_from_field(int Nx, int Ny, int Nz, Real dx, Real dy, Real dz,
+                          FieldAccessor&& accessor, Predicate&& pred) {
         clear();
         for (int ix = 0; ix < Nx; ++ix) {
             for (int iy = 0; iy < Ny; ++iy) {
                 for (int iz = 0; iz < Nz; ++iz) {
                     if (pred(accessor(ix, iy, iz))) {
                         int linear = ix * Ny * Nz + iy * Nz + iz;
-                        insert_grid_point(ix, iy, iz, dx, dy, dz,
-                                          static_cast<Value>(linear));
+                        insert_grid_point(ix, iy, iz, dx, dy, dz, static_cast<Value>(linear));
                     }
                 }
             }
@@ -138,11 +128,9 @@ public:
 
 private:
     [[nodiscard]] CellCoord to_cell(Real x, Real y, Real z) const {
-        return CellCoord{
-            static_cast<int>(std::floor(x * inv_cell_size_)),
-            static_cast<int>(std::floor(y * inv_cell_size_)),
-            static_cast<int>(std::floor(z * inv_cell_size_))
-        };
+        return CellCoord{static_cast<int>(std::floor(x * inv_cell_size_)),
+                         static_cast<int>(std::floor(y * inv_cell_size_)),
+                         static_cast<int>(std::floor(z * inv_cell_size_))};
     }
 
     Real cell_size_;

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "core/SimulationConfig.hpp"
-#include "core/Grid.hpp"
-#include "core/FieldData.hpp"
 #include "core/CheckpointManager.hpp"
+#include "core/FieldData.hpp"
+#include "core/Grid.hpp"
+#include "core/SimulationConfig.hpp"
 #include "io/VTKWriter.hpp"
 
 #include <memory>

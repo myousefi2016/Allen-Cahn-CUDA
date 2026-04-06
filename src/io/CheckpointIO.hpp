@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/Grid.hpp"
 #include "core/FieldData.hpp"
+#include "core/Grid.hpp"
 #include "core/SimulationConfig.hpp"
 
 #include <filesystem>
@@ -15,21 +15,19 @@ namespace ac {
 class CheckpointIO {
 public:
     struct Header {
-        char magic[8] = {'A','C','C','H','K','P','T','\0'};
+        char magic[8] = {'A', 'C', 'C', 'H', 'K', 'P', 'T', '\0'};
         int version = 1;
         int Nx, Ny, Nz;
         double dx, dy, dz;
         double dt;
         double time;
         int step;
-        int num_fields;  // Always 2 (phi, u)
+        int num_fields; // Always 2 (phi, u)
     };
 
     /// Write a checkpoint to disk.
-    static void write(const std::filesystem::path& path,
-                      int step, double time, double dt,
-                      const Grid& grid,
-                      const FieldData& phi, const FieldData& u);
+    static void write(const std::filesystem::path& path, int step, double time, double dt,
+                      const Grid& grid, const FieldData& phi, const FieldData& u);
 
     /// Read a checkpoint from disk. Returns the restored fields.
     struct RestoreData {

@@ -1,10 +1,10 @@
-#include "core/SimulationEngine.hpp"
 #include "core/SimulationConfig.hpp"
+#include "core/SimulationEngine.hpp"
 #include "logging/Logger.hpp"
 
-#include <gtest/gtest.h>
 #include <cmath>
 #include <filesystem>
+#include <gtest/gtest.h>
 
 using namespace ac;
 
@@ -13,15 +13,14 @@ protected:
     void SetUp() override {
         int device_count = 0;
         cudaGetDeviceCount(&device_count);
-        if (device_count == 0) GTEST_SKIP() << "No CUDA devices available";
+        if (device_count == 0)
+            GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
         test_dir_ = std::filesystem::temp_directory_path() / "test_sim_engine";
         std::filesystem::create_directories(test_dir_);
     }
 
-    void TearDown() override {
-        std::filesystem::remove_all(test_dir_);
-    }
+    void TearDown() override { std::filesystem::remove_all(test_dir_); }
 
     SimulationConfig make_config(int N = 8, int max_steps = 10) {
         SimulationConfig cfg;
@@ -70,8 +69,7 @@ protected:
     std::filesystem::path test_dir_;
 };
 
-TEST_F(SimulationEngineTest, Construction)
-{
+TEST_F(SimulationEngineTest, Construction) {
     auto cfg = make_config(8, 10);
     EXPECT_NO_THROW({
         SimulationEngine engine(cfg);
@@ -81,8 +79,7 @@ TEST_F(SimulationEngineTest, Construction)
     });
 }
 
-TEST_F(SimulationEngineTest, InitializeFieldsPattern)
-{
+TEST_F(SimulationEngineTest, InitializeFieldsPattern) {
     auto cfg = make_config(8, 5);
     SimulationEngine engine(cfg);
 
@@ -99,15 +96,14 @@ TEST_F(SimulationEngineTest, InitializeFieldsPattern)
     double r0 = cfg.initial.seed_radius;
 
     // Center should be inside seed -> phi = 1.0
-    double center_r = std::sqrt((N/2 - cx)*(N/2 - cx) +
-                                (N/2 - cy)*(N/2 - cy) +
-                                (N/2 - cz)*(N/2 - cz));
+    double center_r = std::sqrt((N / 2 - cx) * (N / 2 - cx) + (N / 2 - cy) * (N / 2 - cy) +
+                                (N / 2 - cz) * (N / 2 - cz));
     if (center_r < r0) {
-        EXPECT_DOUBLE_EQ(phi(N/2, N/2, N/2), 1.0);
+        EXPECT_DOUBLE_EQ(phi(N / 2, N / 2, N / 2), 1.0);
     }
 
     // Far corner (0,0,0) should be outside seed -> phi = -1.0
-    double corner_r = std::sqrt(cx*cx + cy*cy + cz*cz);
+    double corner_r = std::sqrt(cx * cx + cy * cy + cz * cz);
     if (corner_r >= r0) {
         EXPECT_DOUBLE_EQ(phi(0, 0, 0), -1.0);
     }
@@ -115,12 +111,11 @@ TEST_F(SimulationEngineTest, InitializeFieldsPattern)
     // Verify u at the center is 0.0 (inside seed)
     const auto& u = engine0.u();
     if (center_r < r0) {
-        EXPECT_DOUBLE_EQ(u(N/2, N/2, N/2), 0.0);
+        EXPECT_DOUBLE_EQ(u(N / 2, N / 2, N / 2), 0.0);
     }
 }
 
-TEST_F(SimulationEngineTest, RunShortSimulation)
-{
+TEST_F(SimulationEngineTest, RunShortSimulation) {
     auto cfg = make_config(8, 5);
     SimulationEngine engine(cfg);
 
@@ -152,8 +147,7 @@ TEST_F(SimulationEngineTest, RunShortSimulation)
             }
 }
 
-TEST_F(SimulationEngineTest, AdaptiveTimeStep)
-{
+TEST_F(SimulationEngineTest, AdaptiveTimeStep) {
     auto cfg = make_config(8, 5);
     cfg.time.adaptive = true;
     cfg.time.adaptive_tolerance = 0.01;

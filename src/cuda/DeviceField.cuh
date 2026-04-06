@@ -9,33 +9,30 @@ namespace ac::cuda {
 
 /// RAII wrapper for a flat GPU device allocation.
 /// Move-only. Automatically calls cudaFree on destruction.
-template <typename T>
-class DeviceField {
+template <typename T> class DeviceField {
 public:
     DeviceField() = default;
 
-    explicit DeviceField(std::size_t count)
-        : count_(count)
-    {
+    explicit DeviceField(std::size_t count) : count_(count) {
         if (count_ > 0) {
             CUDA_CHECK(cudaMalloc(&ptr_, count_ * sizeof(T)));
         }
     }
 
     ~DeviceField() {
-        if (ptr_) cudaFree(ptr_);
+        if (ptr_)
+            cudaFree(ptr_);
     }
 
-    DeviceField(DeviceField&& other) noexcept
-        : ptr_(other.ptr_), count_(other.count_)
-    {
+    DeviceField(DeviceField&& other) noexcept : ptr_(other.ptr_), count_(other.count_) {
         other.ptr_ = nullptr;
         other.count_ = 0;
     }
 
     DeviceField& operator=(DeviceField&& other) noexcept {
         if (this != &other) {
-            if (ptr_) cudaFree(ptr_);
+            if (ptr_)
+                cudaFree(ptr_);
             ptr_ = other.ptr_;
             count_ = other.count_;
             other.ptr_ = nullptr;
@@ -55,20 +52,20 @@ public:
 
     /// Async copy from host to device.
     void copy_from_host(const T* host_data, cudaStream_t stream = nullptr) {
-        CUDA_CHECK(cudaMemcpyAsync(ptr_, host_data, count_ * sizeof(T),
-                                    cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(
+            cudaMemcpyAsync(ptr_, host_data, count_ * sizeof(T), cudaMemcpyHostToDevice, stream));
     }
 
     /// Async copy from device to host.
     void copy_to_host(T* host_data, cudaStream_t stream = nullptr) const {
-        CUDA_CHECK(cudaMemcpyAsync(host_data, ptr_, count_ * sizeof(T),
-                                    cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(
+            cudaMemcpyAsync(host_data, ptr_, count_ * sizeof(T), cudaMemcpyDeviceToHost, stream));
     }
 
     /// Copy from another DeviceField.
     void copy_from(const DeviceField& other, cudaStream_t stream = nullptr) {
-        CUDA_CHECK(cudaMemcpyAsync(ptr_, other.ptr_, count_ * sizeof(T),
-                                    cudaMemcpyDeviceToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(ptr_, other.ptr_, count_ * sizeof(T), cudaMemcpyDeviceToDevice,
+                                   stream));
     }
 
     /// Zero all bytes asynchronously.

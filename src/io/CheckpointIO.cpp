@@ -1,18 +1,15 @@
 #include "io/CheckpointIO.hpp"
 
-#include <spdlog/spdlog.h>
-#include <fstream>
-#include <stdexcept>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <spdlog/spdlog.h>
+#include <stdexcept>
 
 namespace ac {
 
-void CheckpointIO::write(const std::filesystem::path& path,
-                          int step, double time, double dt,
-                          const Grid& grid,
-                          const FieldData& phi, const FieldData& u)
-{
+void CheckpointIO::write(const std::filesystem::path& path, int step, double time, double dt,
+                         const Grid& grid, const FieldData& phi, const FieldData& u) {
     std::filesystem::create_directories(path.parent_path());
 
     std::ofstream ofs(path, std::ios::binary);
@@ -44,13 +41,12 @@ void CheckpointIO::write(const std::filesystem::path& path,
               static_cast<std::streamsize>(u.size() * sizeof(Real)));
 
     ofs.flush();
-    spdlog::info("Checkpoint written: {} (step={}, time={:.4f}, size={:.1f} MB)",
-                 path.string(), step, time,
-                 static_cast<double>(sizeof(Header) + 2 * phi.size() * sizeof(Real)) / (1024.0 * 1024.0));
+    spdlog::info(
+        "Checkpoint written: {} (step={}, time={:.4f}, size={:.1f} MB)", path.string(), step, time,
+        static_cast<double>(sizeof(Header) + 2 * phi.size() * sizeof(Real)) / (1024.0 * 1024.0));
 }
 
-CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path)
-{
+CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) {
     std::ifstream ifs(path, std::ios::binary);
     if (!ifs.is_open()) {
         throw std::runtime_error("Cannot open checkpoint file: " + path.string());
@@ -64,13 +60,11 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path)
         throw std::runtime_error("Invalid checkpoint file magic: " + path.string());
     }
     if (hdr.version != 1) {
-        throw std::runtime_error("Unsupported checkpoint version: " +
-                                 std::to_string(hdr.version));
+        throw std::runtime_error("Unsupported checkpoint version: " + std::to_string(hdr.version));
     }
 
     // Reconstruct grid
-    Grid grid(Dim3{hdr.Nx, hdr.Ny, hdr.Nz},
-              Spacing{hdr.dx, hdr.dy, hdr.dz});
+    Grid grid(Dim3{hdr.Nx, hdr.Ny, hdr.Nz}, Spacing{hdr.dx, hdr.dy, hdr.dz});
 
     // Read fields
     FieldData phi(grid, "phi");
@@ -85,23 +79,21 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path)
         throw std::runtime_error("Checkpoint file truncated: " + path.string());
     }
 
-    spdlog::info("Checkpoint restored: {} (step={}, time={:.4f})",
-                 path.string(), hdr.step, hdr.time);
+    spdlog::info("Checkpoint restored: {} (step={}, time={:.4f})", path.string(), hdr.step,
+                 hdr.time);
 
-    return RestoreData{
-        .step = hdr.step,
-        .time = hdr.time,
-        .dt = hdr.dt,
-        .grid = grid,
-        .phi = std::move(phi),
-        .u = std::move(u)
-    };
+    return RestoreData{.step = hdr.step,
+                       .time = hdr.time,
+                       .dt = hdr.dt,
+                       .grid = grid,
+                       .phi = std::move(phi),
+                       .u = std::move(u)};
 }
 
-bool CheckpointIO::is_valid_checkpoint(const std::filesystem::path& path)
-{
+bool CheckpointIO::is_valid_checkpoint(const std::filesystem::path& path) {
     std::ifstream ifs(path, std::ios::binary);
-    if (!ifs.is_open()) return false;
+    if (!ifs.is_open())
+        return false;
 
     Header hdr{};
     ifs.read(reinterpret_cast<char*>(&hdr), sizeof(Header));
