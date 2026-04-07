@@ -172,7 +172,9 @@ TEST_F(StencilComparisonTest, IsotropicStencilSmoother) {
 /// conditions and parameters, the solid fraction should evolve in the same
 /// direction (both growing or both shrinking).
 TEST_F(StencilComparisonTest, BothPreservePhysics) {
-    const int steps = 20;
+    // Need enough steps for the interface to advect across at least one cell
+    // (sharp +/-1 IC + small dt means fewer steps just diffuses inside cells).
+    const int steps = 400;
 
     // Get initial solid fraction (same for both since same IC)
     auto cfg = make_config(StencilType::Standard7Point);
