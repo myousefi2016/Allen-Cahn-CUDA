@@ -274,10 +274,13 @@ TEST_F(BoundaryConditionsTest, PerFaceMixedBC) {
             EXPECT_DOUBLE_EQ(field_host[(N - 1) * N * N + y * N + z],
                              field_host[(N - 2) * N * N + y * N + z]);
 
-    // Check Z-lo: Dirichlet = -1.0
-    for (int x = 0; x < N; ++x)
+    // Check Z-lo: Dirichlet = -1.0.
+    // Skip x=0 (owned by X-lo Dirichlet=-5) — see ownership convention in
+    // BoundaryKernels.cu (X faces are applied last and own all of their plane).
+    for (int x = 1; x < N; ++x)
         for (int y = 0; y < N; ++y)
-            EXPECT_DOUBLE_EQ(field_host[x * N * N + y * N + 0], -1.0);
+            EXPECT_DOUBLE_EQ(field_host[x * N * N + y * N + 0], -1.0)
+                << "Z-lo at x=" << x << " y=" << y;
 }
 
 TEST_F(BoundaryConditionsTest, InteriorUnchanged) {

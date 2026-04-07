@@ -34,16 +34,17 @@ __global__ void __launch_bounds__(256)
     if (i >= dim1_max || j >= dim2_max)
         return;
 
-    // Ownership convention for shared edges/corners:
-    // X faces own all their cells; Y faces skip cells on X faces;
-    // Z faces skip cells on X or Y faces. This prevents later face
-    // launches from overwriting corner/edge values written by earlier ones.
+    // Ownership convention (matches Z,Y,X application order in
+    // launch_boundary_conditions): X faces own all of their plane;
+    // Y faces own their plane minus cells lying on the X faces;
+    // Z faces own their plane minus cells lying on the X or Y faces.
+    // X is applied last and so reads neighbour values that already
+    // include the contributions from Y and Z (needed so periodic BCs
+    // propagate consistently into corners).
     if (face_axis == 1) {
-        // Y face: i indexes X. Skip x in {0, Nx-1}.
         if (i == 0 || i == Nx - 1)
             return;
     } else if (face_axis == 2) {
-        // Z face: i indexes X, j indexes Y. Skip X edges and Y edges.
         if (i == 0 || i == Nx - 1)
             return;
         if (j == 0 || j == Ny - 1)
@@ -193,7 +194,10 @@ void launch_boundary_conditions(double* field, const KernelParams& params, BCTyp
     bc.beta = bc_beta;
     bc.gamma = bc_gamma;
 
-    for (int axis = 0; axis < 3; ++axis) {
+    // Apply Z, then Y, then X. X is applied last so its read of the
+    // neighbouring interior cell already reflects the Y/Z updates,
+    // letting periodic BCs propagate cleanly into shared corners.
+    for (int axis = 2; axis >= 0; --axis) {
         for (int side = 0; side < 2; ++side) {
             launch_bc_face(field, params, axis, side, bc, stream);
         }
@@ -203,7 +207,7 @@ void launch_boundary_conditions(double* field, const KernelParams& params, BCTyp
 
 void launch_boundary_conditions_per_face(double* field, const KernelParams& params,
                                          const PerFaceBoundary& face_bcs, cudaStream_t stream) {
-    for (int axis = 0; axis < 3; ++axis) {
+    for (int axis = 2; axis >= 0; --axis) {
         for (int side = 0; side < 2; ++side) {
             const auto& bc = face_bcs.get(axis, side);
             launch_bc_face(field, params, axis, side, bc, stream);

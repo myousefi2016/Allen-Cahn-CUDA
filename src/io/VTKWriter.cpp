@@ -52,7 +52,7 @@ void VTKWriter::write_async(int step, double time, const FieldData& phi, const F
 
 void VTKWriter::flush() {
     std::unique_lock<std::mutex> lock(queue_mutex_);
-    queue_cv_.wait(lock, [this] { return job_queue_.empty(); });
+    queue_cv_.wait(lock, [this] { return job_queue_.empty() && active_jobs_ == 0; });
 }
 
 int VTKWriter::pending_jobs() const {
@@ -74,9 +74,8 @@ void VTKWriter::writer_loop() {
 
             job = std::move(job_queue_.front());
             job_queue_.pop();
+            ++active_jobs_;
         }
-        // Notify flush() that queue shrunk
-        queue_cv_.notify_all();
 
         try {
             // Compute and cache field statistics
@@ -96,6 +95,13 @@ void VTKWriter::writer_loop() {
         } catch (...) {
             spdlog::error("VTK writer failed for step {} with unknown error", job.step);
         }
+
+        // Mark job as done and notify flush()
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            --active_jobs_;
+        }
+        queue_cv_.notify_all();
     }
 }
 

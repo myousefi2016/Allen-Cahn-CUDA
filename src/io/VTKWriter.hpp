@@ -71,6 +71,9 @@ private:
     mutable std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
     std::atomic<bool> stop_{false};
+    /// Number of jobs currently being written (popped from queue but not finished).
+    /// flush() must wait for both queue empty AND active_jobs_ == 0.
+    int active_jobs_{0};
 
     /// LRU cache for field statistics keyed by "step:field_name".
     /// Capacity of 256 covers the last 128 output steps (2 fields each).
