@@ -205,8 +205,13 @@ TEST_F(BoundaryConditionsTest, RobinBC) {
     // denom = alpha + beta/(sign*ds) = 1.0 + 0.5/(-1.0) = 0.5
     // u_bnd = (gamma + beta*u_inner/(sign*ds)) / denom
     //       = (1.0 + 0.5*2.0/(-1.0)) / 0.5 = (1.0 - 1.0) / 0.5 = 0.0
-    for (int y = 0; y < N; ++y)
-        for (int z = 0; z < N; ++z) {
+    //
+    // Skip cells on shared edges/corners (y or z on a Y/Z face): the
+    // Y/Z BC kernels write those cells too and the application order
+    // makes the corner value implementation-defined. The interior of
+    // the X face is what the Robin BC formula is testing.
+    for (int y = 1; y < N - 1; ++y)
+        for (int z = 1; z < N - 1; ++z) {
             double u_bnd = field_host[0 * N * N + y * N + z];
             EXPECT_NEAR(u_bnd, 0.0, 1e-12) << "Robin X-lo at y=" << y << " z=" << z;
         }
@@ -215,8 +220,8 @@ TEST_F(BoundaryConditionsTest, RobinBC) {
     // denom = 1.0 + 0.5/(1.0) = 1.5
     // u_bnd = (1.0 + 0.5*2.0/(1.0)) / 1.5 = (1.0 + 1.0) / 1.5 = 4/3
     double expected_hi = (gamma_val + beta * 2.0 / (1.0 * h)) / (alpha + beta / (1.0 * h));
-    for (int y = 0; y < N; ++y)
-        for (int z = 0; z < N; ++z) {
+    for (int y = 1; y < N - 1; ++y)
+        for (int z = 1; z < N - 1; ++z) {
             double u_bnd = field_host[(N - 1) * N * N + y * N + z];
             EXPECT_NEAR(u_bnd, expected_hi, 1e-12) << "Robin X-hi at y=" << y << " z=" << z;
         }
