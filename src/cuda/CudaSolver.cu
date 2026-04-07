@@ -484,11 +484,15 @@ double CudaSolver::compute_max_dphi() const {
 }
 
 void CudaSolver::copy_phi_to_host(FieldData& out) const {
+    // Ensure all in-flight kernel writes on compute_stream_ are visible
+    // before issuing the device->host copy on transfer_stream_.
+    compute_stream_.synchronize();
     phi_old_.copy_to_host(out.data(), transfer_stream_);
     transfer_stream_.synchronize();
 }
 
 void CudaSolver::copy_u_to_host(FieldData& out) const {
+    compute_stream_.synchronize();
     u_old_.copy_to_host(out.data(), transfer_stream_);
     transfer_stream_.synchronize();
 }
