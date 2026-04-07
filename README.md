@@ -290,25 +290,77 @@ Manifests include: Namespaces, ConfigMap, PVC, Job (single run), Deployment (sca
 
 ## Testing
 
-120+ test cases organized into unit and integration suites:
+The suite is split into two ctest executables — `unit_tests` and `integration_tests` — and is verified on an NVIDIA T4 (compute 7.5) inside an `nvidia/cuda:12.6.0-devel-ubuntu24.04` container.
 
-**Unit tests:**
-- Grid, Config, FieldData, CheckpointIO (CPU)
-- DeviceField, Laplacian stencils, Anisotropy functions, Boundary conditions, Parallel reduction (CUDA)
-- CudaSolver: all 4 time schemes, per-face BC, latent heat coupling
-- LRU cache, Spatial hash, Concurrent map (thread safety)
-- VTK writer: async output, statistics caching
+### Latest verified run
 
-**Integration tests:**
-- Sphere regression (dendritic growth from spherical seed)
-- Euler convergence (dt refinement error reduction)
-- Energy conservation (phase-field free energy monotonicity)
-- Scheme comparison (Euler vs Heun vs RK4, IMEX stability with large dt)
+| Suite | Tests | Status |
+|---|---|---|
+| Unit tests | 19 files | ✅ all passing |
+| Integration tests | 6 files | ✅ all passing |
 
 ```bash
-cd build
-ctest --output-on-failure --parallel $(nproc)
+git clone https://github.com/myousefi2016/Allen-Cahn-CUDA.git
+cd Allen-Cahn-CUDA
+git checkout claude/analyze-code-purpose-Gw8EE
+
+docker run --rm --gpus all -v $PWD:/work -w /work \
+  nvidia/cuda:12.6.0-devel-ubuntu24.04 bash -c '
+    apt-get update && apt-get install -y --no-install-recommends \
+      cmake ninja-build gcc-13 g++-13 git pkg-config \
+      libvtk9-dev libhdf5-dev ca-certificates &&
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 &&
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 &&
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CUDA_ARCHITECTURES=75 -DAC_BUILD_TESTS=ON &&
+    cmake --build build -j$(nproc) &&
+    ctest --test-dir build --output-on-failure -j$(nproc)
+  '
 ```
+
+### Unit tests (`tests/unit/`)
+
+| File | What it covers |
+|---|---|
+| `test_Grid.cpp` | Grid construction, indexing, spacing |
+| `test_SimulationConfig.cpp` | YAML config parsing, validation, defaults |
+| `test_FieldData.cpp` | Host field allocation, accessors, copies |
+| `test_CheckpointIO.cpp` | Binary checkpoint serialize/deserialize round-trip |
+| `test_CheckpointManager.cpp` | Frequency, rolling retention, restart-from-latest |
+| `test_LRUCache.cpp` | LRU eviction order, capacity, hit/miss |
+| `test_SpatialHash.cpp` | 3D bucket insert/query |
+| `test_ConcurrentMap.cpp` | Thread-safe concurrent map operations |
+| `test_Logger.cpp` | spdlog init idempotency, level changes |
+| `test_DeviceField.cu` | CUDA H2D/D2H transfers, async streams |
+| `test_Laplacian.cu` | 7-point and 27-point isotropic Laplacian on analytic fields |
+| `test_Gradient.cu` | 2nd- and 4th-order gradient kernels |
+| `test_Anisotropy.cu` | A(n) and dFunc derivative correctness |
+| `test_BoundaryConditions.cu` | Dirichlet, Neumann, Periodic, **Robin**, **per-face mixed** BCs |
+| `test_Reduction.cu` | Block-strided max-abs reduction |
+| `test_ThermalKernels.cu` | Thermal diffusion + latent heat coupling |
+| `test_CudaSolver.cu` | Solver lifecycle, all 4 time schemes, per-face BC end-to-end |
+| `test_SimulationEngine.cu` | Engine init, IC, adaptive dt, short run |
+| `test_VTKWriter.cpp` | Async writer queue, raw/VTS output, **flush completion**, statistics cache |
+
+### Integration tests (`tests/integration/`)
+
+| File | What it covers |
+|---|---|
+| `test_SphereRegression.cu` | Dendritic growth from spherical seed reproduces reference behaviour |
+| `test_EulerConvergence.cu` | Forward Euler shows expected error reduction under dt refinement |
+| `test_EnergyConservation.cu` | Phase-field free energy decreases monotonically |
+| `test_SchemeComparison.cu` | Euler vs Heun vs RK4 agreement; IMEX stability at large dt |
+| `test_CheckpointRestart.cu` | Checkpoint at midpoint then restart matches uninterrupted run |
+| `test_StencilComparison.cu` | 7-point vs 27-point: bounded fields, smoother 27-pt interface, same physics direction |
+
+### Reproduce or run a single test
+
+```bash
+ctest --test-dir build -R BoundaryConditionsTest --output-on-failure
+ctest --test-dir build -R StencilComparisonTest --output-on-failure
+```
+
+> **Note:** if you re-run after pulling new commits, delete `build/` first — Ninja will otherwise report `no work to do` if the cache is stale relative to source changes.
 
 ## Project Structure
 
