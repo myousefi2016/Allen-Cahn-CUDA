@@ -133,9 +133,9 @@ __device__ __forceinline__ double laplacian_27pt(const double* __restrict__ phi,
         phi[idx3d(x - 1, y + 1, z + 1, Ny, Nz)] + phi[idx3d(x - 1, y + 1, z - 1, Ny, Nz)] +
         phi[idx3d(x - 1, y - 1, z + 1, Ny, Nz)] + phi[idx3d(x - 1, y - 1, z - 1, Ny, Nz)];
 
-    // Weights: face=4, edge=2, corner=1, center=-(6*4+12*2+8*1)=-56
-    // Total weight sum = 6*4+12*2+8*1 = 56
-    return (4.0 * face + 2.0 * edge + 1.0 * corner - 56.0 * center) / (26.0 * h * h);
+    // Patra-Karttunen 4th-order isotropic weights:
+    // face=14, edge=3, corner=1, center=-(6*14+12*3+8*1)=-128, divisor 30*h^2
+    return (14.0 * face + 3.0 * edge + 1.0 * corner - 128.0 * center) / (30.0 * h * h);
 }
 
 /// Dispatch Laplacian based on stencil type.

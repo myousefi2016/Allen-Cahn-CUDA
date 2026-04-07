@@ -34,6 +34,22 @@ __global__ void __launch_bounds__(256)
     if (i >= dim1_max || j >= dim2_max)
         return;
 
+    // Ownership convention for shared edges/corners:
+    // X faces own all their cells; Y faces skip cells on X faces;
+    // Z faces skip cells on X or Y faces. This prevents later face
+    // launches from overwriting corner/edge values written by earlier ones.
+    if (face_axis == 1) {
+        // Y face: i indexes X. Skip x in {0, Nx-1}.
+        if (i == 0 || i == Nx - 1)
+            return;
+    } else if (face_axis == 2) {
+        // Z face: i indexes X, j indexes Y. Skip X edges and Y edges.
+        if (i == 0 || i == Nx - 1)
+            return;
+        if (j == 0 || j == Ny - 1)
+            return;
+    }
+
     // Compute 3D indices
     int x, y, z;
     int fixed_val = (face_side == 0) ? 0

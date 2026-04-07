@@ -60,12 +60,10 @@ __global__ void __launch_bounds__(256)
     int c = idx3d(x, y, z, p.Ny, p.Nz);
 
     if (p.stencil_type == 1) {
-        // 27-point isotropic stencil Jacobi iteration
-        // Laplacian = (4*face + 2*edge + 1*corner - 56*center) / (26*h^2)
-        // (I - alpha*D*L) u = rhs  =>  u_c = (rhs_c + alpha*D * off_diag_sum) / (1 +
-        // alpha*D*56/(26*h^2))
+        // 27-point isotropic stencil Jacobi iteration (Patra-Karttunen)
+        // Laplacian = (14*face + 3*edge + 1*corner - 128*center) / (30*h^2)
         double h2 = p.dx * p.dx;
-        double coeff = alpha * p.D / (26.0 * h2);
+        double coeff = alpha * p.D / (30.0 * h2);
 
         double face =
             u_old[idx3d(x + 1, y, z, p.Ny, p.Nz)] + u_old[idx3d(x - 1, y, z, p.Ny, p.Nz)] +
@@ -89,8 +87,8 @@ __global__ void __launch_bounds__(256)
                         u_old[idx3d(x - 1, y - 1, z + 1, p.Ny, p.Nz)] +
                         u_old[idx3d(x - 1, y - 1, z - 1, p.Ny, p.Nz)];
 
-        double off_diag = coeff * (4.0 * face + 2.0 * edge + 1.0 * corner);
-        double diag = 1.0 + coeff * 56.0;
+        double off_diag = coeff * (14.0 * face + 3.0 * edge + 1.0 * corner);
+        double diag = 1.0 + coeff * 128.0;
 
         u_new[c] = (rhs[c] + off_diag) / diag;
     } else {
