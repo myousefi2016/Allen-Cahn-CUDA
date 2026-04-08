@@ -18,14 +18,16 @@ else()
 endif()
 
 # ── nlohmann/json (header-only) ────────────────────────────────────────────
+# NOTE: use URL (tarball) rather than GIT_REPOSITORY because some container
+# filesystems (Lightning.ai FUSE in particular) intermittently fail on git's
+# temp-pack file pattern with "could not open tmp_pack_XXX for reading".
 find_package(nlohmann_json 3.11 QUIET)
 if(NOT nlohmann_json_FOUND)
-    message(STATUS "Fetching nlohmann/json via FetchContent...")
+    message(STATUS "Fetching nlohmann/json via FetchContent (URL)...")
     FetchContent_Declare(
         nlohmann_json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG        v3.11.3
-        GIT_SHALLOW    TRUE
+        URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
@@ -33,12 +35,11 @@ endif()
 # ── spdlog ──────────────────────────────────────────────────────────────────
 find_package(spdlog 1.12 QUIET)
 if(NOT spdlog_FOUND)
-    message(STATUS "Fetching spdlog via FetchContent...")
+    message(STATUS "Fetching spdlog via FetchContent (URL)...")
     FetchContent_Declare(
         spdlog
-        GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG        v1.14.1
-        GIT_SHALLOW    TRUE
+        URL https://github.com/gabime/spdlog/archive/refs/tags/v1.14.1.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
     FetchContent_MakeAvailable(spdlog)
 endif()
@@ -57,12 +58,11 @@ endif()
 if(AC_BUILD_TESTS)
     find_package(GTest 1.14 QUIET)
     if(NOT GTest_FOUND)
-        message(STATUS "Fetching GoogleTest via FetchContent...")
+        message(STATUS "Fetching GoogleTest via FetchContent (URL)...")
         FetchContent_Declare(
             googletest
-            GIT_REPOSITORY https://github.com/google/googletest.git
-            GIT_TAG        v1.15.2
-            GIT_SHALLOW    TRUE
+            URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         )
         set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(googletest)
