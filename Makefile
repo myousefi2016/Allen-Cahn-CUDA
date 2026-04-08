@@ -46,9 +46,16 @@ CONFIG             ?= config/benchmark_small.json
 OUT_DIR            ?= out
 CHECKPOINT_DIR     ?= checkpoints
 
+# Host UID/GID — used to chown build artefacts back to the caller so that
+# subsequent `rm -rf build` from the host (non-root) shell succeeds.
+HOST_UID           := $(shell id -u)
+HOST_GID           := $(shell id -g)
+
 # Prefix command for every cuda-* target: mount PWD into /work, GPU passthrough
 CUDA_DOCKER_RUN    = docker run --rm --gpus all -v $$PWD:/work -w /work $(CUDA_IMAGE)
 CUDA_DOCKER_RUN_IT = docker run --rm -it --gpus all -v $$PWD:/work -w /work $(CUDA_IMAGE)
+# No-GPU variant used by cuda-clean (no CUDA runtime required, just filesystem ops)
+CUDA_DOCKER_RUN_FS = docker run --rm -v $$PWD:/work -w /work $(CUDA_IMAGE)
 
 # Inside-container bootstrap: install toolchain, pin gcc-13
 define CUDA_APT_INSTALL
@@ -59,6 +66,14 @@ apt-get install -y --no-install-recommends \
 update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 >/dev/null 2>&1 && \
 update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 >/dev/null 2>&1
 endef
+
+# Chown build artefacts back to the host user at the end of every docker job.
+CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
+  $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) 2>/dev/null || true
+
+# Force serial execution — the cuda-* targets share $(CUDA_BUILD_DIR) and
+# would race on cmake/FetchContent if the user has MAKEFLAGS=-jN in their env.
+.NOTPARALLEL:
 
 # ── Phony Targets ───────────────────────────────────────────────────────────
 
@@ -172,31 +187,37 @@ run-vtk: run ## Run custom VTK config (see `make cuda-run-vtk` to autogenerate)
 cuda-configure: ## (docker) Fresh cmake configure inside CUDA container
 	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
 	  cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
-	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON'
+	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-build: ## (docker) Configure + build binary and tests inside CUDA container
 	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
 	  cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
 	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON && \
-	  cmake --build $(CUDA_BUILD_DIR) -j$$(nproc)'
+	  cmake --build $(CUDA_BUILD_DIR) -j$$(nproc); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test: cuda-build ## (docker) Build and run the full ctest suite
 	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc)'
+	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test-unit: cuda-build ## (docker) Run unit test binary only
 	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R unit_tests'
+	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R unit_tests; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test-integration: cuda-build ## (docker) Run integration test binary only
 	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R integration_tests'
+	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R integration_tests; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-run: cuda-build ## (docker) Run simulation with CONFIG=<path> inside CUDA container
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
 	@echo "==> Running ./$(NATIVE_BIN) $(CONFIG) (inside container)"
 	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  ./$(NATIVE_BIN) $(CONFIG)'
+	  ./$(NATIVE_BIN) $(CONFIG); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-run-small: CONFIG=config/benchmark_small.json
 cuda-run-small: cuda-run ## (docker) 128^3 quick benchmark -> raw output
@@ -228,10 +249,18 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
 	$(CUDA_DOCKER_RUN_IT) bash
 
-cuda-all: cuda-build cuda-test cuda-run-vtk ## (docker) Build, test, and run a VTK simulation end-to-end
+cuda-all: ## (docker) Build + full test suite + VTK simulation end-to-end
+	@$(MAKE) cuda-build
+	@$(MAKE) cuda-test
+	@$(MAKE) cuda-run-vtk
 
 cuda-clean: ## Remove native build dir, simulation outputs, and checkpoints
-	rm -rf $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR)
+	@if [ -d $(CUDA_BUILD_DIR) ] || [ -d $(OUT_DIR) ] || [ -d $(CHECKPOINT_DIR) ]; then \
+		echo "==> Removing $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) (inside container to handle root-owned files)"; \
+		$(CUDA_DOCKER_RUN_FS) rm -rf $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR); \
+	else \
+		echo "==> Nothing to clean."; \
+	fi
 
 # ============================================================================
 # Docker Targets
