@@ -113,8 +113,9 @@ TEST(ConcurrentMapTest, ConcurrentReadWrite) {
     auto reader = [&]() {
         for (int i = 0; i < 100; ++i) {
             auto v = map.get(i);
-            if (v)
+            if (v) {
                 EXPECT_GE(*v, 0);
+            }
         }
     };
 

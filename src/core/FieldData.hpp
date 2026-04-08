@@ -18,12 +18,12 @@ public:
 
     [[nodiscard]] Real& operator()(int x, int y, int z) {
         assert(x >= 0 && x < Nx_ && y >= 0 && y < Ny_ && z >= 0 && z < Nz_);
-        return data_[static_cast<std::size_t>(x) * Ny_ * Nz_ + y * Nz_ + z];
+        return data_[linear_index(x, y, z)];
     }
 
     [[nodiscard]] const Real& operator()(int x, int y, int z) const {
         assert(x >= 0 && x < Nx_ && y >= 0 && y < Ny_ && z >= 0 && z < Nz_);
-        return data_[static_cast<std::size_t>(x) * Ny_ * Nz_ + y * Nz_ + z];
+        return data_[linear_index(x, y, z)];
     }
 
     [[nodiscard]] Real* data() noexcept { return data_.data(); }
@@ -42,6 +42,15 @@ public:
     void copy_from(const Real* src, std::size_t count);
 
 private:
+    [[nodiscard]] std::size_t linear_index(int x, int y, int z) const noexcept {
+        const auto xs = static_cast<std::size_t>(x);
+        const auto ys = static_cast<std::size_t>(y);
+        const auto zs = static_cast<std::size_t>(z);
+        const auto ny = static_cast<std::size_t>(Ny_);
+        const auto nz = static_cast<std::size_t>(Nz_);
+        return (xs * ny + ys) * nz + zs;
+    }
+
     std::vector<Real> data_;
     int Nx_ = 0;
     int Ny_ = 0;
