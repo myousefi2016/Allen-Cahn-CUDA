@@ -230,13 +230,12 @@ cuda-run-default: cuda-run ## (docker) 600^3 full production run -> VTS output
 
 cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in ./out
 	@mkdir -p config $(OUT_DIR) $(CHECKPOINT_DIR)
-	@if [ ! -f config/run_vtk.json ]; then \
-	  echo "==> Writing config/run_vtk.json"; \
-	  printf '%s\n' \
+	@echo "==> Writing config/run_vtk.json"
+	@printf '%s\n' \
 	    '{' \
 	    '  "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "D": 2.0, "d0": 0.5 },' \
 	    '  "grid":     { "Nx": 128, "Ny": 128, "Nz": 128, "dx": 0.4, "dy": 0.4, "dz": 0.4 },' \
-	    '  "time":     { "dt": 0.008, "max_steps": 2000, "scheme": "rk2", "adaptive": false },' \
+	    '  "time":     { "dt": 0.008, "max_steps": 2000, "scheme": "heun", "adaptive": false },' \
 	    '  "stencil":  "27pt",' \
 	    '  "output":   { "frequency": 100, "output_dir": "./out", "format": "vts", "async_io": true },' \
 	    '  "checkpoint": { "frequency": 500, "checkpoint_dir": "./checkpoints", "keep_last": 3 },' \
@@ -245,8 +244,7 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 	    '    "phi": { "type": "neumann", "flux": 0.0 },' \
 	    '    "u":   { "type": "dirichlet", "value": -0.8 }' \
 	    '  }' \
-	    '}' > config/run_vtk.json; \
-	fi
+	    '}' > config/run_vtk.json
 	$(MAKE) cuda-run CONFIG=config/run_vtk.json
 
 cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
