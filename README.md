@@ -191,10 +191,39 @@ ctest --output-on-failure
 
 ## Run
 
+Native (after `make build`):
+
 ```bash
-./allen-cahn-cuda                          # Uses config/default.json
-./allen-cahn-cuda config/custom.json       # Custom configuration
-./allen-cahn-cuda config/benchmark_small.json  # Small grid for testing
+./build/release/src/allen-cahn-cuda                           # uses config/default.json
+./build/release/src/allen-cahn-cuda config/custom.json        # custom configuration
+./build/release/src/allen-cahn-cuda config/benchmark_small.json
+```
+
+Or use the Makefile — it wraps build, test, and run for both the native CMake preset workflow and the Lightning.ai / bare-host CUDA docker workflow. See `make help` for the full list.
+
+```bash
+# Native (host has cmake + nvcc)
+make build                       # Release build via CMake preset
+make test                        # Build debug + run ctest
+make run CONFIG=config/benchmark_small.json
+
+# Lightning.ai / any docker host with nvidia-container-toolkit
+make cuda-build                  # Configure + build inside nvidia/cuda:12.6 image
+make cuda-test                   # Full unit + integration suite
+make cuda-run-small              # 128^3 quick benchmark  -> ./out (raw)
+make cuda-run-vtk                # 128^3 dendrite         -> ./out (.vts for ParaView)
+make cuda-run-default            # 600^3 production run   -> ./out (.vts)
+make cuda-run CONFIG=config/my.json   # arbitrary config
+make cuda-shell                  # interactive shell in the CUDA container
+make cuda-all                    # build + test + cuda-run-vtk end-to-end
+make cuda-clean                  # wipe build/, out/, checkpoints/
+```
+
+Override defaults on the command line:
+
+```bash
+make cuda-build CUDA_ARCH=80             # A100 instead of T4
+make cuda-run CONFIG=config/default.json OUT_DIR=/data/out
 ```
 
 ## Configuration
