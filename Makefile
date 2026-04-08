@@ -265,23 +265,31 @@ cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounte
 # ── Visualization (PyVista, headless via Xvfb) ──────────────────────────────
 # Renders every out/*.vts snapshot to viz/frame_*.png plus an optional MP4.
 # Uses the prebuilt cuda-dev image — no GPU required, so we use the _FS runner.
+# The script itself calls pv.start_xvfb() to spin up an Xvfb server; no need
+# for an external xvfb-run wrapper.
+#
+# NOTE: if `python3 not found` or `Xvfb not found`, your cuda-dev image was
+# built before visualization support was added. Run:  make cuda-image-rebuild
 cuda-visualize: cuda-image ## (docker) Render .vts snapshots to PNGs + MP4 (view=combined)
 	@if [ ! -d $(VIZ_IN) ] || [ -z "$$(ls $(VIZ_IN)/output_*.vts 2>/dev/null)" ]; then \
 	  echo "ERROR: no .vts files in $(VIZ_IN). Run 'make cuda-run-vtk' first."; \
 	  exit 1; \
 	fi
+	@if ! $(CUDA_DOCKER_RUN_FS) bash -c 'command -v python3 >/dev/null && command -v Xvfb >/dev/null'; then \
+	  echo "ERROR: $(CUDA_DEV_IMAGE) lacks python3/Xvfb — probably built before"; \
+	  echo "       visualization support. Rebuild with: make cuda-image-rebuild"; \
+	  exit 1; \
+	fi
 	@mkdir -p $(VIZ_OUT)
 	@echo "==> Visualizing $(VIZ_IN)/*.vts -> $(VIZ_OUT)/ (view=$(VIZ_VIEW))"
 	$(CUDA_DOCKER_RUN_FS) bash -c ' \
-	  xvfb-run -a --server-args="-screen 0 $(VIZ_WINDOW_W)x$(VIZ_WINDOW_H)x24" \
-	    python3 $(VIZ_SCRIPT) \
-	      --input-dir $(VIZ_IN) \
-	      --output-dir $(VIZ_OUT) \
-	      --view $(VIZ_VIEW) \
-	      --window-size $(VIZ_WINDOW_W) $(VIZ_WINDOW_H) \
-	      --make-video --fps $(VIZ_FPS) \
-	      --no-xvfb \
-	      $(VIZ_EXTRA_ARGS); \
+	  python3 $(VIZ_SCRIPT) \
+	    --input-dir $(VIZ_IN) \
+	    --output-dir $(VIZ_OUT) \
+	    --view $(VIZ_VIEW) \
+	    --window-size $(VIZ_WINDOW_W) $(VIZ_WINDOW_H) \
+	    --make-video --fps $(VIZ_FPS) \
+	    $(VIZ_EXTRA_ARGS); \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-visualize-iso: VIZ_VIEW=iso
