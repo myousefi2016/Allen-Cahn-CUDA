@@ -37,11 +37,37 @@ CLANG_TIDY         ?= clang-tidy
 CLANG_FORMAT       ?= clang-format
 COMPILE_COMMANDS   ?= $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG)/compile_commands.json
 
+# Native CUDA docker runner (Lightning.ai / any host with docker + nvidia-container-toolkit)
+CUDA_IMAGE         ?= nvidia/cuda:12.6.0-devel-ubuntu24.04
+CUDA_BUILD_DIR     ?= build
+CUDA_ARCH          ?= 75
+NATIVE_BIN         ?= $(CUDA_BUILD_DIR)/src/allen-cahn-cuda
+CONFIG             ?= config/benchmark_small.json
+OUT_DIR            ?= out
+CHECKPOINT_DIR     ?= checkpoints
+
+# Prefix command for every cuda-* target: mount PWD into /work, GPU passthrough
+CUDA_DOCKER_RUN    = docker run --rm --gpus all -v $$PWD:/work -w /work $(CUDA_IMAGE)
+CUDA_DOCKER_RUN_IT = docker run --rm -it --gpus all -v $$PWD:/work -w /work $(CUDA_IMAGE)
+
+# Inside-container bootstrap: install toolchain, pin gcc-13
+define CUDA_APT_INSTALL
+apt-get update >/dev/null && \
+apt-get install -y --no-install-recommends \
+  cmake ninja-build gcc-13 g++-13 git pkg-config \
+  libvtk9-dev libhdf5-dev ca-certificates >/dev/null && \
+update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 >/dev/null 2>&1 && \
+update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 >/dev/null 2>&1
+endef
+
 # ── Phony Targets ───────────────────────────────────────────────────────────
 
 .PHONY: help \
         build build-debug clean \
         test test-unit test-integration test-coverage \
+        run run-small run-default run-vtk \
+        cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration \
+        cuda-run cuda-run-small cuda-run-default cuda-shell cuda-clean cuda-all \
         docker-build-dev docker-build-test docker-build-prod docker-build-all \
         docker-test docker-run docker-shell \
         docker-compose-up docker-compose-down \
@@ -113,6 +139,99 @@ test-coverage: ## Build with coverage instrumentation and generate report
 	else \
 		echo "WARNING: Neither gcovr nor lcov found. Install one for HTML coverage reports."; \
 	fi
+
+# ============================================================================
+# Simulation Run Targets (native host binary, requires `make build` first)
+# ============================================================================
+
+RELEASE_BIN ?= $(BUILD_DIR)/$(CMAKE_PRESET)/src/allen-cahn-cuda
+
+run: ## Run simulation with CONFIG=<path> (default: benchmark_small.json)
+	@if [ ! -x "$(RELEASE_BIN)" ]; then \
+		echo "ERROR: $(RELEASE_BIN) not found. Run 'make build' first, or use 'make cuda-run'."; \
+		exit 1; \
+	fi
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> Running $(RELEASE_BIN) $(CONFIG)"
+	./$(RELEASE_BIN) $(CONFIG)
+
+run-small: CONFIG=config/benchmark_small.json
+run-small: run ## Run small 128^3 benchmark config
+
+run-default: CONFIG=config/default.json
+run-default: run ## Run default 600^3 production config
+
+run-vtk: CONFIG=config/run_vtk.json
+run-vtk: run ## Run custom VTK config (see `make cuda-run-vtk` to autogenerate)
+
+# ============================================================================
+# CUDA Docker Targets (Lightning.ai / bare-metal host + nvidia-container-toolkit)
+# These mirror the raw `docker run nvidia/cuda:...` workflow — no host cmake needed.
+# ============================================================================
+
+cuda-configure: ## (docker) Fresh cmake configure inside CUDA container
+	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
+	  cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
+	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON'
+
+cuda-build: ## (docker) Configure + build binary and tests inside CUDA container
+	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
+	  cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
+	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON && \
+	  cmake --build $(CUDA_BUILD_DIR) -j$$(nproc)'
+
+cuda-test: cuda-build ## (docker) Build and run the full ctest suite
+	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
+	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc)'
+
+cuda-test-unit: cuda-build ## (docker) Run unit test binary only
+	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
+	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R unit_tests'
+
+cuda-test-integration: cuda-build ## (docker) Run integration test binary only
+	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
+	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R integration_tests'
+
+cuda-run: cuda-build ## (docker) Run simulation with CONFIG=<path> inside CUDA container
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> Running ./$(NATIVE_BIN) $(CONFIG) (inside container)"
+	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
+	  ./$(NATIVE_BIN) $(CONFIG)'
+
+cuda-run-small: CONFIG=config/benchmark_small.json
+cuda-run-small: cuda-run ## (docker) 128^3 quick benchmark -> raw output
+
+cuda-run-default: CONFIG=config/default.json
+cuda-run-default: cuda-run ## (docker) 600^3 full production run -> VTS output
+
+cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in ./out
+	@mkdir -p config $(OUT_DIR) $(CHECKPOINT_DIR)
+	@if [ ! -f config/run_vtk.json ]; then \
+	  echo "==> Writing config/run_vtk.json"; \
+	  printf '%s\n' \
+	    '{' \
+	    '  "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "D": 2.0, "d0": 0.5 },' \
+	    '  "grid":     { "Nx": 128, "Ny": 128, "Nz": 128, "dx": 0.4, "dy": 0.4, "dz": 0.4 },' \
+	    '  "time":     { "dt": 0.008, "max_steps": 2000, "scheme": "rk2", "adaptive": false },' \
+	    '  "stencil":  "27pt",' \
+	    '  "output":   { "frequency": 100, "output_dir": "./out", "format": "vts", "async_io": true },' \
+	    '  "checkpoint": { "frequency": 500, "checkpoint_dir": "./checkpoints", "keep_last": 3 },' \
+	    '  "initial":  { "seed_radius": 6.0 },' \
+	    '  "boundary": {' \
+	    '    "phi": { "type": "neumann", "flux": 0.0 },' \
+	    '    "u":   { "type": "dirichlet", "value": -0.8 }' \
+	    '  }' \
+	    '}' > config/run_vtk.json; \
+	fi
+	$(MAKE) cuda-run CONFIG=config/run_vtk.json
+
+cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
+	$(CUDA_DOCKER_RUN_IT) bash
+
+cuda-all: cuda-build cuda-test cuda-run-vtk ## (docker) Build, test, and run a VTK simulation end-to-end
+
+cuda-clean: ## Remove native build dir, simulation outputs, and checkpoints
+	rm -rf $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR)
 
 # ============================================================================
 # Docker Targets
