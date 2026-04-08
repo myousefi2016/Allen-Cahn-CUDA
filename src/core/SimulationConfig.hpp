@@ -109,9 +109,11 @@ struct PerFaceBoundary {
 
     /// Access by face index.
     [[nodiscard]] const BoundaryConfig& operator[](Face f) const {
-        return faces[static_cast<int>(f)];
+        return faces[static_cast<std::size_t>(f)];
     }
-    [[nodiscard]] BoundaryConfig& operator[](Face f) { return faces[static_cast<int>(f)]; }
+    [[nodiscard]] BoundaryConfig& operator[](Face f) {
+        return faces[static_cast<std::size_t>(f)];
+    }
 
     /// Access by axis (0-2) and side (0=lo, 1=hi).
     [[nodiscard]] const BoundaryConfig& get(int axis, int side) const {

@@ -36,7 +36,7 @@ TEST(LRUCacheTest, AccessPromotesEntry) {
     cache.put(1, "one");
     cache.put(2, "two");
     // Access key 1 to promote it
-    cache.get(1);
+    (void)cache.get(1);
     // Now key 2 is LRU, so it gets evicted
     cache.put(3, "three");
 
@@ -81,9 +81,9 @@ TEST(LRUCacheTest, Clear) {
 TEST(LRUCacheTest, HitMissCounters) {
     LRUCache<int, int> cache(3);
     cache.put(1, 10);
-    cache.get(1); // hit
-    cache.get(2); // miss
-    cache.get(1); // hit
+    (void)cache.get(1); // hit
+    (void)cache.get(2); // miss
+    (void)cache.get(1); // hit
 
     EXPECT_EQ(cache.hit_count(), 2u);
     EXPECT_EQ(cache.miss_count(), 1u);
@@ -117,7 +117,7 @@ TEST(LRUCacheTest, ConcurrentAccess) {
 
     auto reader = [&](int start) {
         for (int i = start; i < start + 100; ++i) {
-            cache.get(i);
+            (void)cache.get(i);
         }
     };
 
