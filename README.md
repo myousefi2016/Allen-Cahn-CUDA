@@ -215,9 +215,12 @@ make cuda-run-small              # 128^3 quick benchmark  -> ./out (raw)
 make cuda-run-vtk                # 128^3 dendrite         -> ./out (.vts for ParaView)
 make cuda-run-default            # 600^3 production run   -> ./out (.vts)
 make cuda-run CONFIG=config/my.json   # arbitrary config
+make cuda-visualize              # render ./out/*.vts -> ./viz/*.png + dendrite.mp4
+make cuda-visualize-iso          # same, phi=0 isosurface only
+make cuda-visualize-slice        # same, orthogonal slices only
 make cuda-shell                  # interactive shell in the CUDA container
-make cuda-all                    # build + test + cuda-run-vtk end-to-end
-make cuda-clean                  # wipe build/, out/, checkpoints/
+make cuda-all                    # build + test + run-vtk + visualize end-to-end
+make cuda-clean                  # wipe build/, out/, checkpoints/, viz/
 make cuda-image-rebuild          # force-rebuild the dev image (after apt-pkg change)
 ```
 
@@ -227,6 +230,62 @@ Override defaults on the command line:
 make cuda-build CUDA_ARCH=80             # A100 instead of T4
 make cuda-run CONFIG=config/default.json OUT_DIR=/data/out
 ```
+
+## Visualization
+
+`scripts/visualize_dendrite.py` is a production-quality PyVista tool that renders
+the `.vts` snapshots produced by `cuda-run-vtk` / `cuda-run-default` into PNG
+frames plus an optional MP4 video. It runs fully **headless** (no X server) via
+`xvfb-run` + `pv.start_xvfb()` and is baked into the `cuda-dev` docker image, so
+no host Python install is needed.
+
+Three rendering modes:
+
+| Mode | What you see | Best for |
+|---|---|---|
+| `combined` (default) | phi=0 isosurface (coloured by dimensionless temperature `u`) + three orthogonal `phi` slices + domain bounding box | the clearest single picture of a dendrite — surface shape **and** bulk structure |
+| `iso` | phi=0 isosurface only, coloured by `u` | clean shape-only video, small PNGs |
+| `slice` | three orthogonal `phi` slices through the grid (diverging RdBu_r cmap) | inspecting the interior without occlusion |
+
+The tool pre-scans every snapshot to compute a **global** colour range for
+`phi` and `u` before rendering, so the colormap is stable across frames and the
+stitched video does not flicker.
+
+```bash
+# End-to-end: build, run a 128^3 dendrite, and render a dendrite.mp4
+make cuda-all
+
+# Or just render an existing ./out directory
+make cuda-visualize                               # combined view, 1280x960, 12 fps
+make cuda-visualize-iso                           # isosurface only
+make cuda-visualize-slice                         # slices only
+make cuda-visualize VIZ_FPS=24 VIZ_WINDOW_W=1920 VIZ_WINDOW_H=1080
+make cuda-visualize VIZ_IN=/data/run42 VIZ_OUT=/data/run42/viz
+make cuda-visualize VIZ_EXTRA_ARGS="--iso-value 0.1 --limit 20"
+```
+
+Outputs land in `./viz/`:
+
+```
+viz/
+  frame_000000.png    # step 0
+  frame_000100.png    # step 100
+  ...
+  dendrite.mp4        # stitched video (--make-video)
+```
+
+You can also drive the script directly for finer control:
+
+```bash
+docker run --rm -v $PWD:/work -w /work allen-cahn-cuda-dev:local \
+  xvfb-run -a python3 scripts/visualize_dendrite.py \
+    --input-dir ./out --output-dir ./viz \
+    --view combined --make-video --fps 15 \
+    --phi-cmap coolwarm --u-cmap plasma \
+    --window-size 1920 1080 --background white
+```
+
+Full CLI: `python3 scripts/visualize_dendrite.py --help`.
 
 ## Configuration
 
