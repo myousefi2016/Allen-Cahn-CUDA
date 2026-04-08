@@ -1,0 +1,30 @@
+# ============================================================================
+# Allen-Cahn-CUDA — lightweight dev image for the `make cuda-*` targets.
+#
+# Purpose: bake the apt packages needed to build/test/run the project into
+# a single image so that each `make cuda-build` / `cuda-test` / `cuda-run`
+# invocation can skip the ~60s apt-get install step.
+#
+# Build once with `make cuda-image`, then all cuda-* targets reuse it.
+# ============================================================================
+
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cmake \
+        ninja-build \
+        gcc-13 \
+        g++-13 \
+        git \
+        pkg-config \
+        libvtk9-dev \
+        libhdf5-dev \
+        ca-certificates && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work

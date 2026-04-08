@@ -38,7 +38,6 @@ CLANG_FORMAT       ?= clang-format
 COMPILE_COMMANDS   ?= $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG)/compile_commands.json
 
 # Native CUDA docker runner (Lightning.ai / any host with docker + nvidia-container-toolkit)
-CUDA_IMAGE         ?= nvidia/cuda:12.6.0-devel-ubuntu24.04
 CUDA_BUILD_DIR     ?= build
 CUDA_ARCH          ?= 75
 NATIVE_BIN         ?= $(CUDA_BUILD_DIR)/src/allen-cahn-cuda
@@ -46,26 +45,22 @@ CONFIG             ?= config/benchmark_small.json
 OUT_DIR            ?= out
 CHECKPOINT_DIR     ?= checkpoints
 
+# Prebuilt CUDA dev image — built once by `make cuda-image`, reused by every
+# cuda-* target. This bakes cmake, ninja, gcc-13, VTK, HDF5 into the image so
+# individual build / test / run invocations don't pay the ~60s apt-install cost.
+CUDA_DEV_IMAGE        ?= allen-cahn-cuda-dev:local
+CUDA_DEV_DOCKERFILE   ?= docker/Dockerfile.cuda-dev
+
 # Host UID/GID — used to chown build artefacts back to the caller so that
 # subsequent `rm -rf build` from the host (non-root) shell succeeds.
 HOST_UID           := $(shell id -u)
 HOST_GID           := $(shell id -g)
 
 # Prefix command for every cuda-* target: mount PWD into /work, GPU passthrough
-CUDA_DOCKER_RUN    = docker run --rm --gpus all -v $$PWD:/work -w /work $(CUDA_IMAGE)
-CUDA_DOCKER_RUN_IT = docker run --rm -it --gpus all -v $$PWD:/work -w /work $(CUDA_IMAGE)
+CUDA_DOCKER_RUN    = docker run --rm --gpus all -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
+CUDA_DOCKER_RUN_IT = docker run --rm -it --gpus all -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
 # No-GPU variant used by cuda-clean (no CUDA runtime required, just filesystem ops)
-CUDA_DOCKER_RUN_FS = docker run --rm -v $$PWD:/work -w /work $(CUDA_IMAGE)
-
-# Inside-container bootstrap: install toolchain, pin gcc-13
-define CUDA_APT_INSTALL
-apt-get update >/dev/null && \
-apt-get install -y --no-install-recommends \
-  cmake ninja-build gcc-13 g++-13 git pkg-config \
-  libvtk9-dev libhdf5-dev ca-certificates >/dev/null && \
-update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 >/dev/null 2>&1 && \
-update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 >/dev/null 2>&1
-endef
+CUDA_DOCKER_RUN_FS = docker run --rm -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
 
 # Chown build artefacts back to the host user at the end of every docker job.
 CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
@@ -81,6 +76,7 @@ CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
         build build-debug clean \
         test test-unit test-integration test-coverage \
         run run-small run-default run-vtk \
+        cuda-image cuda-image-rebuild \
         cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration \
         cuda-run cuda-run-small cuda-run-default cuda-shell cuda-clean cuda-all \
         docker-build-dev docker-build-test docker-build-prod docker-build-all \
@@ -181,42 +177,49 @@ run-vtk: run ## Run custom VTK config (see `make cuda-run-vtk` to autogenerate)
 
 # ============================================================================
 # CUDA Docker Targets (Lightning.ai / bare-metal host + nvidia-container-toolkit)
-# These mirror the raw `docker run nvidia/cuda:...` workflow — no host cmake needed.
+# All cuda-* targets reuse a single prebuilt dev image ($(CUDA_DEV_IMAGE))
+# built once by `make cuda-image`. No host cmake/nvcc required.
 # ============================================================================
 
-cuda-configure: ## (docker) Fresh cmake configure inside CUDA container
-	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
+cuda-image: ## (docker) Build the prebuilt CUDA dev image (one-time, cached)
+	@if docker image inspect $(CUDA_DEV_IMAGE) >/dev/null 2>&1; then \
+	  echo "==> $(CUDA_DEV_IMAGE) already exists (use 'make cuda-image-rebuild' to force)"; \
+	else \
+	  echo "==> Building $(CUDA_DEV_IMAGE) from $(CUDA_DEV_DOCKERFILE) (one-time, ~1-2 min)"; \
+	  docker build -t $(CUDA_DEV_IMAGE) -f $(CUDA_DEV_DOCKERFILE) .; \
+	fi
+
+cuda-image-rebuild: ## (docker) Force-rebuild the prebuilt CUDA dev image from scratch
+	@echo "==> Rebuilding $(CUDA_DEV_IMAGE) --no-cache"
+	docker build --no-cache -t $(CUDA_DEV_IMAGE) -f $(CUDA_DEV_DOCKERFILE) .
+
+cuda-configure: cuda-image ## (docker) Fresh cmake configure inside CUDA container
+	$(CUDA_DOCKER_RUN) bash -c 'cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
 	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
-cuda-build: ## (docker) Configure + build binary and tests inside CUDA container
-	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
+cuda-build: cuda-image ## (docker) Configure + build binary and tests inside CUDA container
+	$(CUDA_DOCKER_RUN) bash -c 'cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
 	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON && \
 	  cmake --build $(CUDA_BUILD_DIR) -j$$(nproc); \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test: cuda-build ## (docker) Build and run the full ctest suite
-	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc); \
+	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc); \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test-unit: cuda-build ## (docker) Run unit test binary only
-	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R unit_tests; \
+	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R unit_tests; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test-integration: cuda-build ## (docker) Run integration test binary only
-	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R integration_tests; \
+	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R integration_tests; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-run: cuda-build ## (docker) Run simulation with CONFIG=<path> inside CUDA container
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
 	@echo "==> Running ./$(NATIVE_BIN) $(CONFIG) (inside container)"
-	$(CUDA_DOCKER_RUN) bash -c '$(CUDA_APT_INSTALL) && \
-	  ./$(NATIVE_BIN) $(CONFIG); \
+	$(CUDA_DOCKER_RUN) bash -c './$(NATIVE_BIN) $(CONFIG); \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-run-small: CONFIG=config/benchmark_small.json

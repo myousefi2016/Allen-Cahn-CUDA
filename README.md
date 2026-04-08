@@ -208,7 +208,8 @@ make test                        # Build debug + run ctest
 make run CONFIG=config/benchmark_small.json
 
 # Lightning.ai / any docker host with nvidia-container-toolkit
-make cuda-build                  # Configure + build inside nvidia/cuda:12.6 image
+make cuda-image                  # one-time: build prebuilt dev image (~1-2 min)
+make cuda-build                  # Configure + build inside the prebuilt image
 make cuda-test                   # Full unit + integration suite
 make cuda-run-small              # 128^3 quick benchmark  -> ./out (raw)
 make cuda-run-vtk                # 128^3 dendrite         -> ./out (.vts for ParaView)
@@ -217,6 +218,7 @@ make cuda-run CONFIG=config/my.json   # arbitrary config
 make cuda-shell                  # interactive shell in the CUDA container
 make cuda-all                    # build + test + cuda-run-vtk end-to-end
 make cuda-clean                  # wipe build/, out/, checkpoints/
+make cuda-image-rebuild          # force-rebuild the dev image (after apt-pkg change)
 ```
 
 Override defaults on the command line:
