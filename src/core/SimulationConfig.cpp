@@ -189,7 +189,7 @@ static SimulationConfig parse_config(const json& j) {
         if (b.contains("phi") && b["phi"].is_object() && b["phi"].contains("x_lo")) {
             cfg.boundary.per_face = true;
             const auto& p = b["phi"];
-            for (int i = 0; i < 6; ++i) {
+            for (std::size_t i = 0; i < 6; ++i) {
                 if (p.contains(face_names[i])) {
                     cfg.boundary.phi_faces.faces[i] = parse_boundary_config(p[face_names[i]]);
                 }
@@ -198,7 +198,7 @@ static SimulationConfig parse_config(const json& j) {
         if (b.contains("u") && b["u"].is_object() && b["u"].contains("x_lo")) {
             cfg.boundary.per_face = true;
             const auto& u = b["u"];
-            for (int i = 0; i < 6; ++i) {
+            for (std::size_t i = 0; i < 6; ++i) {
                 if (u.contains(face_names[i])) {
                     cfg.boundary.u_faces.faces[i] = parse_boundary_config(u[face_names[i]]);
                 }
