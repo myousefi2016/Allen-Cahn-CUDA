@@ -45,6 +45,16 @@ CONFIG             ?= config/benchmark_small.json
 OUT_DIR            ?= out
 CHECKPOINT_DIR     ?= checkpoints
 
+# Visualization (scripts/visualize_dendrite.py)
+VIZ_SCRIPT         ?= scripts/visualize_dendrite.py
+VIZ_IN             ?= $(OUT_DIR)
+VIZ_OUT            ?= viz
+VIZ_VIEW           ?= combined
+VIZ_FPS            ?= 12
+VIZ_WINDOW_W       ?= 1280
+VIZ_WINDOW_H       ?= 960
+VIZ_EXTRA_ARGS     ?=
+
 # Prebuilt CUDA dev image — built once by `make cuda-image`, reused by every
 # cuda-* target. This bakes cmake, ninja, gcc-13, VTK, HDF5 into the image so
 # individual build / test / run invocations don't pay the ~60s apt-install cost.
@@ -64,7 +74,7 @@ CUDA_DOCKER_RUN_FS = docker run --rm -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
 
 # Chown build artefacts back to the host user at the end of every docker job.
 CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
-  $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) 2>/dev/null || true
+  $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_OUT) 2>/dev/null || true
 
 # Force serial execution — the cuda-* targets share $(CUDA_BUILD_DIR) and
 # would race on cmake/FetchContent if the user has MAKEFLAGS=-jN in their env.
@@ -78,7 +88,9 @@ CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
         run run-small run-default run-vtk \
         cuda-image cuda-image-rebuild \
         cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration \
-        cuda-run cuda-run-small cuda-run-default cuda-shell cuda-clean cuda-all \
+        cuda-run cuda-run-small cuda-run-default cuda-run-vtk \
+        cuda-visualize cuda-visualize-iso cuda-visualize-slice \
+        cuda-shell cuda-clean cuda-all \
         docker-build-dev docker-build-test docker-build-prod docker-build-all \
         docker-test docker-run docker-shell \
         docker-compose-up docker-compose-down \
@@ -250,15 +262,44 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
 	$(CUDA_DOCKER_RUN_IT) bash
 
-cuda-all: ## (docker) Build + full test suite + VTK simulation end-to-end
+# ── Visualization (PyVista, headless via Xvfb) ──────────────────────────────
+# Renders every out/*.vts snapshot to viz/frame_*.png plus an optional MP4.
+# Uses the prebuilt cuda-dev image — no GPU required, so we use the _FS runner.
+cuda-visualize: cuda-image ## (docker) Render .vts snapshots to PNGs + MP4 (view=combined)
+	@if [ ! -d $(VIZ_IN) ] || [ -z "$$(ls $(VIZ_IN)/output_*.vts 2>/dev/null)" ]; then \
+	  echo "ERROR: no .vts files in $(VIZ_IN). Run 'make cuda-run-vtk' first."; \
+	  exit 1; \
+	fi
+	@mkdir -p $(VIZ_OUT)
+	@echo "==> Visualizing $(VIZ_IN)/*.vts -> $(VIZ_OUT)/ (view=$(VIZ_VIEW))"
+	$(CUDA_DOCKER_RUN_FS) bash -c ' \
+	  xvfb-run -a --server-args="-screen 0 $(VIZ_WINDOW_W)x$(VIZ_WINDOW_H)x24" \
+	    python3 $(VIZ_SCRIPT) \
+	      --input-dir $(VIZ_IN) \
+	      --output-dir $(VIZ_OUT) \
+	      --view $(VIZ_VIEW) \
+	      --window-size $(VIZ_WINDOW_W) $(VIZ_WINDOW_H) \
+	      --make-video --fps $(VIZ_FPS) \
+	      --no-xvfb \
+	      $(VIZ_EXTRA_ARGS); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-visualize-iso: VIZ_VIEW=iso
+cuda-visualize-iso: cuda-visualize ## (docker) Render only the phi=0 isosurface
+
+cuda-visualize-slice: VIZ_VIEW=slice
+cuda-visualize-slice: cuda-visualize ## (docker) Render only orthogonal phi slices
+
+cuda-all: ## (docker) Build + test + VTK simulation + visualization end-to-end
 	@$(MAKE) cuda-build
 	@$(MAKE) cuda-test
 	@$(MAKE) cuda-run-vtk
+	@$(MAKE) cuda-visualize
 
-cuda-clean: ## Remove native build dir, simulation outputs, and checkpoints
-	@if [ -d $(CUDA_BUILD_DIR) ] || [ -d $(OUT_DIR) ] || [ -d $(CHECKPOINT_DIR) ]; then \
-		echo "==> Removing $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) (inside container to handle root-owned files)"; \
-		$(CUDA_DOCKER_RUN_FS) rm -rf $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR); \
+cuda-clean: ## Remove native build dir, simulation outputs, checkpoints, and visualizations
+	@if [ -d $(CUDA_BUILD_DIR) ] || [ -d $(OUT_DIR) ] || [ -d $(CHECKPOINT_DIR) ] || [ -d $(VIZ_OUT) ]; then \
+		echo "==> Removing $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_OUT) (inside container to handle root-owned files)"; \
+		$(CUDA_DOCKER_RUN_FS) rm -rf $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_OUT); \
 	else \
 		echo "==> Nothing to clean."; \
 	fi
