@@ -49,10 +49,14 @@ CHECKPOINT_DIR     ?= checkpoints
 VIZ_SCRIPT         ?= scripts/visualize_dendrite.py
 VIZ_IN             ?= $(OUT_DIR)
 VIZ_OUT            ?= viz
-VIZ_VIEW           ?= combined
+VIZ_LAYOUT         ?= panels
 VIZ_FPS            ?= 12
-VIZ_WINDOW_W       ?= 1280
-VIZ_WINDOW_H       ?= 960
+VIZ_WINDOW_W       ?= 1920
+VIZ_WINDOW_H       ?= 1080
+VIZ_SMOOTH_ITERS   ?= 20
+VIZ_PASS_BAND      ?= 0.10
+VIZ_PHI_CMAP       ?= coolwarm
+VIZ_U_CMAP         ?= plasma
 VIZ_EXTRA_ARGS     ?=
 
 # Prebuilt CUDA dev image — built once by `make cuda-image`, reused by every
@@ -88,9 +92,9 @@ CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
         run run-small run-default run-vtk \
         cuda-image cuda-image-rebuild \
         cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration \
-        cuda-run cuda-run-small cuda-run-default cuda-run-vtk \
-        cuda-visualize cuda-visualize-iso cuda-visualize-slice \
-        cuda-shell cuda-clean cuda-all \
+        cuda-run cuda-run-small cuda-run-default cuda-run-vtk cuda-run-dendrite \
+        cuda-visualize cuda-visualize-single cuda-visualize-self-test \
+        cuda-shell cuda-clean cuda-all cuda-dendrite-demo \
         docker-build-dev docker-build-test docker-build-prod docker-build-all \
         docker-test docker-run docker-shell \
         docker-compose-up docker-compose-down \
@@ -259,20 +263,27 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 	    '}' > config/run_vtk.json
 	$(MAKE) cuda-run CONFIG=config/run_vtk.json
 
+cuda-run-dendrite: CONFIG=config/run_dendrite.json
+cuda-run-dendrite: cuda-run ## (docker) 160^3 dendrite-friendly config (e=0.12, d=0.85, r0=4) -> VTS
+
 cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
 	$(CUDA_DOCKER_RUN_IT) bash
 
 # ── Visualization (PyVista, headless via Xvfb) ──────────────────────────────
 # Renders every out/*.vts snapshot to viz/frame_*.png plus an optional MP4.
 # Uses the prebuilt cuda-dev image — no GPU required, so we use the _FS runner.
-# The script itself calls pv.start_xvfb() to spin up an Xvfb server; no need
-# for an external xvfb-run wrapper.
+# The script itself calls pv.start_xvfb() to spin up an Xvfb server.
+#
+# Layouts
+#   panels   (default) 1920×1080 composite: cutaway 3D + slice panels +
+#            time-series sidebar with solid fraction & ⟨u⟩ over time.
+#   single   just the 3D cutaway view at the requested window size.
 #
 # NOTE: if `python3 not found` or `Xvfb not found`, your cuda-dev image was
 # built before visualization support was added. Run:  make cuda-image-rebuild
-cuda-visualize: cuda-image ## (docker) Render .vts snapshots to PNGs + MP4 (view=combined)
+cuda-visualize: cuda-image ## (docker) Render .vts snapshots to PNGs + MP4 (panels layout)
 	@if [ ! -d $(VIZ_IN) ] || [ -z "$$(ls $(VIZ_IN)/output_*.vts 2>/dev/null)" ]; then \
-	  echo "ERROR: no .vts files in $(VIZ_IN). Run 'make cuda-run-vtk' first."; \
+	  echo "ERROR: no .vts files in $(VIZ_IN). Run 'make cuda-run-vtk' or 'make cuda-run-dendrite' first."; \
 	  exit 1; \
 	fi
 	@if ! $(CUDA_DOCKER_RUN_FS) bash -c 'command -v python3 >/dev/null && command -v Xvfb >/dev/null'; then \
@@ -281,28 +292,45 @@ cuda-visualize: cuda-image ## (docker) Render .vts snapshots to PNGs + MP4 (view
 	  exit 1; \
 	fi
 	@mkdir -p $(VIZ_OUT)
-	@echo "==> Visualizing $(VIZ_IN)/*.vts -> $(VIZ_OUT)/ (view=$(VIZ_VIEW))"
+	@echo "==> Visualizing $(VIZ_IN)/*.vts -> $(VIZ_OUT)/ (layout=$(VIZ_LAYOUT))"
 	$(CUDA_DOCKER_RUN_FS) bash -c ' \
 	  python3 $(VIZ_SCRIPT) \
 	    --input-dir $(VIZ_IN) \
 	    --output-dir $(VIZ_OUT) \
-	    --view $(VIZ_VIEW) \
+	    --layout $(VIZ_LAYOUT) \
 	    --window-size $(VIZ_WINDOW_W) $(VIZ_WINDOW_H) \
+	    --smooth-iters $(VIZ_SMOOTH_ITERS) \
+	    --pass-band $(VIZ_PASS_BAND) \
+	    --phi-cmap $(VIZ_PHI_CMAP) \
+	    --u-cmap $(VIZ_U_CMAP) \
 	    --make-video --fps $(VIZ_FPS) \
 	    $(VIZ_EXTRA_ARGS); \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
-cuda-visualize-iso: VIZ_VIEW=iso
-cuda-visualize-iso: cuda-visualize ## (docker) Render only the phi=0 isosurface
+cuda-visualize-single: VIZ_LAYOUT=single
+cuda-visualize-single: cuda-visualize ## (docker) Render only the 3D cutaway view (no sidebar)
 
-cuda-visualize-slice: VIZ_VIEW=slice
-cuda-visualize-slice: cuda-visualize ## (docker) Render only orthogonal phi slices
+cuda-visualize-self-test: cuda-image ## (docker) Run the visualizer's internal smoke test
+	@if ! $(CUDA_DOCKER_RUN_FS) bash -c 'command -v python3 >/dev/null && command -v Xvfb >/dev/null'; then \
+	  echo "ERROR: $(CUDA_DEV_IMAGE) lacks python3/Xvfb — Rebuild with: make cuda-image-rebuild"; \
+	  exit 1; \
+	fi
+	@echo "==> Running visualize_dendrite self-test (synthetic 24^3 grid)"
+	$(CUDA_DOCKER_RUN_FS) bash -c ' \
+	  python3 $(VIZ_SCRIPT) --self-test && \
+	  python3 tests/visualize_smoke.py; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-all: ## (docker) Build + test + VTK simulation + visualization end-to-end
 	@$(MAKE) cuda-build
 	@$(MAKE) cuda-test
 	@$(MAKE) cuda-run-vtk
 	@$(MAKE) cuda-visualize
+
+cuda-dendrite-demo: ## (docker) Build + dendrite-friendly run (160^3) + production viz
+	@$(MAKE) cuda-build
+	@$(MAKE) cuda-run-dendrite
+	@$(MAKE) cuda-visualize VIZ_EXTRA_ARGS="--skip-saturated"
 
 cuda-clean: ## Remove native build dir, simulation outputs, checkpoints, and visualizations
 	@if [ -d $(CUDA_BUILD_DIR) ] || [ -d $(OUT_DIR) ] || [ -d $(CHECKPOINT_DIR) ] || [ -d $(VIZ_OUT) ]; then \

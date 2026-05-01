@@ -1,0 +1,57 @@
+{
+    "physics": {
+        "delta": 0.85,
+        "epsilon": 0.12,
+        "W0": 1.0,
+        "beta0": 0.0,
+        "D": 2.0,
+        "d0": 0.5
+    },
+    "grid": {
+        "Nx": 160,
+        "Ny": 160,
+        "Nz": 160,
+        "dx": 0.4,
+        "dy": 0.4,
+        "dz": 0.4
+    },
+    "time": {
+        "dt": 0.005,
+        "dt_min": 1e-6,
+        "dt_max": 0.05,
+        "max_steps": 3000,
+        "scheme": "heun",
+        "adaptive": false,
+        "cfl_safety": 0.9
+    },
+    "stencil": "27pt",
+    "output": {
+        "frequency": 60,
+        "output_dir": "./out",
+        "format": "vts",
+        "async_io": true
+    },
+    "checkpoint": {
+        "frequency": 1000,
+        "checkpoint_dir": "./checkpoints",
+        "keep_last": 3
+    },
+    "gpu": {
+        "device_ids": [0],
+        "block_size": 256,
+        "multi_gpu": false
+    },
+    "initial": {
+        "seed_radius": 4.0
+    },
+    "boundary": {
+        "phi": {
+            "type": "neumann",
+            "flux": 0.0
+        },
+        "u": {
+            "type": "dirichlet",
+            "value": -0.85
+        }
+    }
+}
