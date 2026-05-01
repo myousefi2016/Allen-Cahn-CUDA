@@ -264,7 +264,7 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 	$(MAKE) cuda-run CONFIG=config/run_vtk.json
 
 cuda-run-dendrite: CONFIG=config/run_dendrite.json
-cuda-run-dendrite: cuda-run ## (docker) 192^3 Karma-Rappel dendrite (delta=0.55, eps=0.07, D=4, r0=6) -> VTS
+cuda-run-dendrite: cuda-run ## (docker) 128^3 cubic dendrite (delta=0.8, eps=0.10, ratio 1.32, t/tau0=35) -> VTS
 
 cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
 	$(CUDA_DOCKER_RUN_IT) bash
