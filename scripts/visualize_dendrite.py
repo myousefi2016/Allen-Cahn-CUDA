@@ -592,7 +592,14 @@ def render_timeseries_sidebar(scan: ScanResult,
                    [_interp(steps, sf, current_step)],
                    s=40, color="black", zorder=5)
 
-        ax.set_xlim(steps.min(), steps.max())
+        x_lo, x_hi = float(steps.min()), float(steps.max())
+        if x_lo == x_hi:
+            # Single-frame edge case — pad so matplotlib doesn't complain about a
+            # singular transform.
+            pad = max(1.0, abs(x_lo) * 0.05)
+            x_lo -= pad
+            x_hi += pad
+        ax.set_xlim(x_lo, x_hi)
         ax.set_ylim(0.0, max(0.05, float(sf.max()) * 1.08))
         ax.set_xlabel("simulation step", fontsize=10)
         ax.set_ylabel("solid fraction", color="#2c3e8a", fontsize=10)
