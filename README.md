@@ -213,11 +213,13 @@ make cuda-build                  # Configure + build inside the prebuilt image
 make cuda-test                   # Full unit + integration suite
 make cuda-run-small              # 128^3 quick benchmark  -> ./out (raw)
 make cuda-run-vtk                # 128^3 dendrite         -> ./out (.vts for ParaView)
+make cuda-run-dendrite           # 160^3 dendrite-friendly (e=0.12, d=0.85) -> ./out (.vts)
 make cuda-run-default            # 600^3 production run   -> ./out (.vts)
 make cuda-run CONFIG=config/my.json   # arbitrary config
-make cuda-visualize              # render ./out/*.vts -> ./viz/*.png + dendrite.mp4
-make cuda-visualize-iso          # same, phi=0 isosurface only
-make cuda-visualize-slice        # same, orthogonal slices only
+make cuda-visualize              # render ./out/*.vts -> ./viz/*.png + dendrite.mp4 (panels)
+make cuda-visualize-single       # 3D cutaway view only, no sidebar
+make cuda-visualize-self-test    # synthetic-data smoke test of the visualizer
+make cuda-dendrite-demo          # build + run-dendrite + visualize end-to-end (production)
 make cuda-shell                  # interactive shell in the CUDA container
 make cuda-all                    # build + test + run-vtk + visualize end-to-end
 make cuda-clean                  # wipe build/, out/, checkpoints/, viz/
@@ -234,55 +236,110 @@ make cuda-run CONFIG=config/default.json OUT_DIR=/data/out
 ## Visualization
 
 `scripts/visualize_dendrite.py` is a production-quality PyVista tool that renders
-the `.vts` snapshots produced by `cuda-run-vtk` / `cuda-run-default` into PNG
-frames plus an optional MP4 video. It runs fully **headless** (no X server) via
-`xvfb-run` + `pv.start_xvfb()` and is baked into the `cuda-dev` docker image, so
-no host Python install is needed.
+the `.vts` snapshots produced by `cuda-run-vtk` / `cuda-run-dendrite` /
+`cuda-run-default` into PNG frames plus an optional MP4 video. It runs fully
+**headless** (no X server) via `pv.start_xvfb()` and is baked into the
+`cuda-dev` docker image, so no host Python install is needed.
 
-Three rendering modes:
+### Anti-speckle rendering pipeline
 
-| Mode | What you see | Best for |
+The default output uses several techniques to avoid the moiré / dotted-grid
+artifacts that a naïve `contour() + slice_orthogonal(opacity=0.85)` recipe
+produces in late frames:
+
+1. **Opaque cutaway slices** on the three back walls of the bounding box
+   instead of three semi-transparent mid-plane slices — eliminates the
+   alpha-blending speckle that appears when the dendrite reaches the box.
+2. **Taubin smoothing** of the marching-cubes mesh (`--smooth-iters`,
+   default 20). Shape-preserving (unlike Laplacian), so dendrite tips
+   stay sharp while grid-aligned vertex noise is removed.
+3. **SSAA + 8× MSAA** + low specular on the iso surface — kills
+   grid-frequency specular aliasing.
+4. **Silhouette outline** on the iso surface — clean reading edge against
+   any background.
+5. **Three-light rig** + soft gradient background (steel-blue → near-white)
+   for proper 3D depth cues.
+
+### Layouts
+
+| Layout | What you see | Best for |
 |---|---|---|
-| `combined` (default) | phi=0 isosurface (coloured by dimensionless temperature `u`) + three orthogonal `phi` slices + domain bounding box | the clearest single picture of a dendrite — surface shape **and** bulk structure |
-| `iso` | phi=0 isosurface only, coloured by `u` | clean shape-only video, small PNGs |
-| `slice` | three orthogonal `phi` slices through the grid (diverging RdBu_r cmap) | inspecting the interior without occlusion |
+| `panels` (default) | 1920×1080 composite: cutaway 3D (left), `phi` mid-z slice (top right), `u` mid-z slice (bottom right), time-series sidebar with solid fraction & ⟨u⟩ + saturation shading | publication / animation frames |
+| `single` | only the 3D cutaway view at the requested window size | quick previews, small files |
 
-The tool pre-scans every snapshot to compute a **global** colour range for
-`phi` and `u` before rendering, so the colormap is stable across frames and the
-stitched video does not flicker.
+### Saturation guard
+
+When the dendrite reaches a wall (`phi > -0.5` anywhere on the boundary slab)
+the frame carries no useful morphology. By default these frames are rendered
+with a red **SATURATED — wall reached** badge in the upper-right.
+`--skip-saturated` (or `make cuda-dendrite-demo`, which sets it) drops them
+entirely.
+
+### End-to-end demo (recommended)
 
 ```bash
-# End-to-end: build, run a 128^3 dendrite, and render a dendrite.mp4
-make cuda-all
-
-# Or just render an existing ./out directory
-make cuda-visualize                               # combined view, 1280x960, 12 fps
-make cuda-visualize-iso                           # isosurface only
-make cuda-visualize-slice                         # slices only
-make cuda-visualize VIZ_FPS=24 VIZ_WINDOW_W=1920 VIZ_WINDOW_H=1080
-make cuda-visualize VIZ_IN=/data/run42 VIZ_OUT=/data/run42/viz
-make cuda-visualize VIZ_EXTRA_ARGS="--iso-value 0.1 --limit 20"
+make cuda-image                # one-time, ~3 min
+make cuda-dendrite-demo        # build + 160^3 dendrite run + production viz
+                               # ≈ 3-5 min total on a T4
 ```
 
-Outputs land in `./viz/`:
+Output:
 
 ```
 viz/
   frame_000000.png    # step 0
-  frame_000100.png    # step 100
+  frame_000060.png    # step 60
   ...
-  dendrite.mp4        # stitched video (--make-video)
+  dendrite.mp4        # stitched video
 ```
 
-You can also drive the script directly for finer control:
+### Common overrides
+
+```bash
+# Higher resolution, 24 fps
+make cuda-visualize VIZ_WINDOW_W=2560 VIZ_WINDOW_H=1440 VIZ_FPS=24
+
+# Just the 3D cutaway, no sidebar
+make cuda-visualize-single
+
+# Different output directories
+make cuda-visualize VIZ_IN=/data/run42 VIZ_OUT=/data/run42/viz
+
+# Drop saturated frames; cap at 30 frames; no silhouette outline
+make cuda-visualize VIZ_EXTRA_ARGS="--skip-saturated --limit 30 --no-silhouette"
+
+# Aggressive smoothing for very noisy iso surfaces (dx >> typical)
+make cuda-visualize VIZ_SMOOTH_ITERS=40 VIZ_PASS_BAND=0.05
+
+# Different colormap pair
+make cuda-visualize VIZ_PHI_CMAP=RdBu_r VIZ_U_CMAP=inferno
+```
+
+### Verifying the visualizer (CI-friendly)
+
+The visualizer ships a smoke test that synthesizes a 24³ structured grid and
+exercises every code path (prescan, render, saturation guard, scan-JSON
+dump, MP4 stitching). Runs in <10 s with no GPU and no real `.vts` data:
+
+```bash
+make cuda-visualize-self-test     # in-image smoke test
+# OR directly:
+python3 scripts/visualize_dendrite.py --self-test
+python3 tests/visualize_smoke.py
+```
+
+### Direct CLI
 
 ```bash
 docker run --rm -v $PWD:/work -w /work allen-cahn-cuda-dev:local \
-  xvfb-run -a python3 scripts/visualize_dendrite.py \
+  python3 scripts/visualize_dendrite.py \
     --input-dir ./out --output-dir ./viz \
-    --view combined --make-video --fps 15 \
+    --layout panels --make-video --fps 15 \
     --phi-cmap coolwarm --u-cmap plasma \
-    --window-size 1920 1080 --background white
+    --smooth-iters 20 --pass-band 0.10 \
+    --window-size 1920 1080 \
+    --skip-saturated \
+    --scan-json ./viz/scan.json
 ```
 
 Full CLI: `python3 scripts/visualize_dendrite.py --help`.

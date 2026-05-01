@@ -49,11 +49,16 @@ RUN apt-get update && \
 
 # ---- Python visualization stack --------------------------------------------
 # Pinned to known-good versions; PyVista 0.44 is the first release that works
-# cleanly with VTK 9.3+ and supports start_xvfb() on Ubuntu 24.04.
+# cleanly with VTK 9.3+ and supports start_xvfb() on Ubuntu 24.04. Pillow and
+# matplotlib are explicit pins (they are transitive deps of pyvista, but the
+# visualizer's compositor and time-series sidebar use them directly so we want
+# our own version pin).
 RUN pip3 install --no-cache-dir \
         'numpy>=1.26,<3' \
         'pyvista>=0.44,<0.45' \
         'imageio>=2.34' \
-        'imageio-ffmpeg>=0.5'
+        'imageio-ffmpeg>=0.5' \
+        'pillow>=10.0' \
+        'matplotlib>=3.7'
 
 WORKDIR /work
