@@ -53,3 +53,8 @@ __pycache__/
 
 # Visualization output
 viz/
+
+# Long-run artifacts
+config/*_resume.json
+run_long.log
+nohup.out

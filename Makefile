@@ -59,6 +59,11 @@ VIZ_PHI_CMAP       ?= coolwarm
 VIZ_U_CMAP         ?= plasma
 VIZ_EXTRA_ARGS     ?=
 
+# Long-run dendrite simulation (resumable, ~5 hours on T4)
+LONG_CONFIG        ?= config/run_dendrite_long.json
+LONG_LOG           ?= run_long.log
+RESUME_HELPER      ?= scripts/resume_from_latest_checkpoint.py
+
 # Prebuilt CUDA dev image — built once by `make cuda-image`, reused by every
 # cuda-* target. This bakes cmake, ninja, gcc-13, VTK, HDF5 into the image so
 # individual build / test / run invocations don't pay the ~60s apt-install cost.
@@ -93,6 +98,7 @@ CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
         cuda-image cuda-image-rebuild \
         cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration \
         cuda-run cuda-run-small cuda-run-default cuda-run-vtk cuda-run-dendrite \
+        cuda-run-dendrite-long cuda-resume-dendrite cuda-watch-dendrite cuda-status-dendrite \
         cuda-visualize cuda-visualize-single cuda-visualize-self-test \
         cuda-shell cuda-clean cuda-all cuda-dendrite-demo \
         docker-build-dev docker-build-test docker-build-prod docker-build-all \
@@ -265,6 +271,87 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 
 cuda-run-dendrite: CONFIG=config/run_dendrite.json
 cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, dt=0.005, t/tau0=40, stable) -> VTS
+
+# ── Long resumable dendrite run (~5 hours, with crash-safe checkpointing) ──
+# This is the "Option A" overnight workflow: a 192^3 simulation that runs
+# for ~530 tau0 (well past the Plapp 2003 arm-onset threshold). Checkpoints
+# every 3000 steps (≈ 4 minutes wall-clock), keep_last=3, so any interrupt
+# loses at most ~4 minutes of compute.
+#
+# Backgrounding (mandatory for runs longer than your terminal session):
+#   tmux new -s dendrite 'make cuda-run-dendrite-long'
+#   # OR
+#   nohup make cuda-run-dendrite-long > $(LONG_LOG) 2>&1 &
+#
+# After an interrupt (SIGINT, container kill, host suspend, ...), simply:
+#   make cuda-resume-dendrite
+# which scans $(CHECKPOINT_DIR) for the highest-numbered intact checkpoint,
+# rejects any truncated SIGKILL-mid-write files (size < 99% of expected),
+# generates config/run_dendrite_long_resume.json, and restarts the binary.
+cuda-run-dendrite-long: cuda-build ## (docker) Long ~5 hour 192^3 dendrite run with frequent checkpoints
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> LONG dendrite run on 192^3, ~5 hours wall-clock, ~11 GB VTK output."
+	@echo "    Background it so it survives terminal disconnect:"
+	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-long'"
+	@echo "       # OR"
+	@echo "       nohup make cuda-run-dendrite-long > $(LONG_LOG) 2>&1 &"
+	@echo "    Resume after any interrupt:    make cuda-resume-dendrite"
+	@echo "    Watch progress (nohup mode):   make cuda-watch-dendrite"
+	@echo "    Status check:                  make cuda-status-dendrite"
+	@echo ""
+	$(CUDA_DOCKER_RUN) bash -c './$(NATIVE_BIN) $(LONG_CONFIG); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest intact checkpoint (cold start if none)
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@set +e; \
+	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LONG_CONFIG) $(CHECKPOINT_DIR)); \
+	rc_helper=$$?; \
+	if [ $$rc_helper -eq 0 ]; then \
+	  echo "==> Resuming with $$RESUME_CFG"; \
+	  $(CUDA_DOCKER_RUN) bash -c "./$(NATIVE_BIN) $$RESUME_CFG; \
+	    rc_run=\$$?; $(CUDA_CHOWN); exit \$$rc_run"; \
+	elif [ $$rc_helper -eq 1 ]; then \
+	  echo "==> No usable checkpoint found — falling back to cold start with $(LONG_CONFIG)"; \
+	  $(MAKE) cuda-run-dendrite-long; \
+	else \
+	  echo "ERROR: resume helper exited $$rc_helper (likely a config/JSON problem)"; \
+	  exit 1; \
+	fi
+
+cuda-watch-dendrite: ## Tail run_long.log (only useful after 'nohup make cuda-run-dendrite-long')
+	@if [ -f $(LONG_LOG) ]; then \
+	  tail -F $(LONG_LOG); \
+	else \
+	  echo "ERROR: $(LONG_LOG) not found."; \
+	  echo "       To get a log file, start with: nohup make cuda-run-dendrite-long > $(LONG_LOG) 2>&1 &"; \
+	  echo "       Or use tmux/screen instead of redirecting output."; \
+	  exit 1; \
+	fi
+
+cuda-status-dendrite: ## Show progress of the long run (latest checkpoint, frame count, ETA)
+	@printf "==> Long-run status (target: %s)\n" $(LONG_CONFIG)
+	@TARGET=$$(python3 -c "import json; print(json.load(open('$(LONG_CONFIG)'))['time']['max_steps'])"); \
+	echo "  Target steps:        $$TARGET"; \
+	if [ -d $(CHECKPOINT_DIR) ]; then \
+	  echo "  Checkpoints:"; \
+	  ls -lh $(CHECKPOINT_DIR)/checkpoint_*.acbin 2>/dev/null | awk '{printf "    %s  %s\n", $$5, $$NF}' | sort -t/ -k3 || echo "    (none yet)"; \
+	  LATEST=$$(ls $(CHECKPOINT_DIR)/checkpoint_*.acbin 2>/dev/null | sed 's/.*checkpoint_\([0-9]*\)\.acbin/\1/' | sort -n | tail -1); \
+	  if [ -n "$$LATEST" ]; then \
+	    PCT=$$(python3 -c "print(f'{100*$$LATEST/$$TARGET:.1f}')"); \
+	    echo "  Latest step:         $$LATEST / $$TARGET ($$PCT%)"; \
+	  fi; \
+	else \
+	  echo "  Checkpoints:         (no $(CHECKPOINT_DIR)/ yet)"; \
+	fi
+	@if [ -d $(OUT_DIR) ]; then \
+	  N_VTS=$$(ls $(OUT_DIR)/output_*.vts 2>/dev/null | wc -l); \
+	  echo "  VTK frames written:  $$N_VTS"; \
+	fi
+	@if [ -f $(LONG_LOG) ]; then \
+	  echo "  Last log line:"; \
+	  tail -1 $(LONG_LOG) | sed 's/^/    /'; \
+	fi
 
 cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
 	$(CUDA_DOCKER_RUN_IT) bash
