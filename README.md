@@ -214,6 +214,10 @@ make cuda-test                   # Full unit + integration suite
 make cuda-run-small              # 128^3 quick benchmark  -> ./out (raw)
 make cuda-run-vtk                # 128^3 dendrite         -> ./out (.vts for ParaView)
 make cuda-run-dendrite           # 160^3 dendrite-friendly (e=0.12, d=0.85) -> ./out (.vts)
+make cuda-run-dendrite-long      # 192^3 long ~5 hour run with crash-safe checkpointing
+make cuda-resume-dendrite        # resume the long run from latest intact checkpoint
+make cuda-status-dendrite        # show progress: latest checkpoint, frame count, % done
+make cuda-watch-dendrite         # tail run_long.log (after 'nohup make cuda-run-dendrite-long')
 make cuda-run-default            # 600^3 production run   -> ./out (.vts)
 make cuda-run CONFIG=config/my.json   # arbitrary config
 make cuda-visualize              # render ./out/*.vts -> ./viz/*.png + dendrite.mp4 (panels)
@@ -225,6 +229,46 @@ make cuda-all                    # build + test + run-vtk + visualize end-to-end
 make cuda-clean                  # wipe build/, out/, checkpoints/, viz/
 make cuda-image-rebuild          # force-rebuild the dev image (after apt-pkg change)
 ```
+
+### Long resumable run (overnight dendrite simulation)
+
+`cuda-run-dendrite-long` runs a 192³ Allen-Cahn simulation for 530 τ₀ on a
+T4 (≈5 hours wall-clock). This is the time horizon needed for textbook 6-arm
+cubic dendrites to develop via the Mullins-Sekerka instability (per Plapp &
+Karma 2003; the short `cuda-run-dendrite` only reaches ≈40 τ₀ which produces a
+faceted cube but no extended arms).
+
+Crash safety:
+- Checkpoints every 3000 steps (≈4 minutes of compute lost on SIGKILL/suspend).
+- `keep_last=3` (≈324 MB on disk).
+- `cuda-resume-dendrite` finds the highest-numbered intact checkpoint
+  (rejecting any truncated mid-write file via size validation), injects it
+  into the config, and resumes the binary at the next step. If no usable
+  checkpoint exists it cold-starts.
+
+Recommended workflow (mandatory backgrounding so it survives terminal close):
+
+```bash
+# Option 1 — tmux (preferred; you can re-attach to see live progress)
+tmux new -s dendrite 'make cuda-run-dendrite-long'
+# Detach with Ctrl-B then D; reattach with: tmux attach -t dendrite
+
+# Option 2 — nohup + log file
+nohup make cuda-run-dendrite-long > run_long.log 2>&1 &
+make cuda-watch-dendrite          # = tail -F run_long.log
+
+# Check progress at any time
+make cuda-status-dendrite
+
+# After ANY interrupt (Ctrl-C, container kill, host suspend, OOM, …)
+make cuda-resume-dendrite         # picks up where it left off, no flags needed
+
+# Visualize partial / completed output (works mid-run too)
+make cuda-visualize VIZ_EXTRA_ARGS="--skip-saturated"
+```
+
+The resume mechanism is implemented in `scripts/resume_from_latest_checkpoint.py`
+which is idempotent and safe to invoke repeatedly.
 
 Override defaults on the command line:
 
