@@ -1,7 +1,7 @@
 {
     "physics": {
         "delta": 0.8,
-        "epsilon": 0.10,
+        "epsilon": 0.20,
         "W0": 1.0,
         "beta0": 0.0,
         "D": 2.0,
@@ -24,7 +24,7 @@
         "adaptive": false,
         "cfl_safety": 0.9
     },
-    "stencil": "27pt",
+    "stencil": "7pt",
     "output": {
         "frequency": 80,
         "output_dir": "./out",

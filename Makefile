@@ -53,8 +53,8 @@ VIZ_LAYOUT         ?= panels
 VIZ_FPS            ?= 12
 VIZ_WINDOW_W       ?= 1920
 VIZ_WINDOW_H       ?= 1080
-VIZ_SMOOTH_ITERS   ?= 20
-VIZ_PASS_BAND      ?= 0.10
+VIZ_SMOOTH_ITERS   ?= 8
+VIZ_PASS_BAND      ?= 0.05
 VIZ_PHI_CMAP       ?= coolwarm
 VIZ_U_CMAP         ?= plasma
 VIZ_EXTRA_ARGS     ?=
@@ -264,7 +264,7 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 	$(MAKE) cuda-run CONFIG=config/run_vtk.json
 
 cuda-run-dendrite: CONFIG=config/run_dendrite.json
-cuda-run-dendrite: cuda-run ## (docker) 128^3 cubic dendrite (delta=0.8, eps=0.10, ratio 1.32, t/tau0=35) -> VTS
+cuda-run-dendrite: cuda-run ## (docker) 128^3 cubic dendrite (eps=0.20 ratio 1.80, 7pt stencil, t/tau0=35) -> VTS
 
 cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
 	$(CUDA_DOCKER_RUN_IT) bash
