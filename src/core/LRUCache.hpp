@@ -112,9 +112,7 @@ public:
     [[nodiscard]] double hit_rate() const {
         std::shared_lock lock(mutex_);
         const auto total = hit_count_ + miss_count_;
-        return total == 0
-                   ? 0.0
-                   : static_cast<double>(hit_count_) / static_cast<double>(total);
+        return total == 0 ? 0.0 : static_cast<double>(hit_count_) / static_cast<double>(total);
     }
 
 private:
