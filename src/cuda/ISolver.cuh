@@ -27,6 +27,9 @@ public:
     /// Apply boundary conditions to both fields.
     virtual void apply_boundary_conditions() = 0;
 
+    /// Compute max(phi) over the 6 boundary slabs (O(N²), no full D2H copy).
+    [[nodiscard]] virtual double compute_boundary_max_phi() const = 0;
+
     /// Synchronize all GPU work.
     virtual void synchronize() const = 0;
 

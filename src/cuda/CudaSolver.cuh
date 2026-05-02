@@ -22,6 +22,7 @@ public:
     void initialize(const FieldData& phi0, const FieldData& u0) override;
     void step(double dt) override;
     [[nodiscard]] double compute_max_dphi() const override;
+    [[nodiscard]] double compute_boundary_max_phi() const override;
     void copy_phi_to_host(FieldData& out) const override;
     void copy_u_to_host(FieldData& out) const override;
     void apply_boundary_conditions() override;

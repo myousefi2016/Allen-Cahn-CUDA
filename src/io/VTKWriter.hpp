@@ -36,6 +36,8 @@ public:
     VTKWriter& operator=(const VTKWriter&) = delete;
 
     /// Enqueue a write job (non-blocking: copies data internally).
+    /// Enqueue a write job. Blocks if the queue already holds max_queue_depth
+    /// jobs (backpressure to prevent unbounded memory growth).
     void write_async(int step, double time, const FieldData& phi, const FieldData& u);
 
     /// Wait for all pending writes to complete.
@@ -78,6 +80,8 @@ private:
     /// LRU cache for field statistics keyed by "step:field_name".
     /// Capacity of 256 covers the last 128 output steps (2 fields each).
     mutable LRUCache<std::string, FieldStatistics> stats_cache_{256};
+
+    static constexpr int max_queue_depth_ = 4;
 };
 
 } // namespace ac

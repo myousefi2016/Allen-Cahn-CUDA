@@ -274,11 +274,16 @@ void SimulationConfig::validate() const {
     if (time.cfl_safety <= 0.0)
         throw std::invalid_argument("cfl_safety must be positive");
 
-    // CFL check
+    // CFL check (thermal diffusion + phase-field effective diffusivity)
     Real min_dx = std::min({grid.dx, grid.dy, grid.dz});
-    Real cfl_dt = time.cfl_safety * min_dx * min_dx / (2.0 * physics.D * 3.0);
+    Real inv_h2_sum = 3.0 / (min_dx * min_dx);
+    Real thermal_cfl = time.cfl_safety / (2.0 * physics.D * inv_h2_sum);
+    Real A_max = 1.0 + physics.epsilon;
+    Real D_phi = physics.W0 * physics.W0 * A_max * A_max / physics.tau0();
+    Real phi_cfl = time.cfl_safety / (2.0 * D_phi * inv_h2_sum);
+    Real cfl_dt = std::min(thermal_cfl, phi_cfl);
     if (time.dt > cfl_dt && !time.adaptive) {
-        spdlog::warn("dt={:.6e} exceeds CFL limit={:.6e} for explicit diffusion. "
+        spdlog::warn("dt={:.6e} exceeds CFL limit={:.6e} (min of thermal and phase-field). "
                      "Consider enabling adaptive time stepping.",
                      time.dt, cfl_dt);
     }
