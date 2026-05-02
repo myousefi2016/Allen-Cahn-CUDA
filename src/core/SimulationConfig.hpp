@@ -101,9 +101,6 @@ struct GPUParams {
 // ── Initial condition ──────────────────────────────────────────────────────
 struct InitialCondition {
     Real seed_radius = 5.0;
-    bool perturb = false;         ///< Add cubic-axis bumps to seed the 6 arms
-    Real perturb_amplitude = 0.3; ///< Bump amplitude relative to seed_radius
-    int perturb_mode = 4;         ///< Spherical harmonic mode (4 = cubic)
 };
 
 /// Face identifiers for per-face boundary conditions.

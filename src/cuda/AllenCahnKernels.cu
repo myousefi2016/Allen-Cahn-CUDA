@@ -27,7 +27,6 @@ __global__ void __launch_bounds__(256)
     double phix = gradient_x(phi_old, x, y, z, p.Ny, p.Nz, p.dx);
     double phiy = gradient_y(phi_old, x, y, z, p.Ny, p.Nz, p.dy);
     double phiz = gradient_z(phi_old, x, y, z, p.Ny, p.Nz, p.dz);
-    double sqGphi = phix * phix + phiy * phiy + phiz * phiz;
 
     // Compute anisotropy ONCE (was computed 8+ times in original code)
     double an = compute_An(phix, phiy, phiz, p.epsilon);
@@ -35,8 +34,10 @@ __global__ void __launch_bounds__(256)
     double wn2 = wn * wn;
     double tn = p.tau0 * an * an;
 
-    // Compute force components at this point
-    double coeff = sqGphi * wn * 16.0 * p.W0 * p.epsilon;
+    // Anisotropy force coefficient: F_i = wn²·φ_i + 16·W₀·wn·ε·dFunc_i
+    // Derived from δF/δ(∇φ) of gradient energy ½W₀²A²|∇φ|².
+    // ∂A/∂φ_i = 16ε·dFunc_i/|∇φ|², which cancels the |∇φ|² from the chain rule.
+    double coeff = wn * 16.0 * p.W0 * p.epsilon;
     double Fx_here = wn2 * phix + coeff * dFunc(phix, phiy, phiz);
     double Fy_here = wn2 * phiy + coeff * dFunc(phiy, phiz, phix);
     double Fz_here = wn2 * phiz + coeff * dFunc(phiz, phix, phiy);
@@ -55,11 +56,10 @@ __global__ void __launch_bounds__(256)
         double px = gradient_x(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dx);
         double py = gradient_y(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dy);
         double pz = gradient_z(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dz);
-        double sq = px * px + py * py + pz * pz;
         double a = compute_An(px, py, pz, p.epsilon);
         double w = p.W0 * a;
         double w2 = w * w;
-        double c = sq * w * 16.0 * p.W0 * p.epsilon;
+        double c = w * 16.0 * p.W0 * p.epsilon;
 
         if (component == 0)
             return w2 * px + c * dFunc(px, py, pz);
@@ -142,12 +142,11 @@ __global__ void __launch_bounds__(256)
     double phix = gradient_x(phi, x, y, z, p.Ny, p.Nz, p.dx);
     double phiy = gradient_y(phi, x, y, z, p.Ny, p.Nz, p.dy);
     double phiz = gradient_z(phi, x, y, z, p.Ny, p.Nz, p.dz);
-    double sqGphi = phix * phix + phiy * phiy + phiz * phiz;
 
     double an = compute_An(phix, phiy, phiz, p.epsilon);
     double wn = p.W0 * an;
     double wn2 = wn * wn;
-    double coeff = sqGphi * wn * 16.0 * p.W0 * p.epsilon;
+    double coeff = wn * 16.0 * p.W0 * p.epsilon;
 
     Fx[c] = wn2 * phix + coeff * dFunc(phix, phiy, phiz);
     Fy[c] = wn2 * phiy + coeff * dFunc(phiy, phiz, phix);
