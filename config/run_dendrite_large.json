@@ -1,0 +1,68 @@
+{
+    "_comment_physics": "Large-box dendrite: δ=0.65 moderate undercooling for slower, more structured growth. ε=0.15 strong cubic anisotropy. Perturbed seed gives <100> arms a head start.",
+    "physics": {
+        "delta": 0.65,
+        "epsilon": 0.15,
+        "W0": 1.0,
+        "beta0": 0.0,
+        "D": 2.0,
+        "d0": 0.5
+    },
+    "_comment_grid": "384^3 ≈ 56.6M cells × 64 B/cell ≈ 3.6 GB — fits comfortably in T4's 16 GB with room for CUDA runtime and I/O. dx=0.4 gives physical domain 153.6³.",
+    "grid": {
+        "Nx": 384,
+        "Ny": 384,
+        "Nz": 384,
+        "dx": 0.4,
+        "dy": 0.4,
+        "dz": 0.4
+    },
+    "_comment_time": "dt=0.005 with Heun on 27pt has 4.3× stability margin. max_steps=40000 = 200 τ₀ of simulation time. The saturation guard will exit cleanly when the dendrite reaches the wall.",
+    "time": {
+        "dt": 0.005,
+        "dt_min": 1e-6,
+        "dt_max": 0.05,
+        "max_steps": 40000,
+        "scheme": "heun",
+        "adaptive": false,
+        "cfl_safety": 0.9,
+        "exit_on_saturation": true,
+        "saturation_threshold": -0.5,
+        "saturation_check_freq": 200
+    },
+    "stencil": "27pt",
+    "_comment_output": "VTK every 1000 steps. 384^3 VTS ≈ 880 MB each, expect 10-20 frames before saturation = 9-18 GB on disk.",
+    "output": {
+        "frequency": 1000,
+        "output_dir": "./out",
+        "format": "vts",
+        "async_io": true
+    },
+    "_comment_checkpoint": "Checkpoint every 5000 steps (384^3 checkpoint ≈ 864 MB), keep_last=2 = ~1.7 GB on disk.",
+    "checkpoint": {
+        "frequency": 5000,
+        "checkpoint_dir": "./checkpoints",
+        "keep_last": 2
+    },
+    "gpu": {
+        "device_ids": [0],
+        "block_size": 256,
+        "multi_gpu": false
+    },
+    "_comment_initial": "r0=10 cells = 4 W₀, well above critical nucleus. Perturbed seed adds cubic-harmonic bumps along <100> directions to jumpstart the 6 dendrite arms instead of waiting for Mullins-Sekerka instability.",
+    "initial": {
+        "seed_radius": 10.0,
+        "perturb": true,
+        "perturb_amplitude": 0.3
+    },
+    "boundary": {
+        "phi": {
+            "type": "neumann",
+            "flux": 0.0
+        },
+        "u": {
+            "type": "dirichlet",
+            "value": -0.65
+        }
+    }
+}
