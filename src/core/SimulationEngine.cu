@@ -105,6 +105,8 @@ void SimulationEngine::time_loop() {
     double dt = config_.time.dt;
     double time = start_time_;
     int max_steps = config_.time.max_steps;
+    const bool sat_guard = config_.time.exit_on_saturation;
+    const int sat_freq = std::max(1, config_.time.saturation_check_freq);
 
     cuda::Event timer_start(cudaEventDefault);
     cuda::Event timer_stop(cudaEventDefault);
@@ -140,7 +142,48 @@ void SimulationEngine::time_loop() {
         if (checkpoint_mgr_->should_checkpoint(step)) {
             checkpoint_step(step, time, dt);
         }
+
+        // Saturation guard: exit cleanly once the solid reaches the wall, before
+        // the AllenCahnKernels.cu near-boundary force-divergence bias destabilises
+        // the integrator (see check_saturation comment).
+        if (sat_guard && step % sat_freq == 0 && check_saturation()) {
+            spdlog::warn("Saturation detected at step {} (phi > {:.3f} on a boundary slab). "
+                         "Writing final checkpoint and exiting cleanly to avoid post-saturation "
+                         "instability.",
+                         step, config_.time.saturation_threshold);
+            checkpoint_step(step, time, dt);
+            output_step(step, time);
+            break;
+        }
     }
+}
+
+bool SimulationEngine::check_saturation() {
+    // D2H copy of phi (≈ 56 MB on 192³) — amortised by saturation_check_freq.
+    solver_->copy_phi_to_host(phi_host_);
+    const Real thr = config_.time.saturation_threshold;
+    const int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
+
+    // Six 1-cell-thick boundary slabs. The work is O(N²), not O(N³).
+    auto slab_max_exceeds = [&](int x_lo, int x_hi, int y_lo, int y_hi, int z_lo,
+                                int z_hi) -> bool {
+        for (int x = x_lo; x <= x_hi; ++x) {
+            for (int y = y_lo; y <= y_hi; ++y) {
+                for (int z = z_lo; z <= z_hi; ++z) {
+                    if (phi_host_(x, y, z) > thr)
+                        return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    return slab_max_exceeds(0, 0, 0, Ny - 1, 0, Nz - 1) ||
+           slab_max_exceeds(Nx - 1, Nx - 1, 0, Ny - 1, 0, Nz - 1) ||
+           slab_max_exceeds(0, Nx - 1, 0, 0, 0, Nz - 1) ||
+           slab_max_exceeds(0, Nx - 1, Ny - 1, Ny - 1, 0, Nz - 1) ||
+           slab_max_exceeds(0, Nx - 1, 0, Ny - 1, 0, 0) ||
+           slab_max_exceeds(0, Nx - 1, 0, Ny - 1, Nz - 1, Nz - 1);
 }
 
 void SimulationEngine::output_step(int step, double time) {

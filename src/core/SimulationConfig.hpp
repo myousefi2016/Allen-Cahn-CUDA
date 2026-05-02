@@ -59,6 +59,17 @@ struct TimeParams {
     bool adaptive = false;
     Real adaptive_tolerance = 0.01; ///< Max allowed |dphi| per step
     Real cfl_safety = 0.9;
+    // Saturation guard: when the solid (phi > saturation_threshold) reaches
+    // the boundary slabs, the AllenCahnKernels.cu interior-only force-divergence
+    // computation produces unbounded gradients (compute_force_at returns 0 at
+    // boundary cells, biasing the divergence at neighboring interior cells).
+    // The result is numerical blow-up shortly after wall contact. Detecting
+    // saturation and exiting cleanly avoids that, and is also physically
+    // meaningful — beyond saturation the simulation no longer represents free
+    // dendrite growth.
+    bool exit_on_saturation = true;
+    Real saturation_threshold = -0.5; ///< phi above this on a boundary cell ⇒ saturated
+    int saturation_check_freq = 100;  ///< check every N steps (D2H copy is ~5 ms)
 };
 
 // ── Stencil type ───────────────────────────────────────────────────────────
