@@ -150,6 +150,15 @@ void SimulationEngine::time_loop() {
             checkpoint_step(step, time, dt);
         }
 
+        // Graceful shutdown on SIGINT/SIGTERM
+        if (g_shutdown_requested.load(std::memory_order_relaxed)) {
+            spdlog::warn("Shutdown requested at step {}. Writing checkpoint and flushing output...",
+                         step);
+            checkpoint_step(step, time, dt);
+            output_step(step, time);
+            break;
+        }
+
         // Saturation guard: exit cleanly once the solid reaches the wall, before
         // the AllenCahnKernels.cu near-boundary force-divergence bias destabilises
         // the integrator (see check_saturation comment).
@@ -166,7 +175,6 @@ void SimulationEngine::time_loop() {
 }
 
 bool SimulationEngine::check_saturation() {
-    // D2H copy of phi (≈ 56 MB on 192³) — amortised by saturation_check_freq.
     solver_->copy_phi_to_host(phi_host_);
     const Real thr = config_.time.saturation_threshold;
     const int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
@@ -193,15 +201,29 @@ bool SimulationEngine::check_saturation() {
            slab_max_exceeds(0, Nx - 1, 0, Ny - 1, Nz - 1, Nz - 1);
 }
 
+void SimulationEngine::copy_phi_if_needed(int step) {
+    if (last_phi_d2h_step_ != step) {
+        solver_->copy_phi_to_host(phi_host_);
+        last_phi_d2h_step_ = step;
+    }
+}
+
+void SimulationEngine::copy_u_if_needed(int step) {
+    if (last_u_d2h_step_ != step) {
+        solver_->copy_u_to_host(u_host_);
+        last_u_d2h_step_ = step;
+    }
+}
+
 void SimulationEngine::output_step(int step, double time) {
-    solver_->copy_phi_to_host(phi_host_);
-    solver_->copy_u_to_host(u_host_);
+    copy_phi_if_needed(step);
+    copy_u_if_needed(step);
     vtk_writer_->write_async(step, time, phi_host_, u_host_);
 }
 
 void SimulationEngine::checkpoint_step(int step, double time, double dt) {
-    solver_->copy_phi_to_host(phi_host_);
-    solver_->copy_u_to_host(u_host_);
+    copy_phi_if_needed(step);
+    copy_u_if_needed(step);
     checkpoint_mgr_->save(step, time, dt, phi_host_, u_host_);
 }
 

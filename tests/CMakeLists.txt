@@ -21,6 +21,8 @@ add_executable(unit_tests
     unit/test_ThermalKernels.cu
     unit/test_Gradient.cu
     unit/test_SimulationEngine.cu
+    unit/test_InitialCondition.cu
+    unit/test_GridValidation.cu
     unit/test_CheckpointManager.cpp
     unit/test_Logger.cpp
 )
@@ -48,6 +50,7 @@ add_executable(integration_tests
     integration/test_SchemeComparison.cu
     integration/test_CheckpointRestart.cu
     integration/test_StencilComparison.cu
+    integration/test_AnisotropyForce.cu
 )
 
 target_link_libraries(integration_tests PRIVATE

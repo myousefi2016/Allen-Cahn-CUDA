@@ -142,15 +142,17 @@ void VTKWriter::write_vtk_file(const WriteJob& job) {
     sg->GetPointData()->AddArray(phi_arr);
     sg->GetPointData()->AddArray(u_arr);
 
-    // Write VTS file
+    // Write to temp file first, then rename atomically to avoid corruption on crash
     std::string filename =
         (params_.output_dir / ("output_" + std::to_string(job.step) + ".vts")).string();
+    std::string tmp_filename = filename + ".tmp";
 
     vtkNew<vtkXMLStructuredGridWriter> writer;
-    writer->SetFileName(filename.c_str());
+    writer->SetFileName(tmp_filename.c_str());
     writer->SetInputData(sg);
     writer->Write();
 
+    std::filesystem::rename(tmp_filename, filename);
     spdlog::info("Wrote VTK file: {} (step={}, time={:.4f})", filename, job.step, job.time);
 #else
     spdlog::warn("VTK support not compiled in, falling back to raw output");
@@ -206,6 +208,10 @@ FieldStatistics VTKWriter::compute_statistics(const std::vector<Real>& data, int
 
     stats.min_val = *std::min_element(data.begin(), data.end());
     stats.max_val = *std::max_element(data.begin(), data.end());
+
+    if (!std::isfinite(stats.min_val) || !std::isfinite(stats.max_val)) {
+        spdlog::warn("Field '{}' at step {} contains NaN/Inf values", name, step);
+    }
 
     double sum = 0.0;
     double sum_sq = 0.0;

@@ -6,7 +6,11 @@
 #include "core/SimulationConfig.hpp"
 #include "io/VTKWriter.hpp"
 
+#include <atomic>
 #include <memory>
+
+/// Global flag set by SIGINT/SIGTERM handler to request graceful shutdown.
+extern std::atomic<bool> g_shutdown_requested;
 
 namespace ac::cuda {
 class ISolver;
@@ -36,6 +40,8 @@ private:
     void output_step(int step, double time);
     void checkpoint_step(int step, double time, double dt);
     double adapt_time_step(double current_dt);
+    void copy_phi_if_needed(int step);
+    void copy_u_if_needed(int step);
 
     /// Inspect the six 1-cell-thick boundary slabs of phi and return true if
     /// any cell has phi > config.time.saturation_threshold. The Allen-Cahn
@@ -60,6 +66,8 @@ private:
 
     int start_step_ = 0;
     double start_time_ = 0.0;
+    int last_phi_d2h_step_ = -1;
+    int last_u_d2h_step_ = -1;
 };
 
 } // namespace ac

@@ -1,5 +1,6 @@
 #include "core/SimulationConfig.hpp"
 
+#include <cmath>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -238,6 +239,14 @@ void SimulationConfig::validate() const {
     }
     if (grid.dx <= 0.0 || grid.dy <= 0.0 || grid.dz <= 0.0) {
         throw std::invalid_argument("Grid spacing must be positive");
+    }
+
+    // 27-point isotropic stencil requires cubic grid spacing
+    if (stencil == StencilType::Isotropic27Point) {
+        if (std::abs(grid.dx - grid.dy) > 1e-14 || std::abs(grid.dx - grid.dz) > 1e-14) {
+            throw std::invalid_argument(
+                "27-point isotropic stencil requires cubic grid spacing (dx == dy == dz)");
+        }
     }
 
     // Physics validation

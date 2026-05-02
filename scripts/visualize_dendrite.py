@@ -70,6 +70,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import gc
 import numpy as np
 
 # Suppress noisy VTK deprecation/info messages that PyVista cannot silence.
@@ -226,6 +227,12 @@ def compute_global_scan(frames: Sequence[Path],
 
         if "u" in grid.point_data:
             ua = np.asarray(grid.point_data["u"])
+            if not np.all(np.isfinite(ua)):
+                n_bad = int(np.count_nonzero(~np.isfinite(ua)))
+                sys.stderr.write(
+                    f"\nWARN: {f.name} has {n_bad} NaN/Inf values in u — "
+                    f"clamping to finite range\n")
+                ua = np.where(np.isfinite(ua), ua, 0.0)
             u_lo = min(u_lo, float(ua.min()))
             u_hi = max(u_hi, float(ua.max()))
             result.mean_u.append(float(ua.mean()))
@@ -234,6 +241,12 @@ def compute_global_scan(frames: Sequence[Path],
 
         if "phi" in grid.point_data:
             pa = np.asarray(grid.point_data["phi"])
+            if not np.all(np.isfinite(pa)):
+                n_bad = int(np.count_nonzero(~np.isfinite(pa)))
+                sys.stderr.write(
+                    f"\nWARN: {f.name} has {n_bad} NaN/Inf values in phi — "
+                    f"clamping to finite range\n")
+                pa = np.where(np.isfinite(pa), pa, 0.0)
             phi_lo = min(phi_lo, float(pa.min()))
             phi_hi = max(phi_hi, float(pa.max()))
             result.solid_fraction.append(float((pa > 0.0).mean()))
@@ -242,6 +255,9 @@ def compute_global_scan(frames: Sequence[Path],
 
         result.saturated.append(detect_saturation(grid, sat_threshold))
         scanned += 1
+
+        del grid
+        gc.collect()
 
     if progress:
         sys.stdout.write(" " * 80 + "\r")
@@ -812,6 +828,16 @@ def render_frame(frame_path: Path,
         sys.stderr.write(f"ERROR reading {frame_path}: {exc}\n")
         return False
 
+    for field_name in ("phi", "u"):
+        if field_name in grid.point_data:
+            arr = np.asarray(grid.point_data[field_name])
+            if not np.all(np.isfinite(arr)):
+                n_bad = int(np.count_nonzero(~np.isfinite(arr)))
+                sys.stderr.write(
+                    f"WARN: {frame_path.name} has {n_bad} NaN/Inf in {field_name} "
+                    f"— replacing with 0 for rendering\n")
+                grid.point_data[field_name] = np.where(np.isfinite(arr), arr, 0.0)
+
     step = natural_step(str(frame_path))
     saturated = detect_saturation(grid)
     if saturated and cfg.skip_saturated:
@@ -890,6 +916,9 @@ def render_frame(frame_path: Path,
     except Exception as exc:
         sys.stderr.write(f"ERROR writing {png_path}: {exc}\n")
         return False
+    finally:
+        del grid
+        gc.collect()
     return True
 
 
