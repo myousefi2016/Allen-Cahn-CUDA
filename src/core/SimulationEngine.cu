@@ -175,30 +175,8 @@ void SimulationEngine::time_loop() {
 }
 
 bool SimulationEngine::check_saturation() {
-    solver_->copy_phi_to_host(phi_host_);
-    const Real thr = config_.time.saturation_threshold;
-    const int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
-
-    // Six 1-cell-thick boundary slabs. The work is O(N²), not O(N³).
-    auto slab_max_exceeds = [&](int x_lo, int x_hi, int y_lo, int y_hi, int z_lo,
-                                int z_hi) -> bool {
-        for (int x = x_lo; x <= x_hi; ++x) {
-            for (int y = y_lo; y <= y_hi; ++y) {
-                for (int z = z_lo; z <= z_hi; ++z) {
-                    if (phi_host_(x, y, z) > thr)
-                        return true;
-                }
-            }
-        }
-        return false;
-    };
-
-    return slab_max_exceeds(0, 0, 0, Ny - 1, 0, Nz - 1) ||
-           slab_max_exceeds(Nx - 1, Nx - 1, 0, Ny - 1, 0, Nz - 1) ||
-           slab_max_exceeds(0, Nx - 1, 0, 0, 0, Nz - 1) ||
-           slab_max_exceeds(0, Nx - 1, Ny - 1, Ny - 1, 0, Nz - 1) ||
-           slab_max_exceeds(0, Nx - 1, 0, Ny - 1, 0, 0) ||
-           slab_max_exceeds(0, Nx - 1, 0, Ny - 1, Nz - 1, Nz - 1);
+    double bmax = solver_->compute_boundary_max_phi();
+    return bmax > config_.time.saturation_threshold;
 }
 
 void SimulationEngine::copy_phi_if_needed(int step) {
@@ -236,9 +214,15 @@ double SimulationEngine::adapt_time_step(double current_dt) {
     double ratio = target / max_dphi;
     double new_dt = current_dt * std::min(1.5, std::max(0.5, 0.9 * ratio));
 
-    // CFL constraint
+    // CFL constraint: both thermal diffusivity D and phase-field effective
+    // diffusivity D_phi = W0^2*A_max^2/tau0 must be stable.
     Real min_dx = std::min({config_.grid.dx, config_.grid.dy, config_.grid.dz});
-    Real cfl_dt = config_.time.cfl_safety * min_dx * min_dx / (2.0 * config_.physics.D * 3.0);
+    Real inv_h2_sum = 1.0 / (min_dx * min_dx) * 3.0;
+    Real thermal_cfl = config_.time.cfl_safety / (2.0 * config_.physics.D * inv_h2_sum);
+    Real A_max = 1.0 + config_.physics.epsilon;
+    Real D_phi = config_.physics.W0 * config_.physics.W0 * A_max * A_max / config_.physics.tau0();
+    Real phi_cfl = config_.time.cfl_safety / (2.0 * D_phi * inv_h2_sum);
+    Real cfl_dt = std::min(thermal_cfl, phi_cfl);
     new_dt = std::min(new_dt, cfl_dt);
 
     new_dt = std::clamp(new_dt, config_.time.dt_min, config_.time.dt_max);

@@ -23,7 +23,10 @@ public:
         double time;
         int step;
         int num_fields; // Always 2 (phi, u)
+        char reserved[56] = {};
     };
+    static_assert(sizeof(Header) == 128,
+                  "Header must be exactly 128 bytes for binary compatibility");
 
     /// Write a checkpoint to disk.
     static void write(const std::filesystem::path& path, int step, double time, double dt,

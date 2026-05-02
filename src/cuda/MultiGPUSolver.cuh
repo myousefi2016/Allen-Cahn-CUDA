@@ -22,6 +22,7 @@ public:
     void initialize(const FieldData& phi0, const FieldData& u0) override;
     void step(double dt) override;
     [[nodiscard]] double compute_max_dphi() const override;
+    [[nodiscard]] double compute_boundary_max_phi() const override;
     void copy_phi_to_host(FieldData& out) const override;
     void copy_u_to_host(FieldData& out) const override;
     void apply_boundary_conditions() override;
@@ -37,6 +38,7 @@ private:
         int halo = 0;
         std::unique_ptr<CudaSolver> solver;
         Stream halo_stream; // Dedicated stream for halo exchange
+        Event compute_done; // Signalled when compute_stream_ finishes a step
     };
 
     /// Extract sub-domain data from global field for initialization.

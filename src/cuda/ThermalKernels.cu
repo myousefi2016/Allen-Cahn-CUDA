@@ -9,8 +9,8 @@ __global__ void __launch_bounds__(256)
                             const double* __restrict__ phi_new, const double* __restrict__ phi_old,
                             KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = p.Nx * p.Ny * p.Nz;
-    if (tid >= static_cast<unsigned>(total))
+    std::size_t total = static_cast<std::size_t>(p.Nx) * p.Ny * p.Nz;
+    if (tid >= total)
         return;
 
     int x, y, z;
@@ -29,13 +29,16 @@ __global__ void __launch_bounds__(256)
 }
 
 /// Thermal RHS kernel (for higher-order time integration).
-/// Computes rhs = 0.5*(dphi/dt) + D*Laplacian(u)
-/// The latent heat coupling term is handled by the caller.
+/// Computes rhs = D*Laplacian(u) + 0.5 * k_phi / dt, where k_phi is the
+/// Allen-Cahn RHS already computed for this RK stage.  Including the latent
+/// heat source inside each stage maintains full RK4 accuracy for the coupled
+/// system, instead of the previous first-order operator-splitting correction.
 __global__ void __launch_bounds__(256)
-    thermal_rhs_kernel(const double* __restrict__ u, double* __restrict__ rhs, KernelParams p) {
+    thermal_rhs_kernel(const double* __restrict__ u, double* __restrict__ rhs,
+                       const double* __restrict__ k_phi, KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = p.Nx * p.Ny * p.Nz;
-    if (tid >= static_cast<unsigned>(total))
+    std::size_t total = static_cast<std::size_t>(p.Nx) * p.Ny * p.Nz;
+    if (tid >= total)
         return;
 
     int x, y, z;
@@ -47,7 +50,7 @@ __global__ void __launch_bounds__(256)
         return;
     }
 
-    rhs[c] = p.D * laplacian(u, x, y, z, p);
+    rhs[c] = p.D * laplacian(u, x, y, z, p) + 0.5 * k_phi[c];
 }
 
 // ── Launch wrapper ─────────────────────────────────────────────────────────

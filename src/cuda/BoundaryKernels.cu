@@ -78,7 +78,7 @@ __global__ void __launch_bounds__(256)
     case 0: // Dirichlet
         field[c] = bc_value;
         break;
-    case 1: { // Neumann (zero-gradient + prescribed flux)
+    case 1: { // Neumann: du/dn_outward = bc_flux
         int nx, ny, nz;
         double ds;
         if (face_axis == 0) {
@@ -97,8 +97,13 @@ __global__ void __launch_bounds__(256)
             nz = (face_side == 0) ? 1 : Nz - 2;
             ds = dz;
         }
-        double sign = (face_side == 0) ? -1.0 : 1.0;
-        field[c] = field[idx3d(nx, ny, nz, Ny, Nz)] + sign * bc_flux * ds;
+        // du/dn_outward = (u_bnd - u_inner)/ds for both lo and hi faces.
+        // Derivation: at lo-face (x=0), outward normal = -x̂, so
+        //   du/dn = -∂u/∂x ≈ -(u[1]-u[0])/ds = (u[0]-u[1])/ds.
+        // At hi-face (x=N-1), outward normal = +x̂, so
+        //   du/dn = ∂u/∂x ≈ (u[N-1]-u[N-2])/ds.
+        // Both reduce to (u_bnd - u_inner)/ds.
+        field[c] = field[idx3d(nx, ny, nz, Ny, Nz)] + bc_flux * ds;
         break;
     }
     case 2: { // Periodic
@@ -120,7 +125,6 @@ __global__ void __launch_bounds__(256)
         break;
     }
     case 3: { // Robin: alpha*u + beta*du/dn = gamma
-        // Approximate du/dn with one-sided difference
         int nx, ny, nz;
         double ds;
         if (face_axis == 0) {
@@ -139,13 +143,12 @@ __global__ void __launch_bounds__(256)
             nz = (face_side == 0) ? 1 : Nz - 2;
             ds = dz;
         }
-        double sign = (face_side == 0) ? -1.0 : 1.0;
         double u_inner = field[idx3d(nx, ny, nz, Ny, Nz)];
-        // Robin: alpha*u_bnd + beta*(u_bnd - u_inner)/(sign*ds) = gamma
-        // => u_bnd * (alpha + beta/(sign*ds)) = gamma + beta*u_inner/(sign*ds)
-        double denom = bc_alpha + bc_beta / (sign * ds);
+        // alpha*u_bnd + beta*(u_bnd - u_inner)/ds = gamma
+        // (see Neumann case for the sign-free du/dn derivation)
+        double denom = bc_alpha + bc_beta / ds;
         if (fabs(denom) > 1e-30) {
-            field[c] = (bc_gamma + bc_beta * u_inner / (sign * ds)) / denom;
+            field[c] = (bc_gamma + bc_beta * u_inner / ds) / denom;
         } else {
             field[c] = u_inner;
         }

@@ -224,6 +224,15 @@ def compute_global_scan(frames: Sequence[Path],
         if not result.grid_dims[0]:
             result.grid_dims = tuple(int(v) for v in grid.dimensions)  # type: ignore
             result.grid_bounds = tuple(float(v) for v in grid.bounds)  # type: ignore
+        else:
+            cur_dims = tuple(int(v) for v in grid.dimensions)
+            if cur_dims != result.grid_dims:
+                sys.stderr.write(
+                    f"\nWARN: {f.name} has dimensions {cur_dims}, "
+                    f"expected {result.grid_dims} — skipping\n")
+                del grid
+                gc.collect()
+                continue
 
         if "u" in grid.point_data:
             ua = np.asarray(grid.point_data["u"])

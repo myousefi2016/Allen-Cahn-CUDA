@@ -107,7 +107,7 @@ __device__ __forceinline__ double laplacian_7pt(const double* __restrict__ phi, 
     return phixx + phiyy + phizz;
 }
 
-/// Isotropic 27-point Laplacian (Kumar 2004, 4th order isotropic).
+/// Isotropic 27-point Laplacian (Patra-Karttunen, 2nd order with improved isotropy).
 /// Assumes dx == dy == dz.
 __device__ __forceinline__ double laplacian_27pt(const double* __restrict__ phi, int x, int y,
                                                  int z, int Ny, int Nz, double h) {
@@ -133,7 +133,7 @@ __device__ __forceinline__ double laplacian_27pt(const double* __restrict__ phi,
         phi[idx3d(x - 1, y + 1, z + 1, Ny, Nz)] + phi[idx3d(x - 1, y + 1, z - 1, Ny, Nz)] +
         phi[idx3d(x - 1, y - 1, z + 1, Ny, Nz)] + phi[idx3d(x - 1, y - 1, z - 1, Ny, Nz)];
 
-    // Patra-Karttunen 4th-order isotropic weights:
+    // Patra-Karttunen weights (2nd-order accurate, improved isotropy):
     // face=14, edge=3, corner=1, center=-(6*14+12*3+8*1)=-128, divisor 30*h^2
     return (14.0 * face + 3.0 * edge + 1.0 * corner - 128.0 * center) / (30.0 * h * h);
 }
@@ -200,9 +200,10 @@ void launch_thermal_equation(const double* u_old, double* u_new, const double* p
                              const double* phi_old, const KernelParams& params,
                              cudaStream_t stream = nullptr);
 
-/// Thermal RHS kernel (diffusion only, no latent heat) for RK stages.
+/// Thermal RHS kernel (diffusion + latent heat coupling) for RK stages.
+/// k_phi is the Allen-Cahn RHS for this stage: rhs = D*Lap(u) + 0.5*k_phi.
 __global__ void thermal_rhs_kernel(const double* __restrict__ u, double* __restrict__ rhs,
-                                   KernelParams p);
+                                   const double* __restrict__ k_phi, KernelParams p);
 
 /// Boundary condition kernels (uniform BC on all faces).
 void launch_boundary_conditions(double* field, const KernelParams& params, BCType bc_type,

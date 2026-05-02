@@ -7,12 +7,12 @@ namespace ac::cuda {
 /// Eliminates Fx, Fy, Fz global memory arrays entirely.
 /// Force divergence is computed by recomputing the force at neighboring stencil
 /// points, which trades extra arithmetic for massive memory bandwidth savings.
-__global__ void __launch_bounds__(256)
+__global__ void __launch_bounds__(256, 2)
     allen_cahn_fused_kernel(const double* __restrict__ phi_old, double* __restrict__ phi_new,
                             const double* __restrict__ u_old, KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = p.Nx * p.Ny * p.Nz;
-    if (tid >= static_cast<unsigned>(total))
+    std::size_t total = static_cast<std::size_t>(p.Nx) * p.Ny * p.Nz;
+    if (tid >= total)
         return;
 
     int x, y, z;
@@ -47,25 +47,42 @@ __global__ void __launch_bounds__(256)
     // This is more compute but avoids writing/reading 3 global arrays.
 
     // Helper lambda to compute force component at an offset point.
+    // At boundary cells (x=0/Nx-1 etc.) the gradient uses the actual
+    // BC-enforced field values via clamped indexing, avoiding the old
+    // "return 0" that created an asymmetric force bias at x=1 cells.
+    auto safe_gradient = [&](const double* f, int gx, int gy, int gz, int comp) -> double {
+        int xm = max(gx - 1, 0), xp = min(gx + 1, p.Nx - 1);
+        int ym = max(gy - 1, 0), yp = min(gy + 1, p.Ny - 1);
+        int zm = max(gz - 1, 0), zp = min(gz + 1, p.Nz - 1);
+        if (comp == 0)
+            return (f[idx3d(xp, gy, gz, p.Ny, p.Nz)] - f[idx3d(xm, gy, gz, p.Ny, p.Nz)]) /
+                   ((xp - xm) * p.dx);
+        if (comp == 1)
+            return (f[idx3d(gx, yp, gz, p.Ny, p.Nz)] - f[idx3d(gx, ym, gz, p.Ny, p.Nz)]) /
+                   ((yp - ym) * p.dy);
+        return (f[idx3d(gx, gy, zp, p.Ny, p.Nz)] - f[idx3d(gx, gy, zm, p.Ny, p.Nz)]) /
+               ((zp - zm) * p.dz);
+    };
+
     auto compute_force_at = [&](int ox, int oy, int oz, int component) -> double {
         int nx = x + ox, ny = y + oy, nz = z + oz;
-        // Clamp to valid range
-        if (nx < 1 || nx >= p.Nx - 1 || ny < 1 || ny >= p.Ny - 1 || nz < 1 || nz >= p.Nz - 1) {
-            return 0.0;
-        }
-        double px = gradient_x(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dx);
-        double py = gradient_y(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dy);
-        double pz = gradient_z(phi_old, nx, ny, nz, p.Ny, p.Nz, p.dz);
+        nx = max(0, min(nx, p.Nx - 1));
+        ny = max(0, min(ny, p.Ny - 1));
+        nz = max(0, min(nz, p.Nz - 1));
+
+        double px = safe_gradient(phi_old, nx, ny, nz, 0);
+        double py = safe_gradient(phi_old, nx, ny, nz, 1);
+        double pz = safe_gradient(phi_old, nx, ny, nz, 2);
         double a = compute_An(px, py, pz, p.epsilon);
         double w = p.W0 * a;
         double w2 = w * w;
-        double c = w * 16.0 * p.W0 * p.epsilon;
+        double cf = w * 16.0 * p.W0 * p.epsilon;
 
         if (component == 0)
-            return w2 * px + c * dFunc(px, py, pz);
+            return w2 * px + cf * dFunc(px, py, pz);
         if (component == 1)
-            return w2 * py + c * dFunc(py, pz, px);
-        return w2 * pz + c * dFunc(pz, px, py);
+            return w2 * py + cf * dFunc(py, pz, px);
+        return w2 * pz + cf * dFunc(pz, px, py);
     };
 
     // Divergence via central differences of force field
@@ -89,8 +106,8 @@ __global__ void __launch_bounds__(256)
                           const double* __restrict__ Fy, const double* __restrict__ Fz,
                           KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = p.Nx * p.Ny * p.Nz;
-    if (tid >= static_cast<unsigned>(total))
+    std::size_t total = static_cast<std::size_t>(p.Nx) * p.Ny * p.Nz;
+    if (tid >= total)
         return;
 
     int x, y, z;
@@ -124,8 +141,8 @@ __global__ void __launch_bounds__(256)
     compute_force_kernel(const double* __restrict__ phi, double* __restrict__ Fx,
                          double* __restrict__ Fy, double* __restrict__ Fz, KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = p.Nx * p.Ny * p.Nz;
-    if (tid >= static_cast<unsigned>(total))
+    std::size_t total = static_cast<std::size_t>(p.Nx) * p.Ny * p.Nz;
+    if (tid >= total)
         return;
 
     int x, y, z;

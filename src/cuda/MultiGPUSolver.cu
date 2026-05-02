@@ -133,6 +133,15 @@ void MultiGPUSolver::copy_slab(double* dst, int dst_device, const double* src, i
 }
 
 void MultiGPUSolver::exchange_halos() {
+    // Ensure all compute kernels have finished writing field data before
+    // halo_stream reads it.  Without this, cudaMemcpyPeerAsync on the
+    // halo stream could read stale/in-flight data from compute_stream_.
+    for (auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.compute_done.record(domain.solver->stream());
+        CUDA_CHECK(cudaStreamWaitEvent(domain.halo_stream.get(), domain.compute_done.get(), 0));
+    }
+
     int Ny = config_.grid.Ny;
     int Nz = config_.grid.Nz;
 
@@ -180,6 +189,12 @@ void MultiGPUSolver::exchange_halos() {
 }
 
 void MultiGPUSolver::exchange_halos_for_tmp() {
+    for (auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.compute_done.record(domain.solver->stream());
+        CUDA_CHECK(cudaStreamWaitEvent(domain.halo_stream.get(), domain.compute_done.get(), 0));
+    }
+
     int Ny = config_.grid.Ny;
     int Nz = config_.grid.Nz;
 
@@ -277,6 +292,15 @@ double MultiGPUSolver::compute_max_dphi() const {
     for (const auto& domain : domains_) {
         CUDA_CHECK(cudaSetDevice(domain.device_id));
         global_max = std::max(global_max, domain.solver->compute_max_dphi());
+    }
+    return global_max;
+}
+
+double MultiGPUSolver::compute_boundary_max_phi() const {
+    double global_max = -1e30;
+    for (const auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        global_max = std::max(global_max, domain.solver->compute_boundary_max_phi());
     }
     return global_max;
 }

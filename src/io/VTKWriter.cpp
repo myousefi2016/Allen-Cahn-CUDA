@@ -44,7 +44,10 @@ void VTKWriter::write_async(int step, double time, const FieldData& phi, const F
     job.u_data.assign(u.data(), u.data() + u.size());
 
     {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        queue_cv_.wait(lock, [this] {
+            return static_cast<int>(job_queue_.size()) + active_jobs_ < max_queue_depth_;
+        });
         job_queue_.push(std::move(job));
     }
     queue_cv_.notify_one();
@@ -57,7 +60,7 @@ void VTKWriter::flush() {
 
 int VTKWriter::pending_jobs() const {
     std::lock_guard<std::mutex> lock(queue_mutex_);
-    return static_cast<int>(job_queue_.size());
+    return static_cast<int>(job_queue_.size()) + active_jobs_;
 }
 
 void VTKWriter::writer_loop() {
