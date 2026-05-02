@@ -64,6 +64,10 @@ LONG_CONFIG        ?= config/run_dendrite_long.json
 LONG_LOG           ?= run_long.log
 RESUME_HELPER      ?= scripts/resume_from_latest_checkpoint.py
 
+# Large-box dendrite simulation (384^3, ~16 min on T4)
+LARGE_CONFIG       ?= config/run_dendrite_large.json
+LARGE_LOG          ?= run_large.log
+
 # Prebuilt CUDA dev image — built once by `make cuda-image`, reused by every
 # cuda-* target. This bakes cmake, ninja, gcc-13, VTK, HDF5 into the image so
 # individual build / test / run invocations don't pay the ~60s apt-install cost.
@@ -316,6 +320,41 @@ cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest int
 	elif [ $$rc_helper -eq 1 ]; then \
 	  echo "==> No usable checkpoint found — falling back to cold start with $(LONG_CONFIG)"; \
 	  $(MAKE) cuda-run-dendrite-long; \
+	else \
+	  echo "ERROR: resume helper exited $$rc_helper (likely a config/JSON problem)"; \
+	  exit 1; \
+	fi
+
+# ── Large-box dendrite run (384^3, ~16 min wall-clock on T4) ──────────────
+# Uses corrected anisotropy force and tanh initial condition.
+# 384^3 ≈ 56.6M cells, ~2.7 GB GPU memory, fits T4 comfortably.
+# Backgrounding:
+#   tmux new -s dendrite 'make cuda-run-dendrite-large'
+#   nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &
+# Resume after interrupt:  make cuda-resume-dendrite-large
+cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run (~16 min on T4, corrected anisotropy)
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> LARGE dendrite run on 384^3, ~16 min wall-clock, corrected anisotropy force."
+	@echo "    Background it:"
+	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-large'"
+	@echo "       nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &"
+	@echo "    Resume: make cuda-resume-dendrite-large"
+	@echo ""
+	$(CUDA_DOCKER_RUN) bash -c './$(NATIVE_BIN) $(LARGE_CONFIG); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-resume-dendrite-large: cuda-build ## (docker) Resume the large run from latest checkpoint
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@set +e; \
+	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LARGE_CONFIG) $(CHECKPOINT_DIR)); \
+	rc_helper=$$?; \
+	if [ $$rc_helper -eq 0 ]; then \
+	  echo "==> Resuming with $$RESUME_CFG"; \
+	  $(CUDA_DOCKER_RUN) bash -c "./$(NATIVE_BIN) $$RESUME_CFG; \
+	    rc_run=\$$?; $(CUDA_CHOWN); exit \$$rc_run"; \
+	elif [ $$rc_helper -eq 1 ]; then \
+	  echo "==> No usable checkpoint found — falling back to cold start with $(LARGE_CONFIG)"; \
+	  $(MAKE) cuda-run-dendrite-large; \
 	else \
 	  echo "ERROR: resume helper exited $$rc_helper (likely a config/JSON problem)"; \
 	  exit 1; \

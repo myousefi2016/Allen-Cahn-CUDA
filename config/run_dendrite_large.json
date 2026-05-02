@@ -1,14 +1,14 @@
 {
-    "_comment_physics": "Large-box dendrite: δ=0.65 moderate undercooling for slower, more structured growth. ε=0.15 strong cubic anisotropy. Perturbed seed gives <100> arms a head start.",
+    "_comment_physics": "Large-box dendrite with corrected anisotropy force. epsilon=0.10 gives A_max/A_min=1.10/0.833=1.32, sufficient for cubic arm development. delta=0.65 moderate undercooling for structured growth. Seed uses equilibrium tanh profile with uniform u=-delta (Karma & Rappel 1998).",
     "physics": {
         "delta": 0.65,
-        "epsilon": 0.15,
+        "epsilon": 0.10,
         "W0": 1.0,
         "beta0": 0.0,
         "D": 2.0,
         "d0": 0.5
     },
-    "_comment_grid": "384^3 ≈ 56.6M cells × 64 B/cell ≈ 3.6 GB — fits comfortably in T4's 16 GB with room for CUDA runtime and I/O. dx=0.4 gives physical domain 153.6³.",
+    "_comment_grid": "384^3 = 56.6M cells. Memory: ~6 arrays x 452 MB = 2.7 GB, fits T4 (16 GB). dx=0.4 resolves the tanh interface over ~10 grid points (|phi|<0.9 band spans ~4.2 W0/dx = 10.4 cells).",
     "grid": {
         "Nx": 384,
         "Ny": 384,
@@ -17,7 +17,7 @@
         "dy": 0.4,
         "dz": 0.4
     },
-    "_comment_time": "dt=0.005 with Heun on 27pt has 4.3× stability margin. max_steps=40000 = 200 τ₀ of simulation time. The saturation guard will exit cleanly when the dendrite reaches the wall.",
+    "_comment_time": "Heun CFL margin: dt=0.005 vs dt_max=0.9*0.4^2/(6*D_eff)=0.01064 -> Heun limit ~0.0213 -> 4.3x margin. max_steps=40000 = 200 time units. Saturation guard exits cleanly when dendrite reaches boundary (typically step 6000-15000 on 384^3).",
     "time": {
         "dt": 0.005,
         "dt_min": 1e-6,
@@ -31,29 +31,27 @@
         "saturation_check_freq": 200
     },
     "stencil": "27pt",
-    "_comment_output": "VTK every 1000 steps. 384^3 VTS ≈ 880 MB each, expect 10-20 frames before saturation = 9-18 GB on disk.",
+    "_comment_output": "VTK every 500 steps. 384^3 VTS = ~880 MB each. With saturation at ~step 6000-15000, expect 12-30 frames = 10-26 GB disk.",
     "output": {
-        "frequency": 1000,
+        "frequency": 500,
         "output_dir": "./out",
         "format": "vts",
         "async_io": true
     },
-    "_comment_checkpoint": "Checkpoint every 5000 steps (384^3 checkpoint ≈ 864 MB), keep_last=2 = ~1.7 GB on disk.",
+    "_comment_checkpoint": "Checkpoint every 2000 steps (~48s wall-clock on T4). 384^3 checkpoint = ~864 MB, keep_last=3 = ~2.6 GB disk.",
     "checkpoint": {
-        "frequency": 5000,
+        "frequency": 2000,
         "checkpoint_dir": "./checkpoints",
-        "keep_last": 2
+        "keep_last": 3
     },
     "gpu": {
         "device_ids": [0],
         "block_size": 256,
         "multi_gpu": false
     },
-    "_comment_initial": "r0=10 cells = 4 W₀, well above critical nucleus. Perturbed seed adds cubic-harmonic bumps along <100> directions to jumpstart the 6 dendrite arms instead of waiting for Mullins-Sekerka instability.",
+    "_comment_initial": "r0=10 cells = 4.0 W0, well above critical radius R_c = 2*d0/delta = 1.54 = 3.85 cells. Tanh initial profile avoids spurious interface-relaxation transient.",
     "initial": {
-        "seed_radius": 10.0,
-        "perturb": true,
-        "perturb_amplitude": 0.3
+        "seed_radius": 10.0
     },
     "boundary": {
         "phi": {

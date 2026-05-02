@@ -73,40 +73,28 @@ void SimulationEngine::run() {
 void SimulationEngine::initialize_fields() {
     Real r0 = config_.initial.seed_radius;
     Real delta = config_.physics.delta;
+    Real W0 = config_.physics.W0;
     int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
     Real cx = 0.5 * Nx, cy = 0.5 * Ny, cz = 0.5 * Nz;
-
-    const bool perturb = config_.initial.perturb;
-    const Real amp = config_.initial.perturb_amplitude * r0;
+    Real inv_sqrt2_W0 = 1.0 / (std::sqrt(2.0) * W0);
 
     for (int x = 0; x < Nx; ++x) {
         for (int y = 0; y < Ny; ++y) {
             for (int z = 0; z < Nz; ++z) {
-                Real dx = x - cx, dy = y - cy, dz = z - cz;
-                Real r = std::sqrt(dx * dx + dy * dy + dz * dz);
+                Real rx = x - cx, ry = y - cy, rz = z - cz;
+                Real r = std::sqrt(rx * rx + ry * ry + rz * rz);
 
-                Real r_eff = r0;
-                if (perturb && r > 1e-10) {
-                    // Cubic harmonic: n_x^4 + n_y^4 + n_z^4 peaks along <100>
-                    Real r2 = dx * dx + dy * dy + dz * dz;
-                    Real r4 = r2 * r2;
-                    Real qrt = dx * dx * dx * dx + dy * dy * dy * dy + dz * dz * dz * dz;
-                    Real Q = qrt / r4; // Q in [1/3, 1], peaks at 1 on axes
-                    // Map Q so perturbation is positive along <100>, negative along <111>
-                    r_eff = r0 + amp * (3.0 * Q - 1.0);
-                }
+                // Equilibrium tanh interface profile (Karma & Rappel 1998):
+                // φ = +1 (solid) inside, φ = -1 (liquid) outside.
+                phi_host_(x, y, z) = -std::tanh((r - r0) * inv_sqrt2_W0);
 
-                phi_host_(x, y, z) = (r < r_eff) ? 1.0 : -1.0;
-                u_host_(x, y, z) = (r < r_eff) ? 0.0 : -delta * (1.0 - std::exp(-(r - r_eff)));
+                // Uniform undercooling: u = -Δ everywhere.
+                u_host_(x, y, z) = -delta;
             }
         }
     }
 
-    if (perturb) {
-        spdlog::info("Initial conditions: perturbed seed at center, r0={}, amp={:.2f}", r0, amp);
-    } else {
-        spdlog::info("Initial conditions: spherical seed at center, r0={}", r0);
-    }
+    spdlog::info("Initial conditions: tanh-profile seed, r0={}, W0={}, u=-{:.3f}", r0, W0, delta);
 }
 
 void SimulationEngine::initialize_from_checkpoint() {
