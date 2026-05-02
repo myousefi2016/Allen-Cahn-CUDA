@@ -37,6 +37,15 @@ private:
     void checkpoint_step(int step, double time, double dt);
     double adapt_time_step(double current_dt);
 
+    /// Inspect the six 1-cell-thick boundary slabs of phi and return true if
+    /// any cell has phi > config.time.saturation_threshold. The Allen-Cahn
+    /// kernel returns zero force at boundary cells (AllenCahnKernels.cu:52),
+    /// which produces an unphysical force-divergence discontinuity at near-
+    /// boundary cells once the solid touches the wall — this manifests as
+    /// numerical blow-up. Detecting saturation lets us exit cleanly before
+    /// that happens.
+    [[nodiscard]] bool check_saturation();
+
     /// Create appropriate solver based on config (single-GPU or multi-GPU).
     std::unique_ptr<cuda::ISolver> create_solver();
 

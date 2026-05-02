@@ -120,6 +120,12 @@ static SimulationConfig parse_config(const json& j) {
             cfg.time.adaptive_tolerance = t["adaptive_tolerance"].get<Real>();
         if (t.contains("cfl_safety"))
             cfg.time.cfl_safety = t["cfl_safety"].get<Real>();
+        if (t.contains("exit_on_saturation"))
+            cfg.time.exit_on_saturation = t["exit_on_saturation"].get<bool>();
+        if (t.contains("saturation_threshold"))
+            cfg.time.saturation_threshold = t["saturation_threshold"].get<Real>();
+        if (t.contains("saturation_check_freq"))
+            cfg.time.saturation_check_freq = t["saturation_check_freq"].get<int>();
     }
 
     // Stencil

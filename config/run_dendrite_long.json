@@ -17,7 +17,7 @@
         "dy": 0.4,
         "dz": 0.4
     },
-    "_comment_time": "60000 steps × dt=0.005 = 300 sim time = 530 tau0. Wall-clock ~5.3 hours on T4 (≈80 ms/step). Past arm-onset threshold (Plapp 2003: 30 tau0).",
+    "_comment_time": "max_steps=60000 is the upper bound; the engine will auto-exit cleanly when the dendrite reaches the boundary (typically step 4000-7000 on 192^3) — see exit_on_saturation. AllenCahnKernels.cu:52 returns 0 force at boundary cells, so once phi > saturation_threshold on a wall slab the integrator destabilises within ~100 steps. The guard catches this and writes a final checkpoint + VTK frame.",
     "time": {
         "dt": 0.005,
         "dt_min": 1e-6,
@@ -25,12 +25,15 @@
         "max_steps": 60000,
         "scheme": "heun",
         "adaptive": false,
-        "cfl_safety": 0.9
+        "cfl_safety": 0.9,
+        "exit_on_saturation": true,
+        "saturation_threshold": -0.5,
+        "saturation_check_freq": 100
     },
     "stencil": "27pt",
-    "_comment_output": "VTK every 1500 steps = 40 frames × 280 MB = 11 GB on disk. Adjust frequency upward to save disk space.",
+    "_comment_output": "VTK every 500 steps. With auto-exit at saturation around step 4000-7000, that gives 8-15 frames at ~280 MB each = ~2-4 GB on disk — enough for a smooth 1 fps -> 12 fps stitched animation.",
     "output": {
-        "frequency": 1500,
+        "frequency": 500,
         "output_dir": "./out",
         "format": "vts",
         "async_io": true
