@@ -175,6 +175,12 @@ static SimulationConfig parse_config(const json& j) {
         const auto& ic = j["initial"];
         if (ic.contains("seed_radius"))
             cfg.initial.seed_radius = ic["seed_radius"].get<Real>();
+        if (ic.contains("perturb"))
+            cfg.initial.perturb = ic["perturb"].get<bool>();
+        if (ic.contains("perturb_amplitude"))
+            cfg.initial.perturb_amplitude = ic["perturb_amplitude"].get<Real>();
+        if (ic.contains("perturb_mode"))
+            cfg.initial.perturb_mode = ic["perturb_mode"].get<int>();
     }
 
     // Boundary conditions

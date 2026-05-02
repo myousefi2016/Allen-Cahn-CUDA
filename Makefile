@@ -98,7 +98,9 @@ CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
         cuda-image cuda-image-rebuild \
         cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration \
         cuda-run cuda-run-small cuda-run-default cuda-run-vtk cuda-run-dendrite \
-        cuda-run-dendrite-long cuda-resume-dendrite cuda-watch-dendrite cuda-status-dendrite \
+        cuda-run-dendrite-long cuda-run-dendrite-large \
+        cuda-resume-dendrite cuda-resume-dendrite-large \
+        cuda-watch-dendrite cuda-status-dendrite \
         cuda-visualize cuda-visualize-single cuda-visualize-self-test \
         cuda-shell cuda-clean cuda-all cuda-dendrite-demo \
         docker-build-dev docker-build-test docker-build-prod docker-build-all \
