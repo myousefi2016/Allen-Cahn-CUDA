@@ -2,11 +2,22 @@
 #include "core/SimulationEngine.hpp"
 #include "logging/Logger.hpp"
 
+#include <atomic>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <spdlog/spdlog.h>
 #include <string>
+
+std::atomic<bool> g_shutdown_requested{false};
+
+static void signal_handler(int signum) {
+    (void)signum;
+    g_shutdown_requested.store(true, std::memory_order_relaxed);
+    // Do NOT call spdlog or any non-async-signal-safe function here.
+    // The time_loop() will detect g_shutdown_requested and log a clean message.
+}
 
 static void print_usage(const char* prog) {
     std::cout << "Allen-Cahn CUDA Phase-Field Simulation v2.0.0\n"
@@ -50,6 +61,9 @@ int main(int argc, char* argv[]) {
         }
 
         config.validate();
+
+        std::signal(SIGINT, signal_handler);
+        std::signal(SIGTERM, signal_handler);
 
         ac::SimulationEngine engine(std::move(config));
         engine.run();

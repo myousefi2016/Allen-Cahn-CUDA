@@ -395,8 +395,10 @@ void CudaSolver::step_rk4(double dt) {
         N);
     CUDA_CHECK(cudaGetLastError());
 
-    // Add latent heat coupling: u_new += 0.5*(phi_new - phi_old)
-    // thermal_rhs_kernel computes only D*lap(u), so latent heat must be added separately
+    // Operator splitting for latent heat: the thermal RHS kernel computes only
+    // D·∇²u (diffusion). The latent heat coupling 0.5·∂φ/∂t is added as a
+    // separate post-step correction. This is first-order accurate in the
+    // splitting error but maintains the RK4 accuracy for each sub-operator.
     add_latent_heat_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         u_new_.data(), phi_new_.data(), phi_old_.data(), N);
     CUDA_CHECK(cudaGetLastError());

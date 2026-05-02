@@ -1,10 +1,12 @@
 #include "io/CheckpointIO.hpp"
 
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <unistd.h>
 
 namespace ac {
 
@@ -12,9 +14,12 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
                          const Grid& grid, const FieldData& phi, const FieldData& u) {
     std::filesystem::create_directories(path.parent_path());
 
-    std::ofstream ofs(path, std::ios::binary);
+    // Write to a temporary file first, then atomically rename to avoid corruption
+    auto tmp_path = std::filesystem::path(path.string() + ".tmp");
+
+    std::ofstream ofs(tmp_path, std::ios::binary);
     if (!ofs.is_open()) {
-        throw std::runtime_error("Cannot open checkpoint file for writing: " + path.string());
+        throw std::runtime_error("Cannot open checkpoint file for writing: " + tmp_path.string());
     }
 
     // Write header
@@ -40,7 +45,21 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
     ofs.write(reinterpret_cast<const char*>(u.data()),
               static_cast<std::streamsize>(u.size() * sizeof(Real)));
 
+    // Flush and sync to ensure data is on disk before renaming
     ofs.flush();
+
+    ofs.close();
+
+    // Open the file read-only to obtain a descriptor for fsync
+    int fd = ::open(tmp_path.c_str(), O_RDONLY);
+    if (fd >= 0) {
+        ::fsync(fd);
+        ::close(fd);
+    }
+
+    // Atomically rename the temporary file to the final path
+    std::filesystem::rename(tmp_path, path);
+
     spdlog::info(
         "Checkpoint written: {} (step={}, time={:.4f}, size={:.1f} MB)", path.string(), step, time,
         static_cast<double>(sizeof(Header) + 2 * phi.size() * sizeof(Real)) / (1024.0 * 1024.0));

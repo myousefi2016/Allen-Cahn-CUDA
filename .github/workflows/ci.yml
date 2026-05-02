@@ -36,6 +36,46 @@ jobs:
               exit 1
             }
 
+  # ── Clang-Tidy ──────────────────────────────────────────────────────────────
+  clang-tidy:
+    name: Clang-Tidy
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.6.0-devel-ubuntu24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc-13 g++-13 clang-tidy-18 \
+            libvtk9-dev libhdf5-dev \
+            git ca-certificates
+          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+          update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+
+      - name: Configure CMake (generate compile_commands.json)
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="70;80;90" \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DAC_BUILD_TESTS=ON
+
+      - name: Run clang-tidy on C++ sources
+        run: |
+          find src -type f -name '*.cpp' -o -name '*.hpp' \
+            | xargs clang-tidy -p build --warnings-as-errors='' 2>&1 \
+            | tee clang-tidy-output.txt
+          if grep -q "warning:" clang-tidy-output.txt; then
+            echo "::warning::clang-tidy found warnings (non-blocking)"
+          fi
+
   # ── Build & Test (CUDA) ─────────────────────────────────────────────────────
   build-and-test:
     name: Build & Test (CUDA ${{ matrix.cuda }})
