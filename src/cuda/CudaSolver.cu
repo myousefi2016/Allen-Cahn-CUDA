@@ -126,6 +126,12 @@ CudaSolver::CudaSolver(const SimulationConfig& config)
 
     // Reduction scratch
     d_reduction_result_ = DeviceField<double>(1);
+    {
+        constexpr int BLOCK_SIZE = 256;
+        int num_blocks = static_cast<int>((total_points_ + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2));
+        num_blocks = std::max(num_blocks, 1);
+        reduction_scratch_ = DeviceField<double>(static_cast<std::size_t>(num_blocks));
+    }
 
     // Allocate temporaries based on time integration scheme
     if (scheme_ == TimeScheme::Heun || scheme_ == TimeScheme::RK4 || scheme_ == TimeScheme::IMEX) {
@@ -440,7 +446,8 @@ void CudaSolver::step_imex(double dt) {
 
         if ((iter + 1) % JACOBI_CHECK_FREQ == 0) {
             launch_max_abs_diff(u_new_.data(), u_tmp_.data(), d_reduction_result_.data(),
-                                total_points_, compute_stream_);
+                                total_points_, reduction_scratch_.data(),
+                                static_cast<int>(reduction_scratch_.size()), compute_stream_);
             double residual = 0.0;
             CUDA_CHECK(cudaMemcpyAsync(&residual, d_reduction_result_.data(), sizeof(double),
                                        cudaMemcpyDeviceToHost, compute_stream_));
@@ -477,22 +484,31 @@ void CudaSolver::apply_boundary_conditions() {
     }
 }
 
-/// Reduce max(phi) over the 6 one-cell-thick boundary slabs.
+/// Warp-level max reduction (reused from ReductionKernels pattern).
+__device__ double warp_reduce_max(double val) {
+    for (int offset = 16; offset > 0; offset >>= 1)
+        val = fmax(val, __shfl_down_sync(0xFFFFFFFF, val, offset));
+    return val;
+}
+
+/// Per-block reduction: max(phi) over the 6 one-cell-thick boundary slabs.
+/// Writes one per-block result (no cross-block atomics — avoids the broken
+/// atomicMax-for-negative-doubles pattern).
 __global__ void __launch_bounds__(256)
-    boundary_max_kernel(const double* __restrict__ phi, double* __restrict__ result, int Nx, int Ny,
-                        int Nz) {
+    boundary_max_kernel(const double* __restrict__ phi, double* __restrict__ block_results, int Nx,
+                        int Ny, int Nz) {
     extern __shared__ double sdata[];
     unsigned int tid = threadIdx.x;
     unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
-    std::size_t total_boundary = static_cast<std::size_t>(2) * Ny * Nz + 2 * Nx * Nz + 2 * Nx * Ny;
+    std::size_t face_yz = static_cast<std::size_t>(Ny) * Nz;
+    std::size_t face_xz = static_cast<std::size_t>(Nx) * Nz;
+    std::size_t face_xy = static_cast<std::size_t>(Nx) * Ny;
+    std::size_t total_boundary = 2 * face_yz + 2 * face_xz + 2 * face_xy;
     double local_max = -1e30;
 
     for (std::size_t i = gid; i < total_boundary; i += gridDim.x * blockDim.x) {
         int x, y, z;
         std::size_t off = i;
-        std::size_t face_yz = static_cast<std::size_t>(Ny) * Nz;
-        std::size_t face_xz = static_cast<std::size_t>(Nx) * Nz;
-        std::size_t face_xy = static_cast<std::size_t>(Nx) * Ny;
         if (off < face_yz) {
             x = 0;
             y = static_cast<int>(off / Nz);
@@ -520,31 +536,68 @@ __global__ void __launch_bounds__(256)
             z = Nz - 1;
         }
         double v = phi[static_cast<std::size_t>(x) * Ny * Nz + y * Nz + z];
-        if (v > local_max)
-            local_max = v;
+        local_max = fmax(local_max, v);
     }
 
     sdata[tid] = local_max;
     __syncthreads();
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s && sdata[tid + s] > sdata[tid])
-            sdata[tid] = sdata[tid + s];
+    for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
+        if (tid < s)
+            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
         __syncthreads();
     }
-    if (tid == 0)
-        atomicMax(reinterpret_cast<unsigned long long*>(result), __double_as_longlong(sdata[0]));
+    if (tid < 32) {
+        double val = sdata[tid];
+        if (blockDim.x >= 64)
+            val = fmax(val, sdata[tid + 32]);
+        val = warp_reduce_max(val);
+        if (tid == 0)
+            block_results[blockIdx.x] = val;
+    }
+}
+
+/// Single-block final pass: reduce per-block maxima to a scalar.
+__global__ void __launch_bounds__(256)
+    boundary_final_max_kernel(const double* __restrict__ block_results, double* __restrict__ result,
+                              int num_blocks) {
+    extern __shared__ double sdata[];
+    unsigned int tid = threadIdx.x;
+    double val = -1e30;
+    for (unsigned int i = tid; i < static_cast<unsigned>(num_blocks); i += blockDim.x)
+        val = fmax(val, block_results[i]);
+    sdata[tid] = val;
+    __syncthreads();
+    for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
+        if (tid < s)
+            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+        __syncthreads();
+    }
+    if (tid < 32) {
+        val = sdata[tid];
+        if (blockDim.x >= 64)
+            val = fmax(val, sdata[tid + 32]);
+        val = warp_reduce_max(val);
+        if (tid == 0)
+            result[0] = val;
+    }
 }
 
 double CudaSolver::compute_boundary_max_phi() const {
-    double neg_large = -1e30;
-    CUDA_CHECK(cudaMemcpyAsync(d_reduction_result_.data(), &neg_large, sizeof(double),
-                               cudaMemcpyHostToDevice, compute_stream_));
-    int total_boundary =
-        2 * params_.Ny * params_.Nz + 2 * params_.Nx * params_.Nz + 2 * params_.Nx * params_.Ny;
-    auto cfg = LaunchConfig::for_1d(static_cast<std::size_t>(total_boundary), 256);
+    std::size_t total_boundary = static_cast<std::size_t>(2) * params_.Ny * params_.Nz +
+                                 static_cast<std::size_t>(2) * params_.Nx * params_.Nz +
+                                 static_cast<std::size_t>(2) * params_.Nx * params_.Ny;
+    auto cfg = LaunchConfig::for_1d(total_boundary, 256);
+    int num_blocks = static_cast<int>(cfg.grid.x);
+
+    DeviceField<double> block_results(static_cast<std::size_t>(num_blocks));
     boundary_max_kernel<<<cfg.grid, cfg.block, 256 * sizeof(double), compute_stream_.get()>>>(
-        phi_old_.data(), d_reduction_result_.data(), params_.Nx, params_.Ny, params_.Nz);
+        phi_old_.data(), block_results.data(), params_.Nx, params_.Ny, params_.Nz);
     CUDA_CHECK(cudaGetLastError());
+
+    boundary_final_max_kernel<<<1, 256, 256 * sizeof(double), compute_stream_.get()>>>(
+        block_results.data(), d_reduction_result_.data(), num_blocks);
+    CUDA_CHECK(cudaGetLastError());
+
     double result = -1e30;
     CUDA_CHECK(cudaMemcpyAsync(&result, d_reduction_result_.data(), sizeof(double),
                                cudaMemcpyDeviceToHost, compute_stream_));
@@ -554,6 +607,7 @@ double CudaSolver::compute_boundary_max_phi() const {
 
 double CudaSolver::compute_max_dphi() const {
     launch_max_abs_diff(phi_old_.data(), phi_new_.data(), d_reduction_result_.data(), total_points_,
+                        reduction_scratch_.data(), static_cast<int>(reduction_scratch_.size()),
                         compute_stream_);
 
     double result = 0.0;

@@ -150,18 +150,18 @@ void MultiGPUSolver::exchange_halos() {
         auto& left = domains_[g];
         auto& right = domains_[g + 1];
 
+        // Left's halo_stream reads from right's device memory, so it must
+        // wait for right's compute to finish (and vice versa).
+        CUDA_CHECK(cudaStreamWaitEvent(left.halo_stream.get(), right.compute_done.get(), 0));
+        CUDA_CHECK(cudaStreamWaitEvent(right.halo_stream.get(), left.compute_done.get(), 0));
+
         int left_Nx = left.local_Nx;
 
-        // For phi field:
-        // Left's right boundary -> Right's left halo
-        // Left interior ends at x = left_Nx - halo_width_ - 1
-        // Right halo starts at x = 0
-        int left_src_x = left_Nx - 2 * halo_width_; // Start of left's right interior boundary
-        int right_dst_x = 0;                        // Start of right's left halo
+        int left_src_x = left_Nx - 2 * halo_width_;
+        int right_dst_x = 0;
 
-        // Right's left boundary -> Left's right halo
-        int right_src_x = halo_width_;          // Start of right's left interior boundary
-        int left_dst_x = left_Nx - halo_width_; // Start of left's right halo
+        int right_src_x = halo_width_;
+        int left_dst_x = left_Nx - halo_width_;
 
         // Exchange phi
         CUDA_CHECK(cudaSetDevice(left.device_id));
@@ -201,6 +201,9 @@ void MultiGPUSolver::exchange_halos_for_tmp() {
     for (std::size_t g = 0; g + 1 < domains_.size(); ++g) {
         auto& left = domains_[g];
         auto& right = domains_[g + 1];
+
+        CUDA_CHECK(cudaStreamWaitEvent(left.halo_stream.get(), right.compute_done.get(), 0));
+        CUDA_CHECK(cudaStreamWaitEvent(right.halo_stream.get(), left.compute_done.get(), 0));
 
         int left_Nx = left.local_Nx;
 

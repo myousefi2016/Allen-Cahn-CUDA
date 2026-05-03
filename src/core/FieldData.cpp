@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
 
 namespace ac {
 
@@ -14,7 +15,10 @@ void FieldData::fill(Real value) {
 }
 
 void FieldData::copy_from(const Real* src, std::size_t count) {
-    assert(count <= data_.size());
+    if (count > data_.size()) {
+        throw std::out_of_range("FieldData::copy_from: count (" + std::to_string(count) +
+                                ") exceeds field size (" + std::to_string(data_.size()) + ")");
+    }
     std::memcpy(data_.data(), src, count * sizeof(Real));
 }
 

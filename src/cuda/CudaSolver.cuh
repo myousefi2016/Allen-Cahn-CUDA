@@ -80,6 +80,7 @@ private:
 
     // Reduction scratch (mutable: logically const methods use it as temporary)
     mutable DeviceField<double> d_reduction_result_;
+    mutable DeviceField<double> reduction_scratch_;
 
     // CUDA streams (mutable: synchronize() and copy_to_host are logically const)
     mutable Stream compute_stream_;

@@ -5,10 +5,13 @@ add_compile_options(
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:RelWithDebInfo>>:-lineinfo>
 )
 
-# Fast math for Release builds only (slightly reduces precision)
-add_compile_options(
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:--use_fast_math>
-)
+# Fast math for Release builds only (opt-in: flushes denormals, reduces exp/log precision)
+option(AC_CUDA_FAST_MATH "Enable --use_fast_math for CUDA Release builds" OFF)
+if(AC_CUDA_FAST_MATH)
+    add_compile_options(
+        $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:--use_fast_math>
+    )
+endif()
 
 # Extended lambda support (required for modern CUDA C++ patterns)
 add_compile_options(

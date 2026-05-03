@@ -160,7 +160,7 @@ test-coverage: ## Build with coverage instrumentation and generate report
 	@echo "==> Configuring with coverage flags..."
 	cmake --preset $(CMAKE_PRESET_DEBUG) -G $(CMAKE_GENERATOR) \
 		-DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
-		-DCMAKE_CUDA_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
+		-DCMAKE_CUDA_FLAGS="-Xcompiler=--coverage,-fprofile-arcs,-ftest-coverage" \
 		-DCMAKE_EXE_LINKER_FLAGS="--coverage"
 	@echo "==> Building..."
 	cmake --build $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --parallel $(PARALLEL_JOBS)

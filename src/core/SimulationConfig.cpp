@@ -223,13 +223,16 @@ SimulationConfig SimulationConfig::from_json(const std::filesystem::path& path) 
     }
     json j = json::parse(file);
     auto cfg = parse_config(j);
+    cfg.validate();
     spdlog::info("Configuration loaded from {}", path.string());
     return cfg;
 }
 
 SimulationConfig SimulationConfig::from_json_string(const std::string& json_str) {
     json j = json::parse(json_str);
-    return parse_config(j);
+    auto cfg = parse_config(j);
+    cfg.validate();
+    return cfg;
 }
 
 void SimulationConfig::validate() const {
@@ -291,6 +294,19 @@ void SimulationConfig::validate() const {
     // Output
     if (output.frequency < 1)
         throw std::invalid_argument("output frequency must be >= 1");
+    if (output.format != "vts" && output.format != "raw") {
+        throw std::invalid_argument("output format must be 'vts' or 'raw', got: " + output.format);
+    }
+
+    // Checkpoint
+    if (checkpoint.frequency < 1)
+        throw std::invalid_argument("checkpoint frequency must be >= 1");
+    if (checkpoint.keep_last < 1)
+        throw std::invalid_argument("checkpoint keep_last must be >= 1");
+
+    // Initial condition
+    if (initial.seed_radius <= 0.0)
+        throw std::invalid_argument("seed_radius must be positive");
 
     // GPU
     if (gpu.device_ids.empty())
