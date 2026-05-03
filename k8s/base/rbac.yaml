@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: allen-cahn-sa
+  labels:
+    app.kubernetes.io/name: allen-cahn-cuda
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: allen-cahn-cuda
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: allen-cahn-role
+  labels:
+    app.kubernetes.io/name: allen-cahn-cuda
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: allen-cahn-cuda
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: allen-cahn-rolebinding
+  labels:
+    app.kubernetes.io/name: allen-cahn-cuda
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: allen-cahn-cuda
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: allen-cahn-role
+subjects:
+  - kind: ServiceAccount
+    name: allen-cahn-sa

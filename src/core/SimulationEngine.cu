@@ -8,6 +8,8 @@
 #include <chrono>
 #include <cmath>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
+#include <string>
 
 namespace ac {
 
@@ -99,6 +101,16 @@ void SimulationEngine::initialize_fields() {
 
 void SimulationEngine::initialize_from_checkpoint() {
     auto data = checkpoint_mgr_->restore();
+
+    if (data.grid.Nx() != grid_.Nx() || data.grid.Ny() != grid_.Ny() ||
+        data.grid.Nz() != grid_.Nz()) {
+        throw std::runtime_error(
+            "Checkpoint grid dimensions (" + std::to_string(data.grid.Nx()) + "x" +
+            std::to_string(data.grid.Ny()) + "x" + std::to_string(data.grid.Nz()) +
+            ") do not match config (" + std::to_string(grid_.Nx()) + "x" +
+            std::to_string(grid_.Ny()) + "x" + std::to_string(grid_.Nz()) + ")");
+    }
+
     phi_host_ = std::move(data.phi);
     u_host_ = std::move(data.u);
     start_step_ = data.step;
@@ -154,21 +166,22 @@ void SimulationEngine::time_loop() {
         if (g_shutdown_requested.load(std::memory_order_relaxed)) {
             spdlog::warn("Shutdown requested at step {}. Writing checkpoint and flushing output...",
                          step);
-            checkpoint_step(step, time, dt);
-            output_step(step, time);
+            if (!checkpoint_mgr_->should_checkpoint(step))
+                checkpoint_step(step, time, dt);
+            if (step % config_.output.frequency != 0)
+                output_step(step, time);
             break;
         }
 
-        // Saturation guard: exit cleanly once the solid reaches the wall, before
-        // the AllenCahnKernels.cu near-boundary force-divergence bias destabilises
-        // the integrator (see check_saturation comment).
+        // Saturation guard
         if (sat_guard && step % sat_freq == 0 && check_saturation()) {
             spdlog::warn("Saturation detected at step {} (phi > {:.3f} on a boundary slab). "
-                         "Writing final checkpoint and exiting cleanly to avoid post-saturation "
-                         "instability.",
+                         "Writing final checkpoint and exiting cleanly.",
                          step, config_.time.saturation_threshold);
-            checkpoint_step(step, time, dt);
-            output_step(step, time);
+            if (!checkpoint_mgr_->should_checkpoint(step))
+                checkpoint_step(step, time, dt);
+            if (step % config_.output.frequency != 0)
+                output_step(step, time);
             break;
         }
     }

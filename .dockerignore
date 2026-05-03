@@ -31,11 +31,16 @@ PULL_REQUEST_TEMPLATE.md
 # ── Simulation output ─────────────────────────────────────────────────────
 output/
 result/
+checkpoints/
+viz/
 *.vti
 *.vtu
 *.vtk
+*.vts
 *.h5
 *.hdf5
+*.mp4
+*.png
 
 # ── Misc ───────────────────────────────────────────────────────────────────
 .ccache/
