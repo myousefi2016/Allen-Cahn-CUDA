@@ -29,10 +29,8 @@ __global__ void __launch_bounds__(256)
 }
 
 /// Thermal RHS kernel (for higher-order time integration).
-/// Computes rhs = D*Laplacian(u) + 0.5 * k_phi / dt, where k_phi is the
-/// Allen-Cahn RHS already computed for this RK stage.  Including the latent
-/// heat source inside each stage maintains full RK4 accuracy for the coupled
-/// system, instead of the previous first-order operator-splitting correction.
+/// Computes rhs = D*Laplacian(u) + 0.5 * k_phi, where k_phi = dphi/dt is the
+/// Allen-Cahn RHS already computed for this RK stage.
 __global__ void __launch_bounds__(256)
     thermal_rhs_kernel(const double* __restrict__ u, double* __restrict__ rhs,
                        const double* __restrict__ k_phi, KernelParams p) {

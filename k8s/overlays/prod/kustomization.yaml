@@ -18,7 +18,6 @@ commonAnnotations:
 resources:
   - namespace.yaml
   - ../../base
-  - hpa.yaml
 
 patches:
   # Increase resource limits for production workloads

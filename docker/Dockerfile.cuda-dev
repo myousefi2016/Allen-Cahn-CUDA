@@ -61,4 +61,8 @@ RUN pip3 install --no-cache-dir \
         'pillow>=10.0' \
         'matplotlib>=3.7'
 
+# ---- Non-root user (matches Dockerfile.prod UID 1000) -----------------------
+RUN groupadd -g 1000 developer && \
+    useradd -u 1000 -g developer -m -s /bin/bash developer
+
 WORKDIR /work

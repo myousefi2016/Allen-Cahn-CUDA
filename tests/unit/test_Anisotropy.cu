@@ -101,7 +101,8 @@ TEST_F(AnisotropyTest, AlongDiagonal) {
     EXPECT_NEAR(result, expected, 1e-12);
 }
 
-// Test: An with zero gradient should return 1 - 5/3*epsilon
+// Test: An with zero gradient should return spherical average 1 - 3*epsilon/5
+// (Mean of n_x^4+n_y^4+n_z^4 over unit sphere = 3/5)
 TEST_F(AnisotropyTest, ZeroGradient) {
     double epsilon = 0.07;
     std::vector<double> grads = {0.0, 0.0, 0.0};
@@ -118,7 +119,7 @@ TEST_F(AnisotropyTest, ZeroGradient) {
     d_results.copy_to_host(&result);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    double expected = 1.0 - (5.0 / 3.0) * epsilon;
+    double expected = 1.0 - 3.0 * epsilon / 5.0;
     EXPECT_NEAR(result, expected, 1e-12);
 }
 

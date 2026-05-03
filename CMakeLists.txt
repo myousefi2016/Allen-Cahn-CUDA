@@ -34,5 +34,5 @@ if(AC_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# ── Benchmarks ──────────────────────────────────────────────────────────────
-option(AC_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
+# ── Install rules ──────────────────────────────────────────────────────────
+install(TARGETS allen-cahn-cuda RUNTIME DESTINATION bin)

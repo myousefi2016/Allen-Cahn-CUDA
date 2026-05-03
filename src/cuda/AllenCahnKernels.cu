@@ -7,7 +7,7 @@ namespace ac::cuda {
 /// Eliminates Fx, Fy, Fz global memory arrays entirely.
 /// Force divergence is computed by recomputing the force at neighboring stencil
 /// points, which trades extra arithmetic for massive memory bandwidth savings.
-__global__ void __launch_bounds__(256, 2)
+__global__ void __launch_bounds__(256)
     allen_cahn_fused_kernel(const double* __restrict__ phi_old, double* __restrict__ phi_new,
                             const double* __restrict__ u_old, KernelParams p) {
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -150,9 +150,24 @@ __global__ void __launch_bounds__(256)
     int c = idx3d(x, y, z, p.Ny, p.Nz);
 
     if (x < 1 || x >= p.Nx - 1 || y < 1 || y >= p.Ny - 1 || z < 1 || z >= p.Nz - 1) {
-        Fx[c] = 0.0;
-        Fy[c] = 0.0;
-        Fz[c] = 0.0;
+        // Use clamped one-sided gradients at boundaries (same approach as fused kernel)
+        // to avoid the asymmetric force bias that "return 0" would create at x=1 cells
+        int xm = max(x - 1, 0), xp = min(x + 1, p.Nx - 1);
+        int ym = max(y - 1, 0), yp = min(y + 1, p.Ny - 1);
+        int zm = max(z - 1, 0), zp = min(z + 1, p.Nz - 1);
+        double bphix = (phi[idx3d(xp, y, z, p.Ny, p.Nz)] - phi[idx3d(xm, y, z, p.Ny, p.Nz)]) /
+                        (max(xp - xm, 1) * p.dx);
+        double bphiy = (phi[idx3d(x, yp, z, p.Ny, p.Nz)] - phi[idx3d(x, ym, z, p.Ny, p.Nz)]) /
+                        (max(yp - ym, 1) * p.dy);
+        double bphiz = (phi[idx3d(x, y, zp, p.Ny, p.Nz)] - phi[idx3d(x, y, zm, p.Ny, p.Nz)]) /
+                        (max(zp - zm, 1) * p.dz);
+        double ban = compute_An(bphix, bphiy, bphiz, p.epsilon);
+        double bwn = p.W0 * ban;
+        double bwn2 = bwn * bwn;
+        double bcoeff = bwn * 16.0 * p.W0 * p.epsilon;
+        Fx[c] = bwn2 * bphix + bcoeff * dFunc(bphix, bphiy, bphiz);
+        Fy[c] = bwn2 * bphiy + bcoeff * dFunc(bphiy, bphiz, bphix);
+        Fz[c] = bwn2 * bphiz + bcoeff * dFunc(bphiz, bphix, bphiy);
         return;
     }
 

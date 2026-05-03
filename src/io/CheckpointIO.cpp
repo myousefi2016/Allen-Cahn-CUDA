@@ -1,6 +1,7 @@
 #include "io/CheckpointIO.hpp"
 
 #include <array>
+#include <cerrno>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
@@ -8,6 +9,7 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <unistd.h>
+#include <vector>
 
 namespace ac {
 
@@ -53,37 +55,21 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
     hdr.step = step;
     hdr.num_fields = 2;
 
-    // Compute CRC32 over field data
+    // Compute CRC32 over combined field data
     std::size_t phi_bytes = phi.size() * sizeof(Real);
     std::size_t u_bytes = u.size() * sizeof(Real);
-    uint32_t crc = 0xFFFFFFFFu;
-    {
-        auto update_crc = [](uint32_t c, const void* data, std::size_t len) {
-            static const auto tbl = [] {
-                std::array<uint32_t, 256> t{};
-                for (uint32_t i = 0; i < 256; ++i) {
-                    uint32_t v = i;
-                    for (int j = 0; j < 8; ++j)
-                        v = (v & 1) ? (0xEDB88320u ^ (v >> 1)) : (v >> 1);
-                    t[i] = v;
-                }
-                return t;
-            }();
-            auto* p = static_cast<const uint8_t*>(data);
-            for (std::size_t i = 0; i < len; ++i)
-                c = tbl[(c ^ p[i]) & 0xFF] ^ (c >> 8);
-            return c;
-        };
-        crc = update_crc(crc, phi.data(), phi_bytes);
-        crc = update_crc(crc, u.data(), u_bytes);
-    }
-    hdr.data_crc32 = crc ^ 0xFFFFFFFFu;
+    std::vector<uint8_t> combined(phi_bytes + u_bytes);
+    std::memcpy(combined.data(), phi.data(), phi_bytes);
+    std::memcpy(combined.data() + phi_bytes, u.data(), u_bytes);
+    hdr.data_crc32 = compute_crc32(combined.data(), combined.size());
 
     auto write_all = [&](const void* buf, std::size_t len) {
         auto* p = static_cast<const char*>(buf);
         while (len > 0) {
             auto n = ::write(fd, p, len);
-            if (n <= 0) {
+            if (n < 0) {
+                if (errno == EINTR)
+                    continue;
                 ::close(fd);
                 throw std::runtime_error("Failed writing checkpoint: " + tmp_path.string());
             }
@@ -165,26 +151,12 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) 
 
     // Verify CRC32 if present (0 means old checkpoint without CRC)
     if (hdr.data_crc32 != 0) {
-        uint32_t crc = 0xFFFFFFFFu;
-        auto update_crc = [](uint32_t c, const void* data, std::size_t len) {
-            static const auto tbl = [] {
-                std::array<uint32_t, 256> t{};
-                for (uint32_t i = 0; i < 256; ++i) {
-                    uint32_t v = i;
-                    for (int j = 0; j < 8; ++j)
-                        v = (v & 1) ? (0xEDB88320u ^ (v >> 1)) : (v >> 1);
-                    t[i] = v;
-                }
-                return t;
-            }();
-            auto* p = static_cast<const uint8_t*>(data);
-            for (std::size_t i = 0; i < len; ++i)
-                c = tbl[(c ^ p[i]) & 0xFF] ^ (c >> 8);
-            return c;
-        };
-        crc = update_crc(crc, phi.data(), phi.size() * sizeof(Real));
-        crc = update_crc(crc, u.data(), u.size() * sizeof(Real));
-        crc ^= 0xFFFFFFFFu;
+        std::size_t phi_sz = phi.size() * sizeof(Real);
+        std::size_t u_sz = u.size() * sizeof(Real);
+        std::vector<uint8_t> combined(phi_sz + u_sz);
+        std::memcpy(combined.data(), phi.data(), phi_sz);
+        std::memcpy(combined.data() + phi_sz, u.data(), u_sz);
+        uint32_t crc = compute_crc32(combined.data(), combined.size());
         if (crc != hdr.data_crc32) {
             throw std::runtime_error("Checkpoint CRC32 mismatch (data corrupted): " +
                                      path.string());

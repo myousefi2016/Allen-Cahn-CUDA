@@ -66,6 +66,22 @@ MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config) : config_(config)
         sub_config.gpu.device_ids = {domain.device_id};
         sub_config.gpu.multi_gpu = false;
 
+        // For inter-GPU boundaries, use Neumann (zero-flux) BCs on X faces
+        // that abut a neighbor GPU. The halo exchange provides the real data;
+        // Neumann just copies the adjacent interior value, which is benign.
+        BoundaryConfig neumann_bc;
+        neumann_bc.type = BCType::Neumann;
+        neumann_bc.flux = 0.0;
+        if (g > 0) {
+            sub_config.boundary.phi_faces.faces[0] = neumann_bc;  // x_lo
+            sub_config.boundary.u_faces.faces[0] = neumann_bc;
+        }
+        if (g < num_gpus - 1) {
+            sub_config.boundary.phi_faces.faces[1] = neumann_bc;  // x_hi
+            sub_config.boundary.u_faces.faces[1] = neumann_bc;
+        }
+        sub_config.boundary.per_face = true;
+
         CUDA_CHECK(cudaSetDevice(domain.device_id));
         domain.solver = std::make_unique<CudaSolver>(sub_config);
         domain.halo_stream = Stream();

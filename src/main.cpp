@@ -56,15 +56,14 @@ int main(int argc, char* argv[]) {
             }
             if (!found) {
                 spdlog::info("No config file found, using default parameters");
+                config.validate();
             }
         }
-
-        config.validate();
 
         struct sigaction sa{};
         sa.sa_handler = signal_handler;
         sigemptyset(&sa.sa_mask);
-        sa.sa_flags = 0;
+        sa.sa_flags = SA_RESTART;
         sigaction(SIGINT, &sa, nullptr);
         sigaction(SIGTERM, &sa, nullptr);
 

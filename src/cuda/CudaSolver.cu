@@ -221,9 +221,9 @@ void CudaSolver::step_euler(double dt) {
 // Equivalently: y_{n+1} = y_n + (dt/2)*(f(y_n) + f(y_tilde))
 
 /// avg[i] = 0.5 * (a[i] + b[i])
+/// Note: out may alias b (Heun average), so no __restrict__ on out/b.
 __global__ void __launch_bounds__(256)
-    average_kernel(double* __restrict__ out, const double* __restrict__ a,
-                   const double* __restrict__ b, int N) {
+    average_kernel(double* out, const double* __restrict__ a, const double* b, int N) {
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < static_cast<unsigned>(N)) {
         out[i] = 0.5 * (a[i] + b[i]);

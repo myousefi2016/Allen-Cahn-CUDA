@@ -238,7 +238,6 @@ def compute_global_scan(frames: Sequence[Path],
             continue
 
         step = natural_step(str(f))
-        result.steps.append(step)
 
         if not result.grid_dims[0]:
             result.grid_dims = tuple(int(v) for v in grid.dimensions)  # type: ignore
@@ -252,6 +251,8 @@ def compute_global_scan(frames: Sequence[Path],
                 del grid
                 gc.collect()
                 continue
+
+        result.steps.append(step)
 
         if "u" in grid.point_data:
             ua = np.asarray(grid.point_data["u"])

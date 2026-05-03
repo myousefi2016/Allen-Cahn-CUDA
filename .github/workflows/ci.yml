@@ -80,6 +80,7 @@ jobs:
   build-and-test:
     name: Build & Test (CUDA ${{ matrix.cuda }})
     runs-on: [self-hosted, gpu, linux]
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -110,8 +111,7 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DCMAKE_CUDA_ARCHITECTURES=native \
-            -DAC_BUILD_TESTS=ON \
-            -DAC_BUILD_BENCHMARKS=OFF
+            -DAC_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build --parallel $(nproc)
@@ -207,10 +207,15 @@ jobs:
 
       - name: Validate base manifests
         run: |
+          failed=0
           for f in k8s/base/*.yaml; do
             echo "Validating $f..."
-            kubectl apply --dry-run=client -f "$f" 2>&1 || true
+            if ! kubectl apply --dry-run=client -f "$f" 2>&1; then
+              echo "::error::Validation failed for $f"
+              failed=1
+            fi
           done
+          exit $failed
 
       - name: Validate dev overlay
         run: kubectl kustomize k8s/overlays/dev > /dev/null

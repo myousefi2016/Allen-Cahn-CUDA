@@ -18,18 +18,21 @@ __device__ double warp_reduce_max_val(double val) {
 }
 
 /// Compute max(|a[i] - b[i]|) across all elements via block reduction.
+/// Uses grid-stride loop so that fewer blocks can still cover all N elements.
 __global__ void max_abs_diff_kernel(const double* __restrict__ a, const double* __restrict__ b,
                                     double* __restrict__ block_results, int N) {
     extern __shared__ double sdata[];
 
     unsigned int tid = threadIdx.x;
+    unsigned int grid_stride = gridDim.x * blockDim.x * 2;
     unsigned int i = blockIdx.x * blockDim.x * 2 + threadIdx.x;
 
     double thread_max = 0.0;
-    if (i < static_cast<unsigned>(N))
-        thread_max = fabs(a[i] - b[i]);
-    if (i + blockDim.x < static_cast<unsigned>(N))
-        thread_max = fmax(thread_max, fabs(a[i + blockDim.x] - b[i + blockDim.x]));
+    for (; i < static_cast<unsigned>(N); i += grid_stride) {
+        thread_max = fmax(thread_max, fabs(a[i] - b[i]));
+        if (i + blockDim.x < static_cast<unsigned>(N))
+            thread_max = fmax(thread_max, fabs(a[i + blockDim.x] - b[i + blockDim.x]));
+    }
 
     sdata[tid] = thread_max;
     __syncthreads();
@@ -107,18 +110,21 @@ void launch_max_abs_diff(const double* a, const double* b, double* d_result, std
 }
 
 /// Max absolute value reduction: max(|a[i]|)
+/// Uses grid-stride loop so that fewer blocks can still cover all N elements.
 __global__ void max_abs_kernel(const double* __restrict__ data, double* __restrict__ block_results,
                                int N) {
     extern __shared__ double sdata[];
 
     unsigned int tid = threadIdx.x;
+    unsigned int grid_stride = gridDim.x * blockDim.x * 2;
     unsigned int i = blockIdx.x * blockDim.x * 2 + threadIdx.x;
 
     double thread_max = 0.0;
-    if (i < static_cast<unsigned>(N))
-        thread_max = fabs(data[i]);
-    if (i + blockDim.x < static_cast<unsigned>(N))
-        thread_max = fmax(thread_max, fabs(data[i + blockDim.x]));
+    for (; i < static_cast<unsigned>(N); i += grid_stride) {
+        thread_max = fmax(thread_max, fabs(data[i]));
+        if (i + blockDim.x < static_cast<unsigned>(N))
+            thread_max = fmax(thread_max, fabs(data[i + blockDim.x]));
+    }
 
     sdata[tid] = thread_max;
     __syncthreads();

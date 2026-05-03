@@ -12,5 +12,6 @@ labels:
 resources:
   - configmap.yaml
   - pvc.yaml
+  - rbac.yaml
+  - networkpolicy.yaml
   - job.yaml
-  - deployment.yaml

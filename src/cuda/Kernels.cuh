@@ -159,7 +159,7 @@ __device__ __forceinline__ double compute_An(double phix, double phiy, double ph
         return (1.0 - 3.0 * epsilon) *
                (1.0 + (4.0 * epsilon / (1.0 - 3.0 * epsilon)) * (qrt / (sq * sq)));
     }
-    return 1.0 - (5.0 / 3.0) * epsilon;
+    return 1.0 - 3.0 * epsilon / 5.0;
 }
 
 /// Derivative helper for anisotropic force.

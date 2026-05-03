@@ -40,7 +40,9 @@ set_target_properties(unit_tests PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
-gtest_discover_tests(unit_tests)
+gtest_discover_tests(unit_tests
+    PROPERTIES TIMEOUT 120
+)
 
 # ── Integration tests ───────────────────────────────────────────────────────
 add_executable(integration_tests
@@ -66,4 +68,6 @@ set_target_properties(integration_tests PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
-gtest_discover_tests(integration_tests)
+gtest_discover_tests(integration_tests
+    PROPERTIES TIMEOUT 300
+)

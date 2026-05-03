@@ -308,11 +308,35 @@ void SimulationConfig::validate() const {
     if (initial.seed_radius <= 0.0)
         throw std::invalid_argument("seed_radius must be positive");
 
+    // Adaptive stepping
+    if (time.adaptive && time.adaptive_tolerance <= 0.0) {
+        throw std::invalid_argument("adaptive_tolerance must be positive when adaptive stepping is enabled");
+    }
+
+    // Robin BC validation
+    auto validate_bc = [](const BoundaryConfig& bc, const std::string& name) {
+        if (bc.type == BCType::Robin) {
+            if (bc.alpha == 0.0 && bc.beta == 0.0) {
+                throw std::invalid_argument("Robin BC for " + name +
+                                            ": alpha and beta cannot both be zero");
+            }
+        }
+    };
+    validate_bc(boundary.phi_bc, "phi");
+    validate_bc(boundary.u_bc, "u");
+    for (int i = 0; i < 6; ++i) {
+        validate_bc(boundary.phi_faces.faces[i], "phi face " + std::to_string(i));
+        validate_bc(boundary.u_faces.faces[i], "u face " + std::to_string(i));
+    }
+
     // GPU
     if (gpu.device_ids.empty())
         throw std::invalid_argument("At least one GPU device required");
     if (gpu.block_size_1d < 32 || gpu.block_size_1d > 1024) {
         throw std::invalid_argument("block_size must be in [32, 1024]");
+    }
+    if (gpu.block_size_1d % 32 != 0) {
+        throw std::invalid_argument("block_size must be a multiple of 32 (warp size)");
     }
 
     spdlog::info("Configuration validated: {}x{}x{} grid, dt={}, {} scheme, {} stencil", grid.Nx,
