@@ -38,7 +38,7 @@ struct KernelParams {
 // ── Index arithmetic ───────────────────────────────────────────────────────
 
 __device__ __forceinline__ int idx3d(int x, int y, int z, int Ny, int Nz) {
-    return x * Ny * Nz + y * Nz + z;
+    return static_cast<int>(static_cast<long long>(x) * Ny * Nz + y * Nz + z);
 }
 
 __device__ __forceinline__ void linear_to_3d(int idx, int Ny, int Nz, int& x, int& y, int& z) {
@@ -222,5 +222,11 @@ void launch_max_abs_reduction(const double* field, double* result, std::size_t N
 /// Compute max absolute difference |a - b| via parallel reduction.
 void launch_max_abs_diff(const double* a, const double* b, double* d_result, std::size_t N,
                          cudaStream_t stream = nullptr);
+
+/// Overloads with pre-allocated scratch buffer (avoids per-call allocation).
+void launch_max_abs_reduction(const double* field, double* result, std::size_t N,
+                              double* scratch, int scratch_size, cudaStream_t stream);
+void launch_max_abs_diff(const double* a, const double* b, double* d_result, std::size_t N,
+                         double* scratch, int scratch_size, cudaStream_t stream);
 
 } // namespace ac::cuda

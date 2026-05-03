@@ -4,6 +4,7 @@
 #include "core/Grid.hpp"
 #include "core/SimulationConfig.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -14,6 +15,7 @@ namespace ac {
 /// When HDF5 is available, uses HDF5 format instead.
 class CheckpointIO {
 public:
+#pragma pack(push, 1)
     struct Header {
         char magic[8] = {'A', 'C', 'C', 'H', 'K', 'P', 'T', '\0'};
         int version = 1;
@@ -23,10 +25,14 @@ public:
         double time;
         int step;
         int num_fields; // Always 2 (phi, u)
-        char reserved[56] = {};
+        uint32_t data_crc32 = 0; // CRC32 of field data (0 = not computed, backward compat)
+        char reserved[52] = {};
     };
+#pragma pack(pop)
     static_assert(sizeof(Header) == 128,
                   "Header must be exactly 128 bytes for binary compatibility");
+
+    static uint32_t compute_crc32(const void* data, std::size_t len);
 
     /// Write a checkpoint to disk.
     static void write(const std::filesystem::path& path, int step, double time, double dt,

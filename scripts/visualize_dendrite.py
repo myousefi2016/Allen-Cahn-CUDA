@@ -42,6 +42,10 @@
 #   make cuda-visualize VIZ_LAYOUT=single
 #   make cuda-visualize VIZ_EXTRA_ARGS=--skip-saturated
 #
+# I/O note: frames are read TWICE — once in the prescan pass (colour ranges,
+# saturation flags, time-series data) and once during rendering. Use
+# --prescan-limit N to cap the first pass if you have thousands of frames.
+#
 # Self-test
 #   python scripts/visualize_dendrite.py --self-test
 #       Synthesizes a tiny 24³ grid in /tmp, renders one frame, asserts
@@ -138,8 +142,15 @@ def natural_step(path: str) -> int:
 
 def discover_frames(input_dir: Path, pattern: str) -> List[Path]:
     """Return sorted list of snapshot Paths whose name matches the regex."""
-    matches = sorted(glob.glob(str(input_dir / pattern)), key=natural_step)
-    return [Path(p) for p in matches if natural_step(p) >= 0]
+    raw = glob.glob(str(input_dir / pattern))
+    filtered = [p for p in raw if natural_step(p) >= 0]
+    n_dropped = len(raw) - len(filtered)
+    if n_dropped > 0:
+        sys.stderr.write(
+            f"WARN: {n_dropped} file(s) matched glob '{pattern}' but had no "
+            f"parseable step number — skipped\n"
+        )
+    return [Path(p) for p in sorted(filtered, key=natural_step)]
 
 
 # ── Saturation detection ─────────────────────────────────────────────────────
@@ -188,6 +199,14 @@ class ScanResult:
     saturated: List[bool] = field(default_factory=list)
     grid_dims: Tuple[int, int, int] = (0, 0, 0)
     grid_bounds: Tuple[float, float, float, float, float, float] = (0,) * 6
+    _step_to_idx: Dict[int, int] = field(default_factory=dict, repr=False)
+
+    def build_index(self) -> None:
+        self._step_to_idx = {s: i for i, s in enumerate(self.steps)}
+
+    def is_saturated(self, step: int) -> Optional[bool]:
+        idx = self._step_to_idx.get(step)
+        return self.saturated[idx] if idx is not None else None
 
 
 def compute_global_scan(frames: Sequence[Path],
@@ -274,6 +293,8 @@ def compute_global_scan(frames: Sequence[Path],
 
     if scanned == 0:
         raise RuntimeError("No readable frames found during prescan")
+
+    result.build_index()
 
     # phi is physically in [-1, 1] — clamp for a stable, symmetric colormap.
     phi_lo = max(-1.0, phi_lo if math.isfinite(phi_lo) else -1.0)
@@ -520,7 +541,9 @@ def render_slice_panel(grid: pv.StructuredGrid,
                        bg: Tuple[float, float, float]) -> np.ndarray:
     """Render a single mid-z slice as an RGBA numpy array."""
     if scalar not in grid.point_data:
-        return np.full((window_size[1], window_size[0], 4), 200, dtype=np.uint8)
+        fb = np.full((window_size[1], window_size[0], 4), 200, dtype=np.uint8)
+        fb[:, :, 3] = 255
+        return fb
 
     cz = 0.5 * (grid.bounds[4] + grid.bounds[5])
     eps = 0.005 * (grid.bounds[5] - grid.bounds[4])
@@ -529,9 +552,13 @@ def render_slice_panel(grid: pv.StructuredGrid,
                        origin=(0.0, 0.0, cz + eps))
     except Exception as exc:
         sys.stderr.write(f"WARN: slice panel ({scalar}) failed: {exc}\n")
-        return np.full((window_size[1], window_size[0], 4), 200, dtype=np.uint8)
+        fb = np.full((window_size[1], window_size[0], 4), 200, dtype=np.uint8)
+        fb[:, :, 3] = 255
+        return fb
     if s.n_points == 0:
-        return np.full((window_size[1], window_size[0], 4), 200, dtype=np.uint8)
+        fb = np.full((window_size[1], window_size[0], 4), 200, dtype=np.uint8)
+        fb[:, :, 3] = 255
+        return fb
 
     p = pv.Plotter(off_screen=True, window_size=list(window_size))
     p.set_background(color=bg)
@@ -607,7 +634,7 @@ def render_timeseries_sidebar(scan: ScanResult,
         sat_mask = np.asarray(scan.saturated, dtype=bool)
         if sat_mask.any():
             sat_steps = steps[sat_mask]
-            ax.axvspan(sat_steps.min(), steps.max(), color="#ffd2cc",
+            ax.axvspan(sat_steps.min(), sat_steps.max(), color="#ffd2cc",
                        alpha=0.55, zorder=0,
                        label="saturated (wall reached)")
 
@@ -633,7 +660,13 @@ def render_timeseries_sidebar(scan: ScanResult,
         for spine in ("top",):
             ax.spines[spine].set_visible(False)
         ax.grid(True, alpha=0.25, linestyle=":")
-        ax.legend(loc="upper left", fontsize=9, framealpha=0.85)
+        # Combine handles from both axes for a unified legend
+        handles, labels = ax.get_legend_handles_labels()
+        if scan.mean_u:
+            h2, l2 = ax2.get_legend_handles_labels()
+            handles += h2
+            labels += l2
+        ax.legend(handles, labels, loc="upper left", fontsize=9, framealpha=0.85)
     else:
         ax.text(0.5, 0.5, "no time-series data",
                 transform=ax.transAxes, ha="center", va="center")
@@ -713,8 +746,7 @@ def render_3d_view(grid: pv.StructuredGrid,
 
 def overlay_saturation_badge(img: Image.Image) -> Image.Image:
     """Burn a red 'SATURATED — wall reached' banner into the upper-right corner."""
-    out = img.copy()
-    draw = ImageDraw.Draw(out, "RGBA")
+    draw = ImageDraw.Draw(img, "RGBA")
     text = "SATURATED — wall reached"
     font = _load_font(20)
     if font is not None:
@@ -723,12 +755,12 @@ def overlay_saturation_badge(img: Image.Image) -> Image.Image:
     else:
         tw, th = 8 * len(text), 18
     pad = 12
-    x = out.width - tw - 3 * pad
+    x = img.width - tw - 3 * pad
     y = pad
     draw.rounded_rectangle((x, y, x + tw + 2 * pad, y + th + 2 * pad),
                            radius=8, fill=(204, 0, 0, 220))
     draw.text((x + pad, y + pad), text, fill=(255, 255, 255, 255), font=font)
-    return out
+    return img
 
 
 def _load_font(size: int) -> Optional[ImageFont.ImageFont]:
@@ -745,6 +777,8 @@ def _load_font(size: int) -> Optional[ImageFont.ImageFont]:
             except Exception:
                 continue
     try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
         return ImageFont.load_default()
     except Exception:
         return None
@@ -822,6 +856,7 @@ class RenderConfig:
     bg_top: Tuple[float, float, float]
     silhouette: bool
     skip_saturated: bool
+    saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD
 
 
 def render_frame(frame_path: Path,
@@ -848,7 +883,9 @@ def render_frame(frame_path: Path,
                 grid.point_data[field_name] = np.where(np.isfinite(arr), arr, 0.0)
 
     step = natural_step(str(frame_path))
-    saturated = detect_saturation(grid)
+    # Use prescan result (computed with the user's --saturation-threshold)
+    sat_result = scan.is_saturated(step)
+    saturated = sat_result if sat_result is not None else detect_saturation(grid, cfg.saturation_threshold)
     if saturated and cfg.skip_saturated:
         sys.stdout.write(f"    [{index + 1:>4}/{total}] step={step:<7} "
                          f"-> SKIPPED (saturated)\n")
@@ -947,17 +984,26 @@ def stitch_video(png_paths: List[Path], mp4_path: Path, fps: int) -> None:
         return
     mp4_path.parent.mkdir(parents=True, exist_ok=True)
     sys.stdout.write(f"==> Stitching {len(png_paths)} frames -> {mp4_path} @ {fps} fps\n")
-    writer = imageio.get_writer(
-        str(mp4_path),
-        fps=fps,
-        codec="libx264",
-        quality=8,
-        pixelformat="yuv420p",
-        macro_block_size=1,
-    )
+    try:
+        writer = imageio.get_writer(
+            str(mp4_path),
+            fps=fps,
+            codec="libx264",
+            quality=8,
+            pixelformat="yuv420p",
+            macro_block_size=2,
+        )
+    except Exception as exc:
+        sys.stderr.write(
+            f"ERROR: failed to initialize video writer ({exc}). "
+            "Ensure ffmpeg is installed and libx264 codec is available.\n"
+        )
+        return
     try:
         for p in png_paths:
             writer.append_data(imageio.imread(str(p)))
+    except Exception as exc:
+        sys.stderr.write(f"ERROR: video encoding failed at {p}: {exc}\n")
     finally:
         writer.close()
 
@@ -1045,6 +1091,12 @@ def run_self_test(workdir: Optional[Path] = None) -> int:
         return 2
 
     sys.stdout.write(f"    render ok: {png} ({png.stat().st_size} bytes)\n")
+
+    # Clean up temporary directory if we created it
+    if workdir is None:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
     sys.stdout.write("==> self-test PASSED\n")
     return 0
 
@@ -1123,7 +1175,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help="Only render the first N frames (0 = all)")
     p.add_argument("--prescan-limit", type=int, default=0,
                    help="Max frames to scan for global colour range / time-series "
-                        "(0 = all frames)")
+                        "(0 = all frames). NOTE: if set, the time-series sidebar "
+                        "will only show data for the first N frames, and colour "
+                        "ranges may not cover later frames.")
 
     # Bootstrap
     p.add_argument("--no-xvfb", action="store_true",
@@ -1168,11 +1222,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     # ── Resolve layout ───────────────────────────────────────────────────
     layout = args.layout
     if args.view is not None:
-        # Legacy compat
+        sys.stderr.write(
+            f"WARN: --view is deprecated, use --layout instead. "
+            f"Mapping --view={args.view} to equivalent --layout.\n"
+        )
         if args.view in ("iso", "combined"):
             layout = "single"
         elif args.view == "slice":
             layout = "panels"
+
+    # Validate window size
+    w_w, w_h = args.window_size
+    if w_w < 2 or w_h < 2:
+        sys.stderr.write(f"ERROR: --window-size must be >= 2, got {w_w}x{w_h}\n")
+        return 2
+    if w_w % 2 != 0 or w_h % 2 != 0:
+        w_w = w_w + (w_w % 2)
+        w_h = w_h + (w_h % 2)
+        sys.stderr.write(f"WARN: --window-size rounded to even: {w_w}x{w_h}\n")
+        args.window_size = [w_w, w_h]
 
     try:
         bg_bottom = _parse_color_triplet(args.bg_bottom)
@@ -1245,14 +1313,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         bg_top=bg_top,
         silhouette=not args.no_silhouette,
         skip_saturated=args.skip_saturated,
+        saturation_threshold=args.saturation_threshold,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     png_paths: List[Path] = []
     ok = 0
+    skipped = 0
     for i, f in enumerate(frames):
         step = natural_step(str(f))
         png = out_dir / f"frame_{step:06d}.png"
+        if png.exists() and png.stat().st_size > 0:
+            png_paths.append(png)
+            ok += 1
+            skipped += 1
+            continue
         t_frame = time.perf_counter()
         success = render_frame(f, png, scan, cfg, index=i, total=len(frames))
         if success:
@@ -1265,6 +1340,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     f"-> {png.name}  ({dt_f:.2f}s)\n"
                 )
                 sys.stdout.flush()
+    if skipped:
+        sys.stdout.write(f"==> Skipped {skipped} existing frames (resume)\n")
 
     sys.stdout.write(f"==> Rendered {ok}/{len(frames)} frames\n")
 

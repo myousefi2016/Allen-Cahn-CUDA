@@ -5,6 +5,7 @@
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <spdlog/spdlog.h>
@@ -15,8 +16,6 @@ std::atomic<bool> g_shutdown_requested{false};
 static void signal_handler(int signum) {
     (void)signum;
     g_shutdown_requested.store(true, std::memory_order_relaxed);
-    // Do NOT call spdlog or any non-async-signal-safe function here.
-    // The time_loop() will detect g_shutdown_requested and log a clean message.
 }
 
 static void print_usage(const char* prog) {
@@ -62,8 +61,12 @@ int main(int argc, char* argv[]) {
 
         config.validate();
 
-        std::signal(SIGINT, signal_handler);
-        std::signal(SIGTERM, signal_handler);
+        struct sigaction sa{};
+        sa.sa_handler = signal_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        sigaction(SIGINT, &sa, nullptr);
+        sigaction(SIGTERM, &sa, nullptr);
 
         ac::SimulationEngine engine(std::move(config));
         engine.run();

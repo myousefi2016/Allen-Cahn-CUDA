@@ -171,3 +171,27 @@ TEST_F(SimulationEngineTest, AdaptiveTimeStep) {
             }
     EXPECT_TRUE(all_finite) << "Adaptive stepping produced non-finite values";
 }
+
+TEST_F(SimulationEngineTest, SaturationDetection) {
+    auto cfg = make_config(8, 10);
+    cfg.time.exit_on_saturation = true;
+    cfg.time.saturation_threshold = -0.5;
+    cfg.time.saturation_check_freq = 1;
+
+    SimulationEngine engine(cfg);
+    EXPECT_NO_THROW(engine.run());
+}
+
+TEST_F(SimulationEngineTest, ConfigValidationRejectsInvalid) {
+    auto cfg = make_config(8, 10);
+    cfg.output.format = "invalid_format";
+    EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+    auto cfg2 = make_config(8, 10);
+    cfg2.checkpoint.keep_last = 0;
+    EXPECT_THROW(cfg2.validate(), std::invalid_argument);
+
+    auto cfg3 = make_config(8, 10);
+    cfg3.initial.seed_radius = -1.0;
+    EXPECT_THROW(cfg3.validate(), std::invalid_argument);
+}

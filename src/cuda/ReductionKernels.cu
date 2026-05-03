@@ -156,4 +156,36 @@ void launch_max_abs_reduction(const double* field, double* result, std::size_t N
     CUDA_CHECK(cudaGetLastError());
 }
 
+// ── Overloads with pre-allocated scratch ───────────────────────────────────
+
+void launch_max_abs_diff(const double* a, const double* b, double* d_result, std::size_t N,
+                         double* scratch, int scratch_size, cudaStream_t stream) {
+    constexpr int BLOCK_SIZE = 256;
+    int num_blocks = static_cast<int>((N + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2));
+    num_blocks = std::min(std::max(num_blocks, 1), scratch_size);
+
+    max_abs_diff_kernel<<<num_blocks, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(
+        a, b, scratch, static_cast<int>(N));
+    CUDA_CHECK(cudaGetLastError());
+
+    final_max_kernel<<<1, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(scratch, d_result,
+                                                                             num_blocks);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_max_abs_reduction(const double* field, double* result, std::size_t N,
+                              double* scratch, int scratch_size, cudaStream_t stream) {
+    constexpr int BLOCK_SIZE = 256;
+    int num_blocks = static_cast<int>((N + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2));
+    num_blocks = std::min(std::max(num_blocks, 1), scratch_size);
+
+    max_abs_kernel<<<num_blocks, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(
+        field, scratch, static_cast<int>(N));
+    CUDA_CHECK(cudaGetLastError());
+
+    final_max_kernel<<<1, BLOCK_SIZE, BLOCK_SIZE * sizeof(double), stream>>>(scratch, result,
+                                                                             num_blocks);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 } // namespace ac::cuda

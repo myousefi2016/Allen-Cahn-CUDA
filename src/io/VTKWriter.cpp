@@ -28,9 +28,11 @@ VTKWriter::VTKWriter(const Grid& grid, const OutputParams& params) : grid_(grid)
 }
 
 VTKWriter::~VTKWriter() {
-    flush();
-    stop_ = true;
-    queue_cv_.notify_one();
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        stop_ = true;
+    }
+    queue_cv_.notify_all();
     if (writer_thread_.joinable()) {
         writer_thread_.join();
     }
@@ -50,7 +52,7 @@ void VTKWriter::write_async(int step, double time, const FieldData& phi, const F
         });
         job_queue_.push(std::move(job));
     }
-    queue_cv_.notify_one();
+    queue_cv_.notify_all();
 }
 
 void VTKWriter::flush() {
@@ -166,31 +168,22 @@ void VTKWriter::write_vtk_file(const WriteJob& job) {
 void VTKWriter::write_raw_file(const WriteJob& job) {
     std::string base = (params_.output_dir / ("output_" + std::to_string(job.step))).string();
 
-    // Write phi
-    {
-        std::ofstream ofs(base + "_phi.raw", std::ios::binary);
+    auto write_atomic = [](const std::string& path, const void* data, std::size_t bytes) {
+        std::string tmp = path + ".tmp";
+        std::ofstream ofs(tmp, std::ios::binary);
         if (!ofs.is_open()) {
-            throw std::runtime_error("Failed to open file: " + base + "_phi.raw");
+            throw std::runtime_error("Failed to open file: " + tmp);
         }
-        ofs.write(reinterpret_cast<const char*>(job.phi_data.data()),
-                  static_cast<std::streamsize>(job.phi_data.size() * sizeof(Real)));
+        ofs.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
         if (!ofs.good()) {
-            throw std::runtime_error("Failed to write file: " + base + "_phi.raw");
+            throw std::runtime_error("Failed to write file: " + tmp);
         }
-    }
+        ofs.close();
+        std::filesystem::rename(tmp, path);
+    };
 
-    // Write u
-    {
-        std::ofstream ofs(base + "_u.raw", std::ios::binary);
-        if (!ofs.is_open()) {
-            throw std::runtime_error("Failed to open file: " + base + "_u.raw");
-        }
-        ofs.write(reinterpret_cast<const char*>(job.u_data.data()),
-                  static_cast<std::streamsize>(job.u_data.size() * sizeof(Real)));
-        if (!ofs.good()) {
-            throw std::runtime_error("Failed to write file: " + base + "_u.raw");
-        }
-    }
+    write_atomic(base + "_phi.raw", job.phi_data.data(), job.phi_data.size() * sizeof(Real));
+    write_atomic(base + "_u.raw", job.u_data.data(), job.u_data.size() * sizeof(Real));
 
     spdlog::info("Wrote raw files: {}_phi.raw, {}_u.raw (step={}, time={:.4f})", base, base,
                  job.step, job.time);
