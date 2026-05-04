@@ -1,48 +1,56 @@
 # Architecture Guide
 
-## System Overview
+This document describes the high-level architecture of Allen-Cahn-CUDA:
+how the source tree is organised into layered libraries, how the runtime
+components interact, and what the threading and memory model look like.
+Every claim cites the source file and line where the corresponding code
+lives.
 
-Allen-Cahn CUDA is a GPU-accelerated 3D phase-field simulation implementing the coupled Allen-Cahn and thermal diffusion equations for dendritic solidification. The system is organized into layered libraries with clear separation of concerns.
+---
 
-## Layer Architecture
+## 1. System Overview
+
+Allen-Cahn-CUDA is a GPU-accelerated 3D phase-field simulation
+implementing the coupled Allen–Cahn and thermal-diffusion equations
+(Karma–Rappel formulation) for dendritic solidification. The system is
+organised into layered libraries with strict dependency direction:
+upstream layers never include downstream ones.
 
 ```mermaid
 graph TB
-    subgraph "Application"
+    subgraph App["Application"]
         Main["main.cpp"]
     end
-
-    subgraph "Engine"
+    subgraph Engine["Engine"]
         SE["SimulationEngine"]
     end
-
-    subgraph "Solver"
+    subgraph Solver["Solver layer"]
         IS["ISolver (interface)"]
         CS["CudaSolver"]
         MG["MultiGPUSolver"]
     end
-
-    subgraph "Kernels"
+    subgraph Kernels["CUDA kernels"]
         ACK["AllenCahnKernels"]
         TK["ThermalKernels"]
         BK["BoundaryKernels"]
         RK["ReductionKernels"]
     end
-
-    subgraph "Infrastructure"
-        DF["DeviceField (RAII GPU memory)"]
+    subgraph Infra["GPU infrastructure"]
+        DF["DeviceField (RAII)"]
         CU["CudaUtils (Stream, Event)"]
     end
-
-    subgraph "I/O"
+    subgraph IO["I/O"]
         VW["VTKWriter (async)"]
-        CP["CheckpointIO"]
+        CIO["CheckpointIO"]
+        CM["CheckpointManager"]
     end
-
-    subgraph "Core"
+    subgraph Core["Core"]
         SC["SimulationConfig"]
         GR["Grid"]
         FD["FieldData"]
+        LRU["LRUCache"]
+        SH["SpatialHash"]
+        CMap["ConcurrentMap"]
     end
 
     Main --> SE
@@ -50,124 +58,178 @@ graph TB
     IS --> CS
     IS --> MG
     MG --> CS
-    CS --> ACK & TK & BK & RK
-    CS --> DF & CU
-    SE --> VW & CP
+    CS --> ACK
+    CS --> TK
+    CS --> BK
+    CS --> RK
+    CS --> DF
+    CS --> CU
+    SE --> VW
+    SE --> CM
+    CM --> CIO
+    VW --> LRU
     VW --> FD
-    CP --> FD
-    CS --> SC & GR
+    CIO --> FD
+    CS --> SC
+    CS --> GR
 ```
 
-## Module Dependency Graph
+---
+
+## 2. Module / Library Decomposition
+
+The project is split into five static libraries plus the executable and
+two test executables (`src/CMakeLists.txt`).
 
 ```mermaid
 graph LR
-    ac_logging["ac_logging<br/>(spdlog wrapper)"]
-    ac_core["ac_core<br/>(Grid, Config, FieldData,<br/>CheckpointManager,<br/>LRUCache, SpatialHash,<br/>ConcurrentMap)"]
-    ac_cuda["ac_cuda<br/>(ISolver, CudaSolver,<br/>MultiGPUSolver, Kernels,<br/>DeviceField, CudaUtils)"]
-    ac_io["ac_io<br/>(VTKWriter, CheckpointIO)"]
-    ac_engine["ac_engine<br/>(SimulationEngine)"]
-    main["allen-cahn-cuda<br/>(executable)"]
+    aclog["ac_logging<br/>(spdlog wrapper)"]
+    accore["ac_core<br/>SimulationConfig.cpp,<br/>Grid.cpp, FieldData.cpp"]
+    accuda["ac_cuda<br/>(SEPARABLE_COMPILATION)<br/>kernels + DeviceField +<br/>CudaSolver + MultiGPUSolver"]
+    acio["ac_io<br/>VTKWriter.cpp,<br/>CheckpointIO.cpp,<br/>core/CheckpointManager.cpp"]
+    acengine["ac_engine<br/>(SEPARABLE_COMPILATION)<br/>SimulationEngine.cu"]
+    exe["allen-cahn-cuda<br/>(executable)"]
+    json["nlohmann_json"]
+    cuda["CUDA Toolkit"]
+    vtk["VTK 9 (optional)"]
+    hdf5["HDF5 (optional)"]
 
-    ac_core --> ac_logging
-    ac_core --> nlohmann_json
-    ac_cuda --> ac_core
-    ac_cuda --> CUDA
-    ac_io --> ac_core
-    ac_io --> VTK9["VTK 9 (optional)"]
-    ac_engine --> ac_core & ac_cuda & ac_io & ac_logging
-    main --> ac_engine
+    accore --> aclog
+    accore --> json
+    accuda --> accore
+    accuda --> cuda
+    acio --> accore
+    acio -.optional.-> vtk
+    acio -.optional.-> hdf5
+    acengine --> accore
+    acengine --> accuda
+    acengine --> acio
+    acengine --> aclog
+    exe --> acengine
 
-    style ac_cuda fill:#e1f5fe
-    style CUDA fill:#76ff03
+    style accuda fill:#e1f5fe
+    style acengine fill:#e1f5fe
+    style cuda fill:#76ff03
 ```
 
-## Simulation Lifecycle
+A few non-obvious facts about the build graph:
+
+- **`ac_core` is intentionally minimal.** It only compiles
+  `SimulationConfig.cpp`, `Grid.cpp`, and `FieldData.cpp`
+  (`src/CMakeLists.txt:9-13`). `LRUCache`, `SpatialHash`, and
+  `ConcurrentMap` are header-only utilities included by downstream
+  libraries; they have no `.cpp`.
+- **`CheckpointManager.cpp` lives under `src/core/` but compiles into
+  `ac_io`** (`src/CMakeLists.txt:40-44`). It is grouped there because
+  `CheckpointManager.hpp` includes `io/CheckpointIO.hpp`, so the only
+  acyclic placement is in the I/O library that already depends on core.
+- **CUDA separable compilation** is enabled on `ac_cuda` and `ac_engine`
+  so that device-side functions can call across translation units.
+
+---
+
+## 3. Simulation Lifecycle
 
 ```mermaid
 sequenceDiagram
     participant Main
-    participant Config as SimulationConfig
-    participant Engine as SimulationEngine
-    participant Solver as CudaSolver/MultiGPU
+    participant Cfg as SimulationConfig
+    participant Eng as SimulationEngine
+    participant Sol as CudaSolver / MultiGPUSolver
+    participant Mgr as CheckpointManager
     participant VTK as VTKWriter (bg thread)
-    participant Ckpt as CheckpointManager
 
-    Main->>Config: from_json(path)
-    Config->>Config: validate()
-    Main->>Engine: SimulationEngine(config)
-    Engine->>Solver: create_solver()
-    Engine->>VTK: VTKWriter(grid, params)
+    Main->>Cfg: from_json(path) or defaults
+    Cfg->>Cfg: validate()
+    Main->>Eng: SimulationEngine(config)
+    Eng->>Sol: create_solver()
+    Eng->>VTK: VTKWriter(grid, params)
+    Eng->>Mgr: CheckpointManager(...)
 
     alt Restart from checkpoint
-        Engine->>Ckpt: restore()
-        Ckpt-->>Engine: phi, u, step, time
+        Eng->>Mgr: restore()
+        Mgr-->>Eng: phi, u, step, time, dt, grid
+        Eng->>Eng: validate dim match config
     else Fresh start
-        Engine->>Engine: initialize_fields()
+        Eng->>Eng: initialize_fields()<br/>(tanh seed)
     end
 
-    Engine->>Solver: initialize(phi, u)
-    Note over Solver: cudaMemcpy H2D
+    Eng->>Sol: initialize(phi, u)
+    Note over Sol: H2D copy + apply BC
 
-    loop Time Loop (step 1..max_steps)
-        Engine->>Solver: step(dt)
-        Note over Solver: GPU kernel launches
+    loop Time loop (step <= max_steps)
+        Eng->>Sol: step(dt)
+        Note over Sol: kernel sequence on compute_stream_
         alt Output step
-            Engine->>Solver: copy_phi_to_host()
-            Engine->>Solver: copy_u_to_host()
-            Engine->>VTK: write_async(step, time, phi, u)
-            Note over VTK: Background thread<br/>writes to disk
+            Eng->>Sol: copy_phi_to_host(), copy_u_to_host()
+            Eng->>VTK: write_async(step, time, phi, u)
         end
         alt Checkpoint step
-            Engine->>Ckpt: save(step, time, dt, phi, u)
+            Eng->>Mgr: save(step, time, dt, phi, u)
         end
         alt Adaptive dt
-            Engine->>Solver: compute_max_dphi()
-            Note over Solver: Parallel reduction
-            Engine->>Engine: adapt_time_step(dt)
+            Eng->>Sol: compute_max_dphi()
+            Eng->>Eng: adapt_time_step()
+        end
+        alt Saturation guard
+            Eng->>Sol: compute_boundary_max_phi()
+            Note over Eng: break if > saturation_threshold
+        end
+        alt SIGINT / SIGTERM
+            Note over Eng: g_shutdown_requested set;<br/>final checkpoint + output, break
         end
     end
 
-    Engine->>VTK: flush()
-    Engine->>Solver: synchronize()
+    Eng->>Sol: synchronize()
+    Eng->>VTK: flush()
 ```
 
-## Solver Class Hierarchy
+`run()` is the top-level method (`SimulationEngine.cu:43-71`); the time
+loop itself is `time_loop()` (`SimulationEngine.cu:113-179`).
+
+---
+
+## 4. Solver Class Hierarchy
 
 ```mermaid
 classDiagram
     class ISolver {
         <<interface>>
-        +initialize(phi, u)*
-        +step(dt)*
-        +compute_max_dphi()* double
-        +copy_phi_to_host(out)*
-        +copy_u_to_host(out)*
-        +apply_boundary_conditions()*
-        +synchronize()*
-        +stream()* cudaStream_t
+        +initialize(phi, u)
+        +step(dt)
+        +compute_max_dphi() double
+        +compute_boundary_max_phi() double
+        +copy_phi_to_host(out)
+        +copy_u_to_host(out)
+        +apply_boundary_conditions()
+        +synchronize()
+        +stream() cudaStream_t
     }
 
     class CudaSolver {
         -phi_old_, phi_new_ : DeviceField
         -u_old_, u_new_ : DeviceField
-        -compute_stream_ : Stream
+        -phi_tmp_, u_tmp_ : DeviceField  (Heun/RK4/IMEX)
+        -k1_phi_..k4_phi_, k1_u_..k4_u_  (RK4)
+        -Fx_, Fy_, Fz_                    (RK4 force arrays)
+        -d_reduction_result_ : DeviceField~1~
+        -reduction_scratch_  : DeviceField
+        -compute_stream_, transfer_stream_ : Stream
         -scheme_ : TimeScheme
-        +step_euler(dt)
-        +step_heun(dt)
-        +step_rk4(dt)
-        +step_imex(dt)
-        +phi_data() : double*
-        +u_data() : double*
+        +step_euler(dt), step_heun(dt), step_rk4(dt), step_imex(dt)
+        +step_heun_stage2(dt)
+        +phi_data() double*
+        +u_data() double*
         -apply_bc(field, bc)
-        -apply_bc_per_face(field, face_bcs)
+        -apply_bc_per_face(field, faces)
     }
 
     class MultiGPUSolver {
         -domains_ : vector~GPUDomain~
-        -halo_width_ : int
+        -halo_width_ : int (=2)
         +exchange_halos()
-        -copy_slab(dst, src, ...)
+        +exchange_halos_for_tmp()
+        -copy_slab(...)
         -extract_subdomain(global, local, domain)
     }
 
@@ -175,9 +237,10 @@ classDiagram
         +device_id : int
         +x_start, x_end : int
         +local_Nx : int
-        +halo : int
+        +halo : int (=2)
         +solver : unique_ptr~CudaSolver~
         +halo_stream : Stream
+        +compute_done : Event
     }
 
     ISolver <|-- CudaSolver
@@ -186,162 +249,252 @@ classDiagram
     GPUDomain *-- CudaSolver
 ```
 
-## GPU Memory Layout
+The interface is in `src/cuda/ISolver.cuh`; `CudaSolver` and
+`MultiGPUSolver` are in `src/cuda/`. Note `step_heun_stage2(dt)` is
+public on `CudaSolver` because `MultiGPUSolver` calls it directly to
+inject an inter-stage halo exchange between the predictor and corrector
+(`MultiGPUSolver.cu:265-273`).
+
+---
+
+## 5. GPU Memory Layout
 
 ```mermaid
 graph TB
-    subgraph "Device Memory (per GPU)"
-        subgraph "Primary Fields (always allocated)"
-            phi_old["phi_old_ : DeviceField&lt;double&gt;<br/>N = Nx * Ny * Nz"]
-            phi_new["phi_new_ : DeviceField&lt;double&gt;"]
-            u_old["u_old_ : DeviceField&lt;double&gt;"]
-            u_new["u_new_ : DeviceField&lt;double&gt;"]
+    subgraph DeviceMem["Device memory (per GPU)"]
+        subgraph Always["Always allocated"]
+            phi_old["phi_old_"]
+            phi_new["phi_new_"]
+            u_old["u_old_"]
+            u_new["u_new_"]
+            redr["d_reduction_result_ (1 elt)"]
+            reds["reduction_scratch_ (~num_blocks)"]
         end
-
-        subgraph "Heun/RK4/IMEX temporaries"
-            phi_tmp["phi_tmp_ : DeviceField&lt;double&gt;"]
-            u_tmp["u_tmp_ : DeviceField&lt;double&gt;"]
+        subgraph HRI["Heun / RK4 / IMEX"]
+            phi_tmp["phi_tmp_"]
+            u_tmp["u_tmp_"]
         end
-
-        subgraph "RK4 only"
-            k1["k1_phi_, k1_u_"]
-            k2["k2_phi_, k2_u_"]
-            k3["k3_phi_, k3_u_"]
-            k4["k4_phi_, k4_u_"]
-            F["Fx_, Fy_, Fz_"]
+        subgraph RK4Only["RK4 only"]
+            ks["k1_phi_..k4_phi_, k1_u_..k4_u_"]
+            Fs["Fx_, Fy_, Fz_"]
         end
-
-        red["d_reduction_result_ (1 element)"]
     end
-
-    subgraph "Pointer Swap (O(1))"
-        swap["swap(phi_old_, phi_new_)<br/>std::swap of pointers<br/>No GPU data movement"]
+    subgraph Swap["Pointer swap (O(1))"]
+        sw["swap(phi_old_, phi_new_)<br/>swap(u_old_, u_new_)<br/>std::swap of DeviceField handles"]
     end
 ```
 
-## Multi-GPU Halo Exchange
+Each `DeviceField<double>` is a flat allocation of
+`Nx * Ny * Nz * sizeof(double)` bytes via `cudaMalloc`, with row-major
+indexing `idx = x*Ny*Nz + y*Nz + z`. Allocations are sized in
+`CudaSolver`'s constructor based on the active time scheme
+(`CudaSolver.cu:116-156`).
+
+---
+
+## 6. Multi-GPU Halo Exchange
 
 ```mermaid
 sequenceDiagram
-    participant GPU0 as GPU 0 (Domain 0)
-    participant GPU1 as GPU 1 (Domain 1)
+    participant G0 as GPU 0 (Domain 0)
+    participant G1 as GPU 1 (Domain 1)
 
-    Note over GPU0,GPU1: Before each time step
+    Note over G0,G1: Before each step
 
-    par Halo Exchange
-        GPU0->>GPU1: Right boundary slabs (halo_width=2)<br/>cudaMemcpyPeerAsync for phi and u
-        GPU1->>GPU0: Left boundary slabs (halo_width=2)<br/>cudaMemcpyPeerAsync for phi and u
+    G0->>G0: record compute_done event<br/>on compute_stream
+    G1->>G1: record compute_done event
+    G0->>G0: halo_stream waits on G1.compute_done
+    G1->>G1: halo_stream waits on G0.compute_done
+
+    par Halo (2-cell YZ slabs, peer-async)
+        G0->>G1: phi_old right slab (cudaMemcpyPeerAsync)
+        G0->>G1: u_old   right slab
+        G1->>G0: phi_old left  slab
+        G1->>G0: u_old   left  slab
     end
 
-    Note over GPU0,GPU1: Synchronize halo streams
+    Note over G0,G1: host syncs all halo_streams
 
     par Compute
-        GPU0->>GPU0: solver->step(dt)
-        GPU1->>GPU1: solver->step(dt)
+        G0->>G0: solver.step(dt)
+        G1->>G1: solver.step(dt)
     end
 ```
 
-## Async I/O Pipeline
+Sub-domain X faces that abut a neighbour GPU are configured as Neumann
+(zero-flux); the halo exchange supplies the real data, so the BC kernel
+output is overwritten before being read on the next step
+(`MultiGPUSolver.cu:69-83`).
+
+---
+
+## 7. Async I/O Pipeline
 
 ```mermaid
 sequenceDiagram
-    participant Sim as Simulation Thread
-    participant Queue as Job Queue (mutex + cv)
-    participant BG as VTK Writer Thread
-    participant Cache as LRU Stats Cache
-    participant Disk as Filesystem
+    participant Sim as Simulation thread
+    participant Q   as Job queue (mutex + cv)
+    participant BG  as VTKWriter background thread
+    participant LRU as LRUCache (FieldStatistics)
+    participant FS  as Filesystem
 
-    Sim->>Queue: write_async(step, time, phi_copy, u_copy)
-    Note over Sim: Returns immediately
-
-    Sim->>Sim: Continue simulation...
-
-    BG->>Queue: wait for job
-    Queue-->>BG: job
-    BG->>Cache: compute_statistics(phi_data)
-    Cache-->>BG: FieldStatistics (cached or computed)
-    BG->>Disk: write VTK/raw file
-
-    Sim->>Queue: flush()
-    Note over Sim: Blocks until queue empty
+    Sim->>Q: write_async(step, time, phi_copy, u_copy)
+    Note over Sim: returns immediately
+    Sim->>Sim: continue stepping...
+    BG->>Q: wait for job (cv)
+    Q-->>BG: WriteJob
+    BG->>LRU: compute_statistics(phi)  (cached or computed)
+    LRU-->>BG: FieldStatistics
+    BG->>FS: write to <name>.tmp + atomic rename
+    Sim->>Q: flush()
+    Note over Sim: blocks until queue empty<br/>and active_jobs == 0
 ```
 
-## Per-Face Boundary Condition System
+Implementation: `src/io/VTKWriter.cpp`. The writer thread is owned by
+the `VTKWriter` instance and joined in the destructor with `stop_` set
+under the mutex (`VTKWriter.cpp:30-39`).
+
+Backpressure: producers wait on `queue_cv_` when the queue depth plus
+in-flight jobs would exceed `max_queue_depth_`
+(`VTKWriter.cpp:48-55`).
+
+Crash-safety: every write goes to `<file>.tmp` first and is renamed
+atomically. Raw writes use POSIX `write()` with `EINTR` handling.
+
+---
+
+## 8. Per-Face Boundary Condition System
 
 ```mermaid
 graph LR
-    subgraph "3D Domain"
-        XLo["X- face (0)"]
-        XHi["X+ face (1)"]
-        YLo["Y- face (2)"]
-        YHi["Y+ face (3)"]
-        ZLo["Z- face (4)"]
-        ZHi["Z+ face (5)"]
+    subgraph Faces["6 faces (indexed 0..5)"]
+        XLo["x_lo"]
+        XHi["x_hi"]
+        YLo["y_lo"]
+        YHi["y_hi"]
+        ZLo["z_lo"]
+        ZHi["z_hi"]
     end
-
-    subgraph "PerFaceBoundary"
-        arr["faces[6] : BoundaryConfig"]
+    subgraph PFB["PerFaceBoundary"]
+        F["faces[6] : BoundaryConfig"]
     end
-
-    subgraph "BoundaryConfig"
-        bc["type : BCType<br/>value : Real<br/>flux : Real<br/>alpha, beta, gamma : Real"]
+    subgraph BC["BoundaryConfig"]
+        T["type    : BCType<br/>value   : Real<br/>flux    : Real<br/>alpha   : Real<br/>beta    : Real<br/>gamma   : Real"]
     end
-
-    XLo --> arr
-    XHi --> arr
-    YLo --> arr
-    YHi --> arr
-    ZLo --> arr
-    ZHi --> arr
-    arr --> bc
+    XLo --> F
+    XHi --> F
+    YLo --> F
+    YHi --> F
+    ZLo --> F
+    ZHi --> F
+    F --> T
 ```
 
-Each face is applied via a 2D kernel launch covering the face's surface. The kernel receives the face-specific BC parameters and applies Dirichlet, Neumann, Periodic, or Robin conditions.
+`AllBoundaryConfig` (in `SimulationConfig.hpp`) holds **both** a uniform
+`BoundaryConfig` (`phi_bc`, `u_bc`) and a `PerFaceBoundary`
+(`phi_faces`, `u_faces`); the boolean `per_face` selects which path
+`CudaSolver::apply_bc_per_face` takes (`CudaSolver.cu:478-482`).
 
-## Thread Safety Model
+Each face is launched as a 2D kernel covering its surface; the launch
+order is **Z, Y, X** so that periodic faces see the latest values
+(`BoundaryKernels.cu:200-208`). Corner / edge ownership is explicit
+(X owns full plane, Y excludes X-edges, Z excludes both X- and Y-edges
+— `BoundaryKernels.cu:44-52`).
 
-| Component | Synchronization | Access Pattern |
-|-----------|----------------|----------------|
-| `LRUCache` | `std::shared_mutex` | Shared reads, exclusive writes |
-| `ConcurrentMap` | 16 `std::shared_mutex` stripes | Distributed lock contention |
-| `SpatialHash` | None (build-then-query) | Single-threaded build, read-only queries |
-| `VTKWriter` | `std::mutex` + `condition_variable` | Producer-consumer queue |
-| `DeviceField` | None (single-stream) | One CUDA stream per solver |
-| `MultiGPUSolver` | Per-GPU streams, sync barriers | Parallel compute, synchronized halo exchange |
+---
 
-## Build System
+## 9. Thread Safety Model
+
+| Component        | Synchronisation                          | Access pattern                                |
+|------------------|-------------------------------------------|------------------------------------------------|
+| `LRUCache`       | `std::shared_mutex`                       | Shared reads, exclusive writes                 |
+| `ConcurrentMap`  | 16 striped `std::shared_mutex` shards     | Distributed contention                         |
+| `SpatialHash`    | None (build-then-query)                   | Single-threaded build, read-only after         |
+| `VTKWriter`      | `std::mutex` + `std::condition_variable`  | Producer-consumer with bounded queue           |
+| `DeviceField`    | None (single CUDA stream per solver)      | Stream ordering provides serialisation          |
+| `MultiGPUSolver` | Per-GPU streams + CUDA events              | Halo stream waits on compute event before peer copy |
+| Signal handling  | `std::atomic<bool> ac::g_shutdown_requested` | `sigaction` with `SA_RESTART`               |
+
+`g_shutdown_requested` is defined in `src/core/SimulationEngine.cu:14`
+inside `namespace ac`, declared `extern` in `SimulationEngine.hpp:19`,
+and signalled from `main.cpp:14-17` via a `sigaction`-installed handler.
+
+---
+
+## 10. Build System
 
 ```mermaid
 graph TB
-    subgraph "CMake Targets"
-        ac_logging["ac_logging (STATIC)"]
-        ac_core["ac_core (STATIC)"]
-        ac_cuda["ac_cuda (STATIC, CUDA)"]
-        ac_io["ac_io (STATIC)"]
-        ac_engine["ac_engine (STATIC)"]
-        exe["allen-cahn-cuda (EXE)"]
-        unit["unit_tests (EXE)"]
-        integ["integration_tests (EXE)"]
+    subgraph Targets["CMake targets"]
+        L["ac_logging (STATIC)"]
+        C["ac_core (STATIC)"]
+        Cu["ac_cuda (STATIC, CUDA)"]
+        I["ac_io (STATIC)"]
+        E["ac_engine (STATIC, CUDA)"]
+        X["allen-cahn-cuda (EXE)"]
+        U["unit_tests (EXE)"]
+        T["integration_tests (EXE)"]
+    end
+    subgraph External["External (FetchContent)"]
+        J["nlohmann_json"]
+        S["spdlog"]
+        G["GoogleTest"]
+    end
+    subgraph System["System (find_package)"]
+        V["VTK 9 (optional)"]
+        H["HDF5 (optional)"]
+        Cuda["CUDA Toolkit"]
     end
 
-    subgraph "External (FetchContent)"
-        json["nlohmann_json"]
-        spdlog["spdlog"]
-        gtest["GoogleTest"]
-    end
-
-    subgraph "System (find_package)"
-        vtk["VTK 9 (optional)"]
-        hdf5["HDF5 (optional)"]
-        cuda["CUDA Toolkit"]
-    end
-
-    ac_core --> ac_logging & json
-    ac_cuda --> ac_core & cuda
-    ac_io --> ac_core
-    ac_io -.->|optional| vtk & hdf5
-    ac_engine --> ac_core & ac_cuda & ac_io & ac_logging
-    exe --> ac_engine
-    unit --> gtest & ac_core & ac_cuda & ac_io
-    integ --> gtest & ac_engine
+    C --> L
+    C --> J
+    Cu --> C
+    Cu --> Cuda
+    I --> C
+    I -.optional.-> V
+    I -.optional.-> H
+    E --> C
+    E --> Cu
+    E --> I
+    E --> L
+    X --> E
+    U --> G
+    U --> E
+    T --> G
+    T --> E
 ```
+
+Top-level options (`CMakeLists.txt`):
+
+| Option           | Default   | Purpose                                         |
+|------------------|-----------|-------------------------------------------------|
+| `AC_BUILD_TESTS` | `ON`      | Build the `unit_tests` and `integration_tests` |
+| `AC_CUDA_FAST_MATH` | `OFF`  | Pass `--use_fast_math` to NVCC (Release only)   |
+
+Install rule: `install(TARGETS allen-cahn-cuda RUNTIME DESTINATION bin)`.
+
+CMake presets (see `CMakePresets.json`):
+
+- `release` — `Release` build into `build/release/`.
+- `debug` — `Debug` build with tests enabled into `build/debug/`.
+- `relwithdebinfo` — `RelWithDebInfo` for profiling.
+
+---
+
+## 11. CI/CD Pipeline
+
+`/.github/workflows/ci.yml` defines six jobs:
+
+| Job              | Runner          | What it does                                                              |
+|------------------|-----------------|---------------------------------------------------------------------------|
+| `format-check`   | `ubuntu-latest` | `clang-format-18 --dry-run --Werror` over `src/` and `tests/`             |
+| `clang-tidy`     | CUDA dev container | Generates compile_commands and runs `clang-tidy-18` (warnings non-blocking) |
+| `build-and-test` | self-hosted GPU | Matrix of Debug / Release × CUDA 12.6.0; full `ctest` run                 |
+| `build-cpu-only` | `ubuntu-latest` | Build-only sanity check (no GPU tests)                                    |
+| `docker-build`   | `ubuntu-latest` | Multi-target build of `dev`, `test`, `prod` Dockerfiles via Buildx        |
+| `k8s-validate`   | `ubuntu-latest` | `kustomize build` + `kubeconform` (offline, no API server required)       |
+| `release-docker` | `ubuntu-latest` | On `main` push only: build & push `ghcr.io/...` production image           |
+
+The `k8s-validate` job uses `kubeconform` because `kubectl apply
+--dry-run=client` always tries to contact the API server for resource
+discovery, which has no destination in CI.

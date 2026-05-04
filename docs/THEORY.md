@@ -220,7 +220,25 @@ A(∇φ) = (1 - 3ε)·[1 + (4ε/(1-3ε))·(φx⁴ + φy⁴ + φz⁴)/(φx² + φ
 **Special cases:**
 - `ε = 0` → `A = 1` (isotropic growth)
 - `ε → 1/3` → maximum anisotropy (faceted growth)
-- `|∇φ|² < 10⁻³⁰` → `A = 1 - 5ε/3` (regularized isotropic limit)
+- `|∇φ|² < 10⁻³⁰` → `A = 1 - 3ε/5` (spherical-average isotropic limit; see below)
+
+**Spherical-average derivation of the regularized fallback.** When
+`|∇φ| → 0`, no preferred crystal direction exists, so the natural value to
+return is the average of `A(n̂)` over the unit sphere. Using
+`⟨n̂_i⁴⟩ = 1/5` over the unit sphere in 3D, we get
+`⟨n̂x⁴ + n̂y⁴ + n̂z⁴⟩ = 3/5`, so
+
+```
+⟨A⟩_sphere = (1 − 3ε)·(1 + (4ε/(1−3ε))·(3/5))
+           = (1 − 3ε) + (12ε/5)
+           = 1 − 3ε/5
+```
+
+The code implements exactly this value at `Kernels.cuh:162`:
+
+```cpp
+return 1.0 - 3.0 * epsilon / 5.0;
+```
 
 ### 4.2 Anisotropy Derivative (dFunc)
 
@@ -262,30 +280,52 @@ graph TD
 
 ## 5. Nondimensionalization
 
-The physical parameters are nondimensionalized following Kim et al. (1999):
+The physical parameters are nondimensionalized following the
+Karma–Rappel (1998) thin-interface formulation, with the capillary length
+`d₀` as a free parameter:
 
 | Parameter | Formula | Description |
 |-----------|---------|-------------|
 | `W₀` | Set directly | Interface width |
-| `τ₀` | `τ₀_base · W₀² / D` | Relaxation time |
-| `λ` | `D / (0.6267 · W₀²)` | Coupling constant (thin-interface limit) |
-| `δ` | Set directly | Dimensionless undercooling |
-| `D` | Set directly | Thermal diffusivity |
-| `ε` | Set directly | Anisotropy strength, `ε ∈ [0, 1/3)` |
+| `d₀` | Set directly | Capillary length |
+| `D`  | Set directly | Thermal diffusivity |
+| `δ`  | Set directly | Dimensionless undercooling |
+| `ε`  | Set directly | Anisotropy strength, `ε ∈ [0, 1/3)` |
+| `β₀` | Set directly (default 0) | Kinetic coefficient |
+| `a₁` | `1.25 / √2 ≈ 0.8839` | Asymptotic constant |
+| `a₂` | `0.64`  | Asymptotic constant |
+| `λ`  | `W₀ · a₁ / d₀` | Coupling strength |
+| `τ₀` | `(W₀³ · a₁ · a₂) / (d₀ · D) + (W₀² · β₀) / d₀` | Relaxation time |
 
-The **thin-interface limit** (Karma-Rappel 1998) gives the coupling constant:
+These derived quantities are computed by `SimulationConfig::lambda()` and
+`SimulationConfig::tau0()` (`src/core/SimulationConfig.hpp:35-41`):
+
+```cpp
+Real a1 = 1.25 / std::sqrt(2.0);
+Real a2 = 0.64;
+Real lambda() const { return W0 * a1 / d0; }
+Real tau0()   const {
+    return (W0*W0*W0 * a1 * a2) / (d0 * D)
+         + (W0*W0 * beta0) / d0;
+}
+```
+
+The first term of `τ₀` is the diffusive contribution; the second adds the
+kinetic-undercooling correction, active when `β₀ ≠ 0`.
+
+### 5.1 Initial conditions
+
+The seed is initialised as a smooth `tanh` profile centred at the domain
+midpoint (`SimulationEngine.cu:73-98`):
 
 ```
-λ = D / (a₁ · W₀²)
+φ(x) = − tanh( (r − r₀) / (√2 · W₀) )      with r = ||x − x_c||
+u(x) = − δ                                  everywhere (uniform undercooling)
 ```
 
-where `a₁ = 0.6267` is determined by asymptotic analysis to ensure that the
-diffuse-interface model converges to the sharp-interface limit as `W₀ → 0`.
-
-The initial condition uses a spherical seed:
-- `φ(r) = +1` for `r < r₀` (solid seed)
-- `φ(r) = -1` for `r > r₀` (liquid)
-- `u(r) = 0` inside seed, `u(r) = -δ(1 - e^{-(r-r₀)})` outside
+This yields `φ ≈ +1` (solid) inside the seed and `φ ≈ −1` (liquid) outside,
+with the equilibrium-width interface profile that matches the Karma–Rappel
+free-energy minimiser.
 
 ---
 
@@ -334,29 +374,42 @@ graph TD
 | Face          | 6     | `(±1,0,0)`, `(0,±1,0)`, `(0,0,±1)` | `+1/h²` |
 | Center        | 1     | `(0,0,0)` | `-6/h²` |
 
-### 6.2 Isotropic 27-Point Laplacian (Kumar 2004)
+### 6.2 Isotropic 27-Point Laplacian (Patra–Karttunen)
 
-The 27-point stencil achieves **4th-order isotropy** by including edge and
-corner neighbors with carefully chosen weights:
+The 27-point stencil reduces leading-order anisotropic discretisation
+error by including edge and corner neighbours with the Patra–Karttunen
+weights:
 
 ```
-∇²φ ≈ (4·Σ_face + 2·Σ_edge + 1·Σ_corner - 56·φ_center) / (26·h²)
+∇²φ ≈ (14·Σ_face + 3·Σ_edge + 1·Σ_corner − 128·φ_center) / (30·h²)
 ```
 
 where:
-- `Σ_face` = sum over 6 face neighbors
-- `Σ_edge` = sum over 12 edge neighbors
-- `Σ_corner` = sum over 8 corner neighbors
+- `Σ_face`   = sum over 6 face neighbours
+- `Σ_edge`   = sum over 12 edge neighbours
+- `Σ_corner` = sum over 8 corner neighbours
 
-**Weight verification:** `6×4 + 12×2 + 8×1 = 24 + 24 + 8 = 56 = |center weight|` ✓
+**Weight verification:** `6×14 + 12×3 + 8×1 = 84 + 36 + 8 = 128 = |center weight|` ✓ (consistent discrete Laplacian).
+
+These exact weights are implemented at `Kernels.cuh:137-138`:
+
+```cpp
+// Patra-Karttunen weights (2nd-order accurate, improved isotropy):
+// face=14, edge=3, corner=1, center=-(6*14+12*3+8*1)=-128, divisor 30*h^2
+return (14.0 * face + 3.0 * edge + 1.0 * corner - 128.0 * center) / (30.0 * h * h);
+```
+
+The configuration validator refuses this stencil unless `dx = dy = dz`
+(`SimulationConfig.cpp:248-253`), since the 27-point isotropy assumes
+cubic spacing.
 
 ```mermaid
 graph TD
     subgraph "27-Point Isotropic Stencil Weights"
-        F["6 Face Neighbors<br/>weight = 4<br/>distance = h"]
-        Ed["12 Edge Neighbors<br/>weight = 2<br/>distance = h√2"]
+        F["6 Face Neighbors<br/>weight = 14<br/>distance = h"]
+        Ed["12 Edge Neighbors<br/>weight = 3<br/>distance = h√2"]
         Co["8 Corner Neighbors<br/>weight = 1<br/>distance = h√3"]
-        Ce["Center<br/>weight = -56"]
+        Ce["Center<br/>weight = -128"]
         F --> Ce
         Ed --> Ce
         Co --> Ce
@@ -932,8 +985,15 @@ graph TD
    computation of dendritic microstructures using adaptive mesh refinement."
    *Physical Review Letters*, 80(15), 3308–3311.
 
-5. **Kumar, S.** (2004). "Isotropic finite-differences." *Journal of
-   Computational Physics*, 201(1), 109–118.
+5. **Patra, M. and Karttunen, M.** (2006). "Stencils with isotropic
+   discretization error for differential operators." *Numerical Methods
+   for Partial Differential Equations*, 22(4), 936–953. — Source for the
+   27-point Laplacian weights `(14·face + 3·edge + 1·corner − 128·center)/(30·h²)`
+   used in `src/cuda/Kernels.cuh::laplacian_27pt`.
+
+6. **Plapp, M. and Karma, A.** (2003). "Multiscale finite-difference–
+   diffusion–Monte-Carlo method for simulating dendritic solidification."
+   *Journal of Computational Physics*, 165(2), 592–619.
 
 6. **Kobayashi, R.** (1993). "Modeling and numerical simulations of dendritic
    crystal growth." *Physica D: Nonlinear Phenomena*, 63(3-4), 410–423.
