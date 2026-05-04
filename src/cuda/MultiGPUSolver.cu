@@ -73,11 +73,11 @@ MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config) : config_(config)
         neumann_bc.type = BCType::Neumann;
         neumann_bc.flux = 0.0;
         if (g > 0) {
-            sub_config.boundary.phi_faces.faces[0] = neumann_bc;  // x_lo
+            sub_config.boundary.phi_faces.faces[0] = neumann_bc; // x_lo
             sub_config.boundary.u_faces.faces[0] = neumann_bc;
         }
         if (g < num_gpus - 1) {
-            sub_config.boundary.phi_faces.faces[1] = neumann_bc;  // x_hi
+            sub_config.boundary.phi_faces.faces[1] = neumann_bc; // x_hi
             sub_config.boundary.u_faces.faces[1] = neumann_bc;
         }
         sub_config.boundary.per_face = true;

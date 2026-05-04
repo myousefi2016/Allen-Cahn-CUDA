@@ -179,8 +179,8 @@ void launch_max_abs_diff(const double* a, const double* b, double* d_result, std
     CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_max_abs_reduction(const double* field, double* result, std::size_t N,
-                              double* scratch, int scratch_size, cudaStream_t stream) {
+void launch_max_abs_reduction(const double* field, double* result, std::size_t N, double* scratch,
+                              int scratch_size, cudaStream_t stream) {
     constexpr int BLOCK_SIZE = 256;
     int num_blocks = static_cast<int>((N + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2));
     num_blocks = std::min(std::max(num_blocks, 1), scratch_size);

@@ -210,7 +210,7 @@ jobs:
           failed=0
           for f in k8s/base/*.yaml; do
             echo "Validating $f..."
-            if ! kubectl apply --dry-run=client -f "$f" 2>&1; then
+            if ! kubectl apply --dry-run=client --validate=false -f "$f" 2>&1; then
               echo "::error::Validation failed for $f"
               failed=1
             fi

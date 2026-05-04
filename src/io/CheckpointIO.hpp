@@ -24,7 +24,7 @@ public:
         double dt;
         double time;
         int step;
-        int num_fields; // Always 2 (phi, u)
+        int num_fields;          // Always 2 (phi, u)
         uint32_t data_crc32 = 0; // CRC32 of field data (0 = not computed, backward compat)
         char reserved[52] = {};
     };

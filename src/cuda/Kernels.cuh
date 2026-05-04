@@ -224,8 +224,8 @@ void launch_max_abs_diff(const double* a, const double* b, double* d_result, std
                          cudaStream_t stream = nullptr);
 
 /// Overloads with pre-allocated scratch buffer (avoids per-call allocation).
-void launch_max_abs_reduction(const double* field, double* result, std::size_t N,
-                              double* scratch, int scratch_size, cudaStream_t stream);
+void launch_max_abs_reduction(const double* field, double* result, std::size_t N, double* scratch,
+                              int scratch_size, cudaStream_t stream);
 void launch_max_abs_diff(const double* a, const double* b, double* d_result, std::size_t N,
                          double* scratch, int scratch_size, cudaStream_t stream);
 
