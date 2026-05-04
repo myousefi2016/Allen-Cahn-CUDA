@@ -9,14 +9,14 @@
 #include <atomic>
 #include <memory>
 
-/// Global flag set by SIGINT/SIGTERM handler to request graceful shutdown.
-extern std::atomic<bool> g_shutdown_requested;
-
 namespace ac::cuda {
 class ISolver;
 }
 
 namespace ac {
+
+/// Global flag set by SIGINT/SIGTERM handler to request graceful shutdown.
+extern std::atomic<bool> g_shutdown_requested;
 
 /// Top-level simulation orchestrator.
 /// Owns config, grid, solver, I/O writers, and checkpoint manager.

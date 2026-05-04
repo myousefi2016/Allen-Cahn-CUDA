@@ -13,6 +13,8 @@
 
 namespace ac {
 
+std::atomic<bool> g_shutdown_requested{false};
+
 std::unique_ptr<cuda::ISolver> SimulationEngine::create_solver() {
     if (config_.gpu.multi_gpu && config_.gpu.device_ids.size() >= 2) {
         spdlog::info("Creating MultiGPUSolver with {} GPUs", config_.gpu.device_ids.size());
@@ -104,11 +106,11 @@ void SimulationEngine::initialize_from_checkpoint() {
 
     if (data.grid.Nx() != grid_.Nx() || data.grid.Ny() != grid_.Ny() ||
         data.grid.Nz() != grid_.Nz()) {
-        throw std::runtime_error(
-            "Checkpoint grid dimensions (" + std::to_string(data.grid.Nx()) + "x" +
-            std::to_string(data.grid.Ny()) + "x" + std::to_string(data.grid.Nz()) +
-            ") do not match config (" + std::to_string(grid_.Nx()) + "x" +
-            std::to_string(grid_.Ny()) + "x" + std::to_string(grid_.Nz()) + ")");
+        throw std::runtime_error("Checkpoint grid dimensions (" + std::to_string(data.grid.Nx()) +
+                                 "x" + std::to_string(data.grid.Ny()) + "x" +
+                                 std::to_string(data.grid.Nz()) + ") do not match config (" +
+                                 std::to_string(grid_.Nx()) + "x" + std::to_string(grid_.Ny()) +
+                                 "x" + std::to_string(grid_.Nz()) + ")");
     }
 
     phi_host_ = std::move(data.phi);

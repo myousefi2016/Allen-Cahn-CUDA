@@ -11,11 +11,9 @@
 #include <spdlog/spdlog.h>
 #include <string>
 
-std::atomic<bool> g_shutdown_requested{false};
-
 static void signal_handler(int signum) {
     (void)signum;
-    g_shutdown_requested.store(true, std::memory_order_relaxed);
+    ac::g_shutdown_requested.store(true, std::memory_order_relaxed);
 }
 
 static void print_usage(const char* prog) {
@@ -60,7 +58,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        struct sigaction sa{};
+        struct sigaction sa {};
         sa.sa_handler = signal_handler;
         sigemptyset(&sa.sa_mask);
         sa.sa_flags = SA_RESTART;

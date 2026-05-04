@@ -310,7 +310,8 @@ void SimulationConfig::validate() const {
 
     // Adaptive stepping
     if (time.adaptive && time.adaptive_tolerance <= 0.0) {
-        throw std::invalid_argument("adaptive_tolerance must be positive when adaptive stepping is enabled");
+        throw std::invalid_argument(
+            "adaptive_tolerance must be positive when adaptive stepping is enabled");
     }
 
     // Robin BC validation
@@ -324,7 +325,7 @@ void SimulationConfig::validate() const {
     };
     validate_bc(boundary.phi_bc, "phi");
     validate_bc(boundary.u_bc, "u");
-    for (int i = 0; i < 6; ++i) {
+    for (std::size_t i = 0; i < 6; ++i) {
         validate_bc(boundary.phi_faces.faces[i], "phi face " + std::to_string(i));
         validate_bc(boundary.u_faces.faces[i], "u face " + std::to_string(i));
     }

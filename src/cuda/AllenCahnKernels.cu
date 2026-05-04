@@ -156,11 +156,11 @@ __global__ void __launch_bounds__(256)
         int ym = max(y - 1, 0), yp = min(y + 1, p.Ny - 1);
         int zm = max(z - 1, 0), zp = min(z + 1, p.Nz - 1);
         double bphix = (phi[idx3d(xp, y, z, p.Ny, p.Nz)] - phi[idx3d(xm, y, z, p.Ny, p.Nz)]) /
-                        (max(xp - xm, 1) * p.dx);
+                       (max(xp - xm, 1) * p.dx);
         double bphiy = (phi[idx3d(x, yp, z, p.Ny, p.Nz)] - phi[idx3d(x, ym, z, p.Ny, p.Nz)]) /
-                        (max(yp - ym, 1) * p.dy);
+                       (max(yp - ym, 1) * p.dy);
         double bphiz = (phi[idx3d(x, y, zp, p.Ny, p.Nz)] - phi[idx3d(x, y, zm, p.Ny, p.Nz)]) /
-                        (max(zp - zm, 1) * p.dz);
+                       (max(zp - zm, 1) * p.dz);
         double ban = compute_An(bphix, bphiy, bphiz, p.epsilon);
         double bwn = p.W0 * ban;
         double bwn2 = bwn * bwn;
