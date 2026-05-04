@@ -37,7 +37,7 @@ CLANG_TIDY         ?= clang-tidy
 CLANG_FORMAT       ?= clang-format
 COMPILE_COMMANDS   ?= $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG)/compile_commands.json
 
-# Native CUDA docker runner (Lightning.ai / any host with docker + nvidia-container-toolkit)
+# Native CUDA docker runner (any host with docker + nvidia-container-toolkit)
 CUDA_BUILD_DIR     ?= build
 CUDA_ARCH          ?= 75
 NATIVE_BIN         ?= $(CUDA_BUILD_DIR)/src/allen-cahn-cuda
@@ -204,7 +204,7 @@ run-vtk: CONFIG=config/run_vtk.json
 run-vtk: run ## Run custom VTK config (see `make cuda-run-vtk` to autogenerate)
 
 # ============================================================================
-# CUDA Docker Targets (Lightning.ai / bare-metal host + nvidia-container-toolkit)
+# CUDA Docker Targets (bare-metal host + nvidia-container-toolkit)
 # All cuda-* targets reuse a single prebuilt dev image ($(CUDA_DEV_IMAGE))
 # built once by `make cuda-image`. No host cmake/nvcc required.
 # ============================================================================

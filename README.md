@@ -199,7 +199,7 @@ Native (after `make build`):
 ./build/release/src/allen-cahn-cuda config/benchmark_small.json
 ```
 
-Or use the Makefile — it wraps build, test, and run for both the native CMake preset workflow and the Lightning.ai / bare-host CUDA docker workflow. See `make help` for the full list.
+Or use the Makefile — it wraps build, test, and run for both the native CMake preset workflow and the containerized CUDA workflow. See `make help` for the full list.
 
 ```bash
 # Native (host has cmake + nvcc)
@@ -207,7 +207,7 @@ make build                       # Release build via CMake preset
 make test                        # Build debug + run ctest
 make run CONFIG=config/benchmark_small.json
 
-# Lightning.ai / any docker host with nvidia-container-toolkit
+# Any docker host with nvidia-container-toolkit
 make cuda-image                  # one-time: build prebuilt dev image (~1-2 min)
 make cuda-build                  # Configure + build inside the prebuilt image
 make cuda-test                   # Full unit + integration suite
@@ -493,7 +493,7 @@ The suite is split into two ctest executables — `unit_tests` and `integration_
 ```bash
 git clone https://github.com/myousefi2016/Allen-Cahn-CUDA.git
 cd Allen-Cahn-CUDA
-git checkout claude/analyze-code-purpose-Gw8EE
+git checkout feature/production-cuda-rewrite
 
 docker run --rm --gpus all -v $PWD:/work -w /work \
   nvidia/cuda:12.6.0-devel-ubuntu24.04 bash -c '

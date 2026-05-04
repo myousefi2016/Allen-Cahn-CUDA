@@ -19,7 +19,7 @@ endif()
 
 # ── nlohmann/json (header-only) ────────────────────────────────────────────
 # NOTE: use URL (tarball) rather than GIT_REPOSITORY because some container
-# filesystems (Lightning.ai FUSE in particular) intermittently fail on git's
+# filesystems (FUSE-backed in particular) intermittently fail on git's
 # temp-pack file pattern with "could not open tmp_pack_XXX for reading".
 find_package(nlohmann_json 3.11 QUIET)
 if(NOT nlohmann_json_FOUND)

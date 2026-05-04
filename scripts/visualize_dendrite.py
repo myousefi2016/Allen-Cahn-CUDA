@@ -4,7 +4,7 @@
 # ----------------------------------------------------------------------------
 # Reads vtkStructuredGrid (.vts) snapshots produced by the simulation and
 # renders publication-quality PNG frames + an optional MP4. Designed for
-# headless servers (Lightning.ai, CI, Docker) via PyVista + Xvfb.
+# headless servers (CI, Docker, etc.) via PyVista + Xvfb.
 #
 # Layouts
 #   single   one large 3D view: iso surface (phi=0) + opaque cutaway slices
