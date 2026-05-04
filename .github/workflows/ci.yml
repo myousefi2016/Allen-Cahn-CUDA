@@ -1,0 +1,277 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master, "feature/**"]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  CUDA_VERSION: "12.6.0"
+  CMAKE_GENERATOR: Ninja
+
+jobs:
+  # ── Format Check ────────────────────────────────────────────────────────────
+  format-check:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+
+      - name: Check formatting
+        run: |
+          find src tests -type f \( -name '*.cpp' -o -name '*.cu' -o -name '*.cuh' -o -name '*.hpp' -o -name '*.h' \) \
+            | xargs clang-format-18 --dry-run --Werror 2>&1 || {
+              echo "::error::Code formatting check failed. Run 'make format' locally to fix."
+              exit 1
+            }
+
+  # ── Clang-Tidy ──────────────────────────────────────────────────────────────
+  clang-tidy:
+    name: Clang-Tidy
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.6.0-devel-ubuntu24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc-13 g++-13 clang-tidy-18 \
+            libvtk9-dev libhdf5-dev \
+            git ca-certificates
+          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+          update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+
+      - name: Configure CMake (generate compile_commands.json)
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="70;80;90" \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DAC_BUILD_TESTS=ON
+
+      - name: Run clang-tidy on C++ sources
+        run: |
+          find src -type f -name '*.cpp' -o -name '*.hpp' \
+            | xargs clang-tidy -p build --warnings-as-errors='' 2>&1 \
+            | tee clang-tidy-output.txt
+          if grep -q "warning:" clang-tidy-output.txt; then
+            echo "::warning::clang-tidy found warnings (non-blocking)"
+          fi
+
+  # ── Build & Test (CUDA) ─────────────────────────────────────────────────────
+  build-and-test:
+    name: Build & Test (CUDA ${{ matrix.cuda }})
+    runs-on: [self-hosted, gpu, linux]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda: ["12.6.0"]
+        build_type: [Debug, Release]
+    container:
+      image: nvidia/cuda:${{ matrix.cuda }}-devel-ubuntu24.04
+      options: --gpus all
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc-13 g++-13 \
+            libvtk9-dev libhdf5-dev \
+            git ca-certificates
+          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CUDA_ARCHITECTURES=native \
+            -DAC_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Run Unit Tests
+        run: |
+          cd build
+          ctest --output-on-failure --parallel $(nproc) -R "unit_tests" --timeout 300
+
+      - name: Run Integration Tests
+        run: |
+          cd build
+          ctest --output-on-failure --parallel $(nproc) -R "integration_tests" --timeout 600
+
+  # ── Build & Test (CPU-only, no GPU) ─────────────────────────────────────────
+  build-cpu-only:
+    name: Build (CPU-only, no GPU tests)
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.6.0-devel-ubuntu24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc-13 g++-13 \
+            libvtk9-dev libhdf5-dev \
+            git ca-certificates
+          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="70;80;90" \
+            -DAC_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            build/src/allen-cahn-cuda
+            build/tests/
+          retention-days: 7
+
+  # ── Docker Build ────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [dev, test, prod]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (${{ matrix.target }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.target }}
+          push: false
+          tags: allen-cahn-cuda:${{ matrix.target }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+
+  # ── Kubernetes Manifests Validation ─────────────────────────────────────────
+  k8s-validate:
+    name: Validate Kubernetes Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Install kubeconform (offline schema validator)
+        run: |
+          curl -L -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf kubeconform.tar.gz kubeconform
+          chmod +x kubeconform
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate base manifests (kubeconform, offline)
+        run: |
+          # Render the base kustomization, then validate all rendered manifests
+          # against the bundled OpenAPI schemas. Skips kustomization.yaml (not a
+          # K8s resource) and skips CRDs we don't ship.
+          kubectl kustomize k8s/base | \
+            kubeconform -strict -summary -ignore-missing-schemas \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+
+      - name: Validate dev overlay (render + kubeconform)
+        run: |
+          kubectl kustomize k8s/overlays/dev | \
+            kubeconform -strict -summary -ignore-missing-schemas
+
+      - name: Validate prod overlay (render + kubeconform)
+        run: |
+          kubectl kustomize k8s/overlays/prod | \
+            kubeconform -strict -summary -ignore-missing-schemas
+
+  # ── Release Docker Images ───────────────────────────────────────────────────
+  release-docker:
+    name: Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [build-and-test, build-cpu-only, docker-build, format-check, k8s-validate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.prod
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=prod
+          cache-to: type=gha,mode=max,scope=prod

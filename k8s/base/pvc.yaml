@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: allen-cahn-output
+  labels:
+    app.kubernetes.io/name: allen-cahn-cuda
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: allen-cahn-cuda
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi

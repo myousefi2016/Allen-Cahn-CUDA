@@ -1,0 +1,65 @@
+{
+    "_comment_physics": "Long-run dendrite config — moderate undercooling (delta=0.7) for slower growth allowing arm development before saturation. ε=0.15 is strong cubic anisotropy with 4.1x stability margin against Heun CFL on 27pt stencil at dt=0.005.",
+    "physics": {
+        "delta": 0.7,
+        "epsilon": 0.15,
+        "W0": 1.0,
+        "beta0": 0.0,
+        "D": 2.0,
+        "d0": 0.5
+    },
+    "_comment_grid": "192^3 ≈ 7M points, ~108 MB checkpoint, ~280 MB per .vts. Largest grid that fits 5-hour T4 budget at acceptable disk usage.",
+    "grid": {
+        "Nx": 192,
+        "Ny": 192,
+        "Nz": 192,
+        "dx": 0.4,
+        "dy": 0.4,
+        "dz": 0.4
+    },
+    "_comment_time": "max_steps=60000 is the upper bound; the engine will auto-exit cleanly when the dendrite reaches the boundary (typically step 4000-7000 on 192^3) — see exit_on_saturation. AllenCahnKernels.cu:52 returns 0 force at boundary cells, so once phi > saturation_threshold on a wall slab the integrator destabilises within ~100 steps. The guard catches this and writes a final checkpoint + VTK frame.",
+    "time": {
+        "dt": 0.005,
+        "dt_min": 1e-6,
+        "dt_max": 0.05,
+        "max_steps": 60000,
+        "scheme": "heun",
+        "adaptive": false,
+        "cfl_safety": 0.9,
+        "exit_on_saturation": true,
+        "saturation_threshold": -0.5,
+        "saturation_check_freq": 100
+    },
+    "stencil": "27pt",
+    "_comment_output": "VTK every 500 steps. With auto-exit at saturation around step 4000-7000, that gives 8-15 frames at ~280 MB each = ~2-4 GB on disk — enough for a smooth 1 fps -> 12 fps stitched animation.",
+    "output": {
+        "frequency": 500,
+        "output_dir": "./out",
+        "format": "vts",
+        "async_io": true
+    },
+    "_comment_checkpoint": "Checkpoint every 3000 steps (= ~4 minutes of compute lost on crash), keep_last=3 (= ~324 MB on disk). The resume target picks the latest automatically.",
+    "checkpoint": {
+        "frequency": 3000,
+        "checkpoint_dir": "./checkpoints",
+        "keep_last": 3
+    },
+    "gpu": {
+        "device_ids": [0],
+        "block_size": 256,
+        "multi_gpu": false
+    },
+    "initial": {
+        "seed_radius": 6.0
+    },
+    "boundary": {
+        "phi": {
+            "type": "neumann",
+            "flux": 0.0
+        },
+        "u": {
+            "type": "dirichlet",
+            "value": -0.7
+        }
+    }
+}

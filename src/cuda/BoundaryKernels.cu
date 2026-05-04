@@ -1,0 +1,222 @@
+#include "cuda/CudaUtils.cuh"
+#include "cuda/Kernels.cuh"
+
+namespace ac::cuda {
+
+/// Apply boundary conditions on a single face of the 3D domain.
+/// face_axis: 0=X, 1=Y, 2=Z
+/// face_side: 0=lo, 1=hi
+__global__ void __launch_bounds__(256)
+    apply_bc_face_kernel(double* __restrict__ field, int Nx, int Ny, int Nz, double dx, double dy,
+                         double dz, int face_axis, int face_side,
+                         int bc_type, // 0=Dirichlet, 1=Neumann, 2=Periodic, 3=Robin
+                         double bc_value, double bc_flux, double bc_alpha, double bc_beta,
+                         double bc_gamma) {
+    // This kernel is launched as a 2D grid covering two of the three axes.
+    int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    int j = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
+
+    // Determine which axes i,j correspond to and the fixed coordinate
+    int dim1_max, dim2_max;
+    if (face_axis == 0) {
+        dim1_max = Ny;
+        dim2_max = Nz;
+    } // YZ face
+    else if (face_axis == 1) {
+        dim1_max = Nx;
+        dim2_max = Nz;
+    } // XZ face
+    else {
+        dim1_max = Nx;
+        dim2_max = Ny;
+    } // XY face
+
+    if (i >= dim1_max || j >= dim2_max)
+        return;
+
+    // Ownership convention (matches Z,Y,X application order in
+    // launch_boundary_conditions): X faces own all of their plane;
+    // Y faces own their plane minus cells lying on the X faces;
+    // Z faces own their plane minus cells lying on the X or Y faces.
+    // X is applied last and so reads neighbour values that already
+    // include the contributions from Y and Z (needed so periodic BCs
+    // propagate consistently into corners).
+    if (face_axis == 1) {
+        if (i == 0 || i == Nx - 1)
+            return;
+    } else if (face_axis == 2) {
+        if (i == 0 || i == Nx - 1)
+            return;
+        if (j == 0 || j == Ny - 1)
+            return;
+    }
+
+    // Compute 3D indices
+    int x, y, z;
+    int fixed_val = (face_side == 0) ? 0
+                                     : ((face_axis == 0)   ? Nx - 1
+                                        : (face_axis == 1) ? Ny - 1
+                                                           : Nz - 1);
+
+    if (face_axis == 0) {
+        x = fixed_val;
+        y = i;
+        z = j;
+    } else if (face_axis == 1) {
+        x = i;
+        y = fixed_val;
+        z = j;
+    } else {
+        x = i;
+        y = j;
+        z = fixed_val;
+    }
+
+    int c = idx3d(x, y, z, Ny, Nz);
+
+    switch (bc_type) {
+    case 0: // Dirichlet
+        field[c] = bc_value;
+        break;
+    case 1: { // Neumann: du/dn_outward = bc_flux
+        int nx, ny, nz;
+        double ds;
+        if (face_axis == 0) {
+            nx = (face_side == 0) ? 1 : Nx - 2;
+            ny = y;
+            nz = z;
+            ds = dx;
+        } else if (face_axis == 1) {
+            nx = x;
+            ny = (face_side == 0) ? 1 : Ny - 2;
+            nz = z;
+            ds = dy;
+        } else {
+            nx = x;
+            ny = y;
+            nz = (face_side == 0) ? 1 : Nz - 2;
+            ds = dz;
+        }
+        // du/dn_outward = (u_bnd - u_inner)/ds for both lo and hi faces.
+        // Derivation: at lo-face (x=0), outward normal = -x̂, so
+        //   du/dn = -∂u/∂x ≈ -(u[1]-u[0])/ds = (u[0]-u[1])/ds.
+        // At hi-face (x=N-1), outward normal = +x̂, so
+        //   du/dn = ∂u/∂x ≈ (u[N-1]-u[N-2])/ds.
+        // Both reduce to (u_bnd - u_inner)/ds.
+        field[c] = field[idx3d(nx, ny, nz, Ny, Nz)] + bc_flux * ds;
+        break;
+    }
+    case 2: { // Periodic
+        int px, py, pz;
+        if (face_axis == 0) {
+            px = (face_side == 0) ? Nx - 2 : 1;
+            py = y;
+            pz = z;
+        } else if (face_axis == 1) {
+            px = x;
+            py = (face_side == 0) ? Ny - 2 : 1;
+            pz = z;
+        } else {
+            px = x;
+            py = y;
+            pz = (face_side == 0) ? Nz - 2 : 1;
+        }
+        field[c] = field[idx3d(px, py, pz, Ny, Nz)];
+        break;
+    }
+    case 3: { // Robin: alpha*u + beta*du/dn = gamma
+        int nx, ny, nz;
+        double ds;
+        if (face_axis == 0) {
+            nx = (face_side == 0) ? 1 : Nx - 2;
+            ny = y;
+            nz = z;
+            ds = dx;
+        } else if (face_axis == 1) {
+            nx = x;
+            ny = (face_side == 0) ? 1 : Ny - 2;
+            nz = z;
+            ds = dy;
+        } else {
+            nx = x;
+            ny = y;
+            nz = (face_side == 0) ? 1 : Nz - 2;
+            ds = dz;
+        }
+        double u_inner = field[idx3d(nx, ny, nz, Ny, Nz)];
+        // alpha*u_bnd + beta*(u_bnd - u_inner)/ds = gamma
+        // (see Neumann case for the sign-free du/dn derivation)
+        double denom = bc_alpha + bc_beta / ds;
+        if (fabs(denom) > 1e-30) {
+            field[c] = (bc_gamma + bc_beta * u_inner / ds) / denom;
+        } else {
+            field[c] = u_inner;
+        }
+        break;
+    }
+    default:
+        field[c] = bc_value;
+        break;
+    }
+}
+
+// ── Launch wrapper ─────────────────────────────────────────────────────────
+
+static void launch_bc_face(double* field, const KernelParams& params, int axis, int side,
+                           const BoundaryConfig& bc, cudaStream_t stream) {
+    int dim1, dim2;
+    if (axis == 0) {
+        dim1 = params.Ny;
+        dim2 = params.Nz;
+    } else if (axis == 1) {
+        dim1 = params.Nx;
+        dim2 = params.Nz;
+    } else {
+        dim1 = params.Nx;
+        dim2 = params.Ny;
+    }
+
+    dim3 block(16, 16);
+    dim3 grid((static_cast<unsigned>(dim1) + block.x - 1) / block.x,
+              (static_cast<unsigned>(dim2) + block.y - 1) / block.y);
+
+    apply_bc_face_kernel<<<grid, block, 0, stream>>>(
+        field, params.Nx, params.Ny, params.Nz, params.dx, params.dy, params.dz, axis, side,
+        static_cast<int>(bc.type), bc.value, bc.flux, bc.alpha, bc.beta, bc.gamma);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_boundary_conditions(double* field, const KernelParams& params, BCType bc_type,
+                                double bc_value, double bc_flux, double bc_alpha, double bc_beta,
+                                double bc_gamma, cudaStream_t stream) {
+    BoundaryConfig bc;
+    bc.type = bc_type;
+    bc.value = bc_value;
+    bc.flux = bc_flux;
+    bc.alpha = bc_alpha;
+    bc.beta = bc_beta;
+    bc.gamma = bc_gamma;
+
+    // Apply Z, then Y, then X. X is applied last so its read of the
+    // neighbouring interior cell already reflects the Y/Z updates,
+    // letting periodic BCs propagate cleanly into shared corners.
+    for (int axis = 2; axis >= 0; --axis) {
+        for (int side = 0; side < 2; ++side) {
+            launch_bc_face(field, params, axis, side, bc, stream);
+        }
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_boundary_conditions_per_face(double* field, const KernelParams& params,
+                                         const PerFaceBoundary& face_bcs, cudaStream_t stream) {
+    for (int axis = 2; axis >= 0; --axis) {
+        for (int side = 0; side < 2; ++side) {
+            const auto& bc = face_bcs.get(axis, side);
+            launch_bc_face(field, params, axis, side, bc, stream);
+        }
+    }
+    CUDA_CHECK(cudaGetLastError());
+}
+
+} // namespace ac::cuda

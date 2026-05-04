@@ -1,0 +1,93 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: allen-cahn-simulation
+  labels:
+    app.kubernetes.io/name: allen-cahn-cuda
+    app.kubernetes.io/component: simulation
+    app.kubernetes.io/part-of: allen-cahn-cuda
+  annotations:
+    description: "GPU-accelerated Allen-Cahn phase-field simulation"
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 86400  # 24 hours
+  ttlSecondsAfterFinished: 259200  # 3 days
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: allen-cahn-cuda
+        app.kubernetes.io/component: simulation
+        app.kubernetes.io/part-of: allen-cahn-cuda
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 300
+      serviceAccountName: allen-cahn-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: cuda-driver-check
+          image: nvidia/cuda:12.6.0-base-ubuntu24.04
+          command: ["nvidia-smi"]
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: allen-cahn-cuda
+          image: allen-cahn-cuda:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "/config/simulation.json"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /config
+              readOnly: true
+            - name: output-volume
+              mountPath: /data/output
+            - name: tmp-volume
+              mountPath: /tmp
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+      volumes:
+        - name: config-volume
+          configMap:
+            name: allen-cahn-config
+        - name: output-volume
+          persistentVolumeClaim:
+            claimName: allen-cahn-output
+        - name: tmp-volume
+          emptyDir: {}

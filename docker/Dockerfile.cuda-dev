@@ -1,0 +1,68 @@
+# ============================================================================
+# Allen-Cahn-CUDA — lightweight dev image for the `make cuda-*` targets.
+#
+# Purpose: bake the apt packages needed to build/test/run/visualize the project
+# into a single image so that each `make cuda-build` / `cuda-test` / `cuda-run`
+# / `cuda-visualize` invocation can skip the ~60s apt-get install step.
+#
+# Build once with `make cuda-image`, then all cuda-* targets reuse it.
+# ============================================================================
+
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PYVISTA_OFF_SCREEN=true \
+    DISPLAY=:99
+
+# ---- Build toolchain + runtime libs ----------------------------------------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cmake \
+        ninja-build \
+        gcc-13 \
+        g++-13 \
+        git \
+        pkg-config \
+        libvtk9-dev \
+        libhdf5-dev \
+        ca-certificates \
+        # ---- Python + headless OpenGL for visualization ------------------
+        python3 \
+        python3-pip \
+        python3-dev \
+        xvfb \
+        libgl1 \
+        libglu1-mesa \
+        libxrender1 \
+        libxext6 \
+        libsm6 \
+        libice6 \
+        libxt6 \
+        libfontconfig1 \
+        libglx-mesa0 \
+        libosmesa6 \
+        ffmpeg && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---- Python visualization stack --------------------------------------------
+# Pinned to known-good versions; PyVista 0.44 is the first release that works
+# cleanly with VTK 9.3+ and supports start_xvfb() on Ubuntu 24.04. Pillow and
+# matplotlib are explicit pins (they are transitive deps of pyvista, but the
+# visualizer's compositor and time-series sidebar use them directly so we want
+# our own version pin).
+RUN pip3 install --no-cache-dir \
+        'numpy>=1.26,<3' \
+        'pyvista>=0.44,<0.45' \
+        'imageio>=2.34' \
+        'imageio-ffmpeg>=0.5' \
+        'pillow>=10.0' \
+        'matplotlib>=3.7'
+
+# ---- Non-root user (matches Dockerfile.prod UID 1000) -----------------------
+RUN groupadd -g 1000 developer && \
+    useradd -u 1000 -g developer -m -s /bin/bash developer
+
+WORKDIR /work

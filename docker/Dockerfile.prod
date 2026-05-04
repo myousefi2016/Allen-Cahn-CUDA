@@ -1,0 +1,105 @@
+# ============================================================================
+# Allen-Cahn-CUDA Production Image (multi-stage)
+# ----------------------------------------------------------------------------
+# Stage 1 (builder): Full build environment, compiles optimized release binary
+# Stage 2 (runtime): Minimal runtime image with only the binary and configs
+#
+# Usage:
+#   docker compose --profile prod up prod
+#   docker run --gpus all -v ./output:/output allencahn-prod config/default.json
+# ============================================================================
+
+# ── Stage 1: Builder ──────────────────────────────────────────────────────
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cmake \
+        ninja-build \
+        gcc-13 \
+        g++-13 \
+        git \
+        pkg-config \
+        libvtk9-dev \
+        libhdf5-dev \
+        ca-certificates \
+    && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-13 && \
+    update-alternatives --set gcc /usr/bin/gcc-13
+
+WORKDIR /build
+
+# Copy source tree into the builder
+COPY CMakeLists.txt CMakePresets.json vcpkg.json ./
+COPY cmake/ cmake/
+COPY src/ src/
+COPY config/ config/
+COPY tests/ tests/
+
+# Configure and build release binary
+# Cache the CMake build directory and FetchContent downloads for faster rebuilds
+RUN --mount=type=cache,target=/build/build/release,id=cmake-build-release \
+    --mount=type=cache,target=/build/_deps,id=cmake-fetchcontent \
+    cmake --preset release \
+        -G Ninja \
+        -DCMAKE_CUDA_ARCHITECTURES="70;75;80;86;89;90" \
+        -DAC_BUILD_TESTS=OFF \
+    && \
+    cmake --build build/release --target allen-cahn-cuda --parallel $(nproc) && \
+    # Copy binary out of the cache mount so it persists
+    cp build/release/src/allen-cahn-cuda /build/allen-cahn-cuda-bin
+
+# ── Stage 2: Runtime ─────────────────────────────────────────────────────
+FROM nvidia/cuda:12.6.0-runtime-ubuntu24.04 AS runtime
+
+LABEL maintainer="Allen-Cahn-CUDA Contributors"
+LABEL description="Allen-Cahn-CUDA phase-field simulation (production)"
+LABEL org.opencontainers.image.source="https://github.com/Allen-Cahn-CUDA"
+LABEL org.opencontainers.image.version="2.0.0"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Install only the runtime libraries needed by the binary
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libvtk9.1 \
+        libhdf5-103-1 \
+        libgomp1 \
+    && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for running the simulation
+RUN groupadd --force --gid 1000 simulator && \
+    (useradd --uid 1000 --gid 1000 --create-home --shell /bin/false simulator 2>/dev/null || true) && \
+    mkdir -p /app/config /output && \
+    chown -R 1000:1000 /app /output
+
+WORKDIR /app
+
+# Copy the compiled binary and default configuration files
+COPY --from=builder --chown=simulator:simulator /build/allen-cahn-cuda-bin /app/allen-cahn-cuda
+COPY --from=builder --chown=simulator:simulator /build/config/ /app/config/
+
+# Output directory for simulation results
+VOLUME ["/output"]
+
+USER simulator
+
+# Health check: verify the binary exists and is executable
+HEALTHCHECK --interval=60s --timeout=5s --start-period=10s --retries=3 \
+    CMD test -x /app/allen-cahn-cuda || exit 1
+
+# Entry point runs the simulation; pass config file path as argument
+ENTRYPOINT ["/app/allen-cahn-cuda"]
+CMD ["config/default.json"]
