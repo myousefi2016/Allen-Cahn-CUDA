@@ -205,23 +205,33 @@ jobs:
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
 
-      - name: Validate base manifests
+      - name: Install kubeconform (offline schema validator)
         run: |
-          failed=0
-          for f in k8s/base/*.yaml; do
-            echo "Validating $f..."
-            if ! kubectl apply --dry-run=client --validate=false -f "$f" 2>&1; then
-              echo "::error::Validation failed for $f"
-              failed=1
-            fi
-          done
-          exit $failed
+          curl -L -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf kubeconform.tar.gz kubeconform
+          chmod +x kubeconform
+          sudo mv kubeconform /usr/local/bin/
 
-      - name: Validate dev overlay
-        run: kubectl kustomize k8s/overlays/dev > /dev/null
+      - name: Validate base manifests (kubeconform, offline)
+        run: |
+          # Render the base kustomization, then validate all rendered manifests
+          # against the bundled OpenAPI schemas. Skips kustomization.yaml (not a
+          # K8s resource) and skips CRDs we don't ship.
+          kubectl kustomize k8s/base | \
+            kubeconform -strict -summary -ignore-missing-schemas \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
-      - name: Validate prod overlay
-        run: kubectl kustomize k8s/overlays/prod > /dev/null
+      - name: Validate dev overlay (render + kubeconform)
+        run: |
+          kubectl kustomize k8s/overlays/dev | \
+            kubeconform -strict -summary -ignore-missing-schemas
+
+      - name: Validate prod overlay (render + kubeconform)
+        run: |
+          kubectl kustomize k8s/overlays/prod | \
+            kubeconform -strict -summary -ignore-missing-schemas
 
   # ── Release Docker Images ───────────────────────────────────────────────────
   release-docker:
