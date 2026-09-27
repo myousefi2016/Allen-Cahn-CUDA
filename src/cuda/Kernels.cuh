@@ -185,22 +185,96 @@ __device__ __forceinline__ double dF_dphi(double phi, double u, double lambda) {
     return -phi * omp2 + lambda * u * omp2 * omp2;
 }
 
+/// Component d of the anisotropic flux F = df/dp of the gradient energy
+/// f(p) = 1/2 W0^2 A(p)^2 |p|^2, with p = (pd, pa, pb) listed component d
+/// first (A and dFunc are symmetric in the other two):
+///   F_d = w^2 p_d + 16 eps W0 w dFunc(p_d, p_a, p_b),  w = W0 A(p).
+/// (dA/dp_d = 16 eps dFunc_d / |p|^2, which cancels the |p|^2 of the chain rule.)
+__device__ __forceinline__ double anisotropic_flux(double pd, double pa, double pb, double W0,
+                                                   double epsilon) {
+    const double w = W0 * compute_An(pd, pa, pb, epsilon);
+    return w * w * pd + 16.0 * epsilon * W0 * w * dFunc(pd, pa, pb);
+}
+
+/// Cells the Allen-Cahn, thermal and Jacobi stencils read on each side of the
+/// cell they update. MultiGPUSolver sizes its halos from this.
+inline constexpr int kStencilReach = 1;
+
+/// div F(grad phi) at interior cell (x, y, z) in conservative face-flux form:
+///   sum_d [F_d(face d+1/2) - F_d(face d-1/2)] / h_d.
+/// At a face the normal derivative is the compact difference of the two cells
+/// it separates and each tangential derivative is the average of the central
+/// differences in those two cells, so the stencil reaches +/-1 cell (3x3x3)
+/// and at eps = 0 reduces exactly to W0^2 times the 7-point Laplacian.
+__device__ __forceinline__ double anisotropic_divergence(const double* __restrict__ phi, int x,
+                                                         int y, int z, const KernelParams& p) {
+    const int Ny = p.Ny, Nz = p.Nz;
+    auto at = [&](int i, int j, int k) { return phi[idx3d(i, j, k, Ny, Nz)]; };
+    const double inv4dx = 0.25 / p.dx, inv4dy = 0.25 / p.dy, inv4dz = 0.25 / p.dz;
+
+    // Face between (i, y, z) and (i + 1, y, z).
+    auto flux_x = [&](int i) {
+        const double gx = (at(i + 1, y, z) - at(i, y, z)) / p.dx;
+        const double gy =
+            (at(i, y + 1, z) - at(i, y - 1, z) + at(i + 1, y + 1, z) - at(i + 1, y - 1, z)) *
+            inv4dy;
+        const double gz =
+            (at(i, y, z + 1) - at(i, y, z - 1) + at(i + 1, y, z + 1) - at(i + 1, y, z - 1)) *
+            inv4dz;
+        return anisotropic_flux(gx, gy, gz, p.W0, p.epsilon);
+    };
+    // Face between (x, j, z) and (x, j + 1, z).
+    auto flux_y = [&](int j) {
+        const double gy = (at(x, j + 1, z) - at(x, j, z)) / p.dy;
+        const double gz =
+            (at(x, j, z + 1) - at(x, j, z - 1) + at(x, j + 1, z + 1) - at(x, j + 1, z - 1)) *
+            inv4dz;
+        const double gx =
+            (at(x + 1, j, z) - at(x - 1, j, z) + at(x + 1, j + 1, z) - at(x - 1, j + 1, z)) *
+            inv4dx;
+        return anisotropic_flux(gy, gz, gx, p.W0, p.epsilon);
+    };
+    // Face between (x, y, k) and (x, y, k + 1).
+    auto flux_z = [&](int k) {
+        const double gz = (at(x, y, k + 1) - at(x, y, k)) / p.dz;
+        const double gx =
+            (at(x + 1, y, k) - at(x - 1, y, k) + at(x + 1, y, k + 1) - at(x - 1, y, k + 1)) *
+            inv4dx;
+        const double gy =
+            (at(x, y + 1, k) - at(x, y - 1, k) + at(x, y + 1, k + 1) - at(x, y - 1, k + 1)) *
+            inv4dy;
+        return anisotropic_flux(gz, gx, gy, p.W0, p.epsilon);
+    };
+
+    return (flux_x(x) - flux_x(x - 1)) / p.dx + (flux_y(y) - flux_y(y - 1)) / p.dy +
+           (flux_z(z) - flux_z(z - 1)) / p.dz;
+}
+
+/// dphi/dt of the Allen-Cahn equation at interior cell (x, y, z):
+///   tau0 A(n)^2 dphi/dt = div F(grad phi) - dF/dphi(phi, u),
+/// with n from the central-difference gradient at the cell.
+__device__ __forceinline__ double allen_cahn_rate(const double* __restrict__ phi,
+                                                  const double* __restrict__ u, int x, int y, int z,
+                                                  const KernelParams& p) {
+    const double an = compute_An(gradient_x(phi, x, y, z, p.Ny, p.Nz, p.dx),
+                                 gradient_y(phi, x, y, z, p.Ny, p.Nz, p.dy),
+                                 gradient_z(phi, x, y, z, p.Ny, p.Nz, p.dz), p.epsilon);
+    const int c = idx3d(x, y, z, p.Ny, p.Nz);
+    return (anisotropic_divergence(phi, x, y, z, p) - dF_dphi(phi[c], u[c], p.lambda)) /
+           (p.tau0 * an * an);
+}
+
 // ── Kernel declarations ────────────────────────────────────────────────────
 
-/// Fused Allen-Cahn kernel: computes force, divergence, and updates phi.
+/// Explicit Euler Allen-Cahn update: phi_new = phi_old + dt * allen_cahn_rate
+/// at interior cells (boundary cells are left to the BC kernels).
 void launch_allen_cahn_fused(const double* phi_old, double* phi_new, const double* u_old,
                              const KernelParams& params, cudaStream_t stream = nullptr);
 
-/// Compute anisotropic force field (Fx, Fy, Fz) from phi (for RK stages).
-__global__ void compute_force_kernel(const double* __restrict__ phi, double* __restrict__ Fx,
-                                     double* __restrict__ Fy, double* __restrict__ Fz,
-                                     KernelParams p);
-
-/// Allen-Cahn RHS kernel using separate force arrays (for RK stages).
-__global__ void allen_cahn_rhs_kernel(const double* __restrict__ phi_old, double* __restrict__ rhs,
-                                      const double* __restrict__ u_old,
-                                      const double* __restrict__ Fx, const double* __restrict__ Fy,
-                                      const double* __restrict__ Fz, KernelParams p);
+/// Allen-Cahn rate for RK stages: rhs = allen_cahn_rate at interior cells, 0 on
+/// boundary cells.
+__global__ void allen_cahn_rhs_kernel(const double* __restrict__ phi, double* __restrict__ rhs,
+                                      const double* __restrict__ u, KernelParams p);
 
 /// Thermal diffusion equation kernel.
 void launch_thermal_equation(const double* u_old, double* u_new, const double* phi_new,

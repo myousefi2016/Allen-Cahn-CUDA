@@ -287,9 +287,9 @@ std::vector<Case> all_cases() {
         for (int domains : {2, 3})
             for (BcLayout bc : {BcLayout::Uniform, BcLayout::PerFace, BcLayout::PeriodicX})
                 cases.push_back({s, domains, bc, 14});
-        // Nx = 6 over three domains: every domain owns exactly halo_width
-        // planes, so halos (and the periodic ghost planes) are forwarded
-        // from planes that are themselves boundary or ghost planes.
+        // Nx = 6 over three domains: every domain owns the minimum two
+        // planes, so each end domain's single interior-facing owned plane is
+        // the one next to its wall (and a periodic wrap source).
         cases.push_back({s, 3, BcLayout::PerFace, 6});
         cases.push_back({s, 3, BcLayout::PeriodicX, 6});
     }
@@ -322,9 +322,10 @@ TEST_F(MultiGPUSolverTest, RejectsFewerThanTwoDomains) {
     EXPECT_THROW(MultiGPUSolver solver(cfg), std::runtime_error);
 }
 
-TEST_F(MultiGPUSolverTest, RejectsDomainsThinnerThanTheHalo) {
-    // 5 planes over 3 domains leaves domains with a single owned plane, which
-    // cannot supply a two-plane halo.
+TEST_F(MultiGPUSolverTest, RejectsDomainsThinnerThanTwoPlanes) {
+    // 5 planes over 3 domains leaves domains with a single owned plane: the
+    // first domain would not own the plane next to its X wall, which the
+    // wall's BC reads.
     auto cfg = make_config({TimeScheme::Euler, 3, BcLayout::Uniform, 5});
     cfg.gpu.device_ids = shared_device(3);
     EXPECT_THROW(MultiGPUSolver solver(cfg), std::invalid_argument);

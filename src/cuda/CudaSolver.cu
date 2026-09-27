@@ -161,10 +161,6 @@ CudaSolver::CudaSolver(const SimulationConfig& config)
         k2_u_ = DeviceField<double>(total_points_);
         k3_u_ = DeviceField<double>(total_points_);
         k4_u_ = DeviceField<double>(total_points_);
-        // Force fields for non-fused kernel path
-        Fx_ = DeviceField<double>(total_points_);
-        Fy_ = DeviceField<double>(total_points_);
-        Fz_ = DeviceField<double>(total_points_);
     }
 
     spdlog::info("CudaSolver initialized: {} total points, scheme={}", total_points_,
@@ -318,11 +314,8 @@ void CudaSolver::rk4_stage(int stage, double dt) {
     // previous stage otherwise.
     const double* phi_in = (stage == 1) ? phi_old_.data() : phi_tmp_.data();
     const double* u_in = (stage == 1) ? u_old_.data() : u_tmp_.data();
-    compute_force_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_in, Fx_.data(), Fy_.data(), Fz_.data(), params_);
-    CUDA_CHECK(cudaGetLastError());
     allen_cahn_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_in, k_phi[s]->data(), u_in, Fx_.data(), Fy_.data(), Fz_.data(), params_);
+        phi_in, k_phi[s]->data(), u_in, params_);
     CUDA_CHECK(cudaGetLastError());
     thermal_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         u_in, k_u[s]->data(), k_phi[s]->data(), params_);

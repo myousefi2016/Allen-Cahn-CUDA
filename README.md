@@ -32,9 +32,9 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 
 - **Modern C++23 / CUDA 20** with RAII, move semantics, and no raw owning pointers.
 - **Four time integrators**: Forward Euler, Heun (RK2), classical RK4, and IMEX (explicit Allen–Cahn + implicit thermal via Jacobi).
-- **Kernel fusion**: a single-pass Allen–Cahn kernel computes anisotropic force, divergence, and update without any intermediate `Fx`/`Fy`/`Fz` global arrays.
+- **Compact anisotropic operator**: the Allen–Cahn kernel evaluates the anisotropic flux at the six cell faces (±1-cell stencil, second-order, exactly the 7-point Laplacian at ε = 0) and updates φ in one pass, with no stored flux arrays.
 - **O(1) field swap**: pointer swap (`std::swap` of `DeviceField` handles) replaces O(N) data-copy kernels at the end of each step.
-- **Multi-GPU support**: X-axis domain decomposition with `cudaMemcpyPeerAsync` halo exchange (halo width = 2 to match the fused kernel's effective stencil reach).
+- **Multi-GPU support**: X-axis domain decomposition with `cudaMemcpyPeerAsync` halo exchange (one-plane halos, the reach of every stencil), bit-identical to a single-GPU run.
 - **Anisotropic solidification**: cubic anisotropy A(n) with 4-fold crystal symmetry, including the corrected isotropic spherical-average fallback `1 − 3ε/5` when the gradient vanishes.
 - **Two Laplacian stencils**: standard 7-point and isotropic 27-point (Patra–Karttunen weights `14·face + 3·edge + 1·corner − 128·center`, divisor `30·h²`).
 - **Per-face boundary conditions**: independent Dirichlet / Neumann / Periodic / Robin on each of the 6 faces (`x_lo`, `x_hi`, `y_lo`, `y_hi`, `z_lo`, `z_hi`).
@@ -175,11 +175,11 @@ graph LR
 graph LR
     subgraph G0["GPU 0"]
         D0["Domain 0<br/>x: [0, N/2)"]
-        H0R["Right halo<br/>(width = 2)"]
+        H0R["Right halo<br/>(width = 1)"]
     end
 
     subgraph G1["GPU 1"]
-        H1L["Left halo<br/>(width = 2)"]
+        H1L["Left halo<br/>(width = 1)"]
         D1["Domain 1<br/>x: [N/2, N)"]
     end
 
@@ -187,7 +187,7 @@ graph LR
     D1 -- "cudaMemcpyPeerAsync<br/>YZ-slab copy" --> H0R
 ```
 
-Halo width is 2 because the fused Allen–Cahn kernel computes the force divergence by re-evaluating the force at the ±1 neighbours, and each neighbour-force itself needs a ±1 gradient — so the effective read reach from any thread is ±2 cells. Halos exist only on sides that face another domain: the first and last domains hold the physical X walls and apply the configured BCs there, and a periodic X boundary is wrapped across domains by the exchange. Halos are refreshed before every stencil evaluation (between Heun/RK4 stages and after every IMEX Jacobi sweep), so the multi-GPU result is bit-identical to the single-GPU one; `tests/unit/test_MultiGPUSolver.cu` checks this for every scheme with several domains sharing one GPU (`gpu.device_ids` may repeat an ID).
+Halo width is 1 because every stencil reads ±1 cell: the Allen–Cahn operator evaluates the anisotropic flux at the six cell faces from compact face gradients (see `docs/THEORY.md` §11), and the thermal Laplacian and Jacobi sweep are 7- or 27-point. Halos exist only on sides that face another domain: the first and last domains hold the physical X walls and apply the configured BCs there, and a periodic X boundary is wrapped across domains by the exchange. Halos are refreshed before every stencil evaluation (between Heun/RK4 stages and after every IMEX Jacobi sweep), so the multi-GPU result is bit-identical to the single-GPU one; `tests/unit/test_MultiGPUSolver.cu` checks this for every scheme with several domains sharing one GPU (`gpu.device_ids` may repeat an ID).
 
 ---
 
@@ -663,7 +663,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_DeviceField.cu`         | RAII allocation, async H2D/D2H, swap, large allocs                               |
 | `test_Laplacian.cu`           | 7- and 27-point isotropic Laplacian on analytic quadratic / linear / constant fields |
 | `test_Gradient.cu`            | 2nd- and 4th-order central-difference gradient kernels                           |
-| `test_Anisotropy.cu`          | A(n) along axes / diagonal / zero-gradient fallback, dFunc, dF/dphi              |
+| `test_Anisotropy.cu`          | A(n), dFunc, dF/dphi; face flux = ∂f/∂∇φ; ∇·F second-order (all ε) and = W₀²·7-point Laplacian at ε = 0 |
 | `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin, per-face mixed, interior unchanged          |
 | `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions                                |
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
@@ -682,7 +682,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_SchemeComparison.cu`    | Euler vs Heun vs RK4 agreement; IMEX stability at large dt                       |
 | `test_CheckpointRestart.cu`   | Checkpoint at midpoint then restart matches uninterrupted run                    |
 | `test_StencilComparison.cu`   | 7-point vs 27-point: bounded fields, smoother 27-pt interface, same physics      |
-| `test_AnisotropyForce.cu`     | Anisotropic force divergence reproduces 4-fold symmetric tip behaviour           |
+| `test_AnisotropyForce.cu`     | Seed growth favours <100> increasingly with ε; grid anisotropy at ε = 0 is < 2% and vanishes under refinement |
 
 ### End-to-end test (`tests/e2e/`)
 

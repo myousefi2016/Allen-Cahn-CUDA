@@ -38,20 +38,21 @@ MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config) : config_(config)
                                  std::to_string(num_domains));
     }
 
-    // The fused Allen-Cahn kernel evaluates the flux at the +/-1 neighbours,
-    // each of which needs a +/-1 gradient: the stencil reaches +/-2 planes.
-    halo_width_ = 2;
+    // Halos are as wide as the stencils reach (Allen-Cahn face fluxes,
+    // thermal Laplacian, Jacobi sweep).
+    halo_width_ = kStencilReach;
 
     const int total_Nx = config.grid.Nx;
     const int base_chunk = total_Nx / num_domains;
-    // Each domain must own at least halo_width_ planes: its neighbours' halos
-    // (and the periodic wrap sources, global planes 1 and Nx-2) are copied
-    // from owned planes.
-    if (base_chunk < halo_width_) {
+    // Every domain must own at least kMinOwnedPlanes planes: neighbour halos
+    // are copied from owned planes (>= halo_width_), and the BC at an X wall
+    // reads the plane next to it, which the first/last domain must own, as
+    // must be the periodic wrap sources, global planes 1 and Nx-2 (>= 2).
+    if (base_chunk < kMinOwnedPlanes) {
         throw std::invalid_argument("grid.Nx=" + std::to_string(total_Nx) + " is too small for " +
                                     std::to_string(num_domains) +
                                     " domains: each domain needs at least " +
-                                    std::to_string(halo_width_) + " owned X planes");
+                                    std::to_string(kMinOwnedPlanes) + " owned X planes");
     }
 
     // Peer access between distinct devices (several domains may share one).
@@ -252,9 +253,11 @@ void MultiGPUSolver::exchange(Buffers which) {
     };
 
     // Phase 1 — periodic X wrap, matching the single-domain periodic BC
-    // (field[0] = field[Nx-2], field[Nx-1] = field[1]). It must complete before
-    // phase 2 because a domain owning only halo_width_ planes forwards its
-    // global ghost plane to its neighbour's halo.
+    // (field[0] = field[Nx-2], field[Nx-1] = field[1]). It completes before
+    // phase 2 so that phase 2 never forwards a stale ghost plane: that could
+    // only happen for a first/last domain owning no more than halo_width_
+    // planes, which kMinOwnedPlanes excludes today, but the order keeps the
+    // exchange correct for any kStencilReach <= kMinOwnedPlanes.
     auto& first = domains_.front();
     auto& last = domains_.back();
     for (const auto& f : fields) {

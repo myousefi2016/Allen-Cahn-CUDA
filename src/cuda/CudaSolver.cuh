@@ -116,9 +116,6 @@ private:
     DeviceField<double> k1_phi_, k2_phi_, k3_phi_, k4_phi_; // RK4
     DeviceField<double> k1_u_, k2_u_, k3_u_, k4_u_;         // RK4
 
-    // Force field buffers (needed for non-fused RK stages)
-    DeviceField<double> Fx_, Fy_, Fz_;
-
     // Reduction scratch (mutable: logically const methods use it as temporary)
     mutable DeviceField<double> d_reduction_result_;
     mutable DeviceField<double> reduction_scratch_;

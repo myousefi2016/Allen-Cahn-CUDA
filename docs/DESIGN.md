@@ -191,16 +191,16 @@ allows aliasing of input and output for that operand
 
 ### 3.3 Classical RK4
 
-Four stages computing `k1..k4` of phi and u via `compute_force_kernel`,
-`allen_cahn_rhs_kernel`, and `thermal_rhs_kernel`, then a final
-`rk4_combine_kernel`:
+Four stages computing `k1..k4` of phi and u via `allen_cahn_rhs_kernel`
+(the same `allen_cahn_rate` as the Euler kernel) and `thermal_rhs_kernel`,
+then a final `rk4_combine_kernel`:
 
 ```
 y_new = y_old + (dt/6) * (k1 + 2*k2 + 2*k3 + k4)
 ```
 
-(`CudaSolver.cu:312-410`). The non-fused kernel path uses the dedicated
-force arrays `Fx_, Fy_, Fz_` and RHS arrays `k1..k4`.
+(`CudaSolver::rk4_stage`). The stages store only the RHS arrays `k1..k4`;
+the flux is recomputed at the cell faces, never stored.
 
 ### 3.4 IMEX (explicit AC + implicit thermal)
 
@@ -360,11 +360,11 @@ for every time scheme and boundary layout.
 | Aspect | Choice | Where |
 |---|---|---|
 | Decomposition | contiguous X slabs, `Nx / n` planes each, remainder to the first domains | `MultiGPUSolver::build_domains` |
-| Halo width | 2 planes (the fused kernel reads ±2) | `MultiGPUSolver` constructor |
+| Halo width | `kStencilReach` = 1 plane (face-flux Allen-Cahn, thermal and Jacobi stencils read ±1) | `MultiGPUSolver` constructor |
 | Halo placement | only on sides that face another domain | `GPUDomain::left_halo` / `right_halo` |
 | Physical X walls | held by the first / last domain, which apply the configured BC | `build_domains` |
 | Halo / periodic X faces inside a sub-solver | zero-flux Neumann placeholder, overwritten by `exchange()` before it is read | `build_domains` |
-| Minimum slab | every domain owns ≥ 2 planes, else `std::invalid_argument` | constructor |
+| Minimum slab | every domain owns ≥ 2 planes (the BC at an X wall reads the plane next to it; the periodic wrap reads planes 1 and Nx−2), else `std::invalid_argument` | constructor |
 | Domains per device | any; `gpu.device_ids` may repeat an ID | constructor (peer access only between distinct IDs) |
 
 **Why this is exact.** Every owned cell is computed by the same kernel from
@@ -377,9 +377,10 @@ stencil reads is current:
    unaffected by the decomposition.
 2. A periodic X BC copies plane `Nx-2` to `0` and plane `1` to `Nx-1`; the
    two planes live on different domains, so `exchange()` performs this
-   *wrap* (phase 1) before the neighbour exchange (phase 2), because a
-   domain that owns only two planes forwards a ghost plane to its
-   neighbour's halo.
+   *wrap* (phase 1), completed before the neighbour exchange (phase 2) so
+   that phase 2 can never forward a stale ghost plane (possible only for an
+   end domain owning no more planes than the halo width, which the 2-plane
+   minimum excludes).
 3. `exchange()` runs whenever a stencil is about to read a buffer whose
    halos are stale (table below).
 4. Reductions (`compute_max_dphi`, `compute_boundary_max_phi`, the IMEX
@@ -432,8 +433,8 @@ sequenceDiagram
     end
     Note over G0,G1: host syncs halo streams
     par phase 2
-        G0->>G1: last 2 owned planes -> left halo
-        G1->>G0: first 2 owned planes -> right halo
+        G0->>G1: last owned plane -> left halo
+        G1->>G0: first owned plane -> right halo
     end
     Note over G0,G1: host syncs halo streams
 ```

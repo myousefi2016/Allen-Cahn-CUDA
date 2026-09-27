@@ -211,7 +211,6 @@ classDiagram
         -u_old_, u_new_ : DeviceField
         -phi_tmp_, u_tmp_ : DeviceField  (Heun/RK4/IMEX)
         -k1_phi_..k4_phi_, k1_u_..k4_u_  (RK4)
-        -Fx_, Fy_, Fz_                    (RK4 force arrays)
         -d_reduction_result_ : DeviceField~1~
         -reduction_scratch_  : DeviceField
         -compute_stream_, transfer_stream_ : Stream
@@ -230,7 +229,7 @@ classDiagram
 
     class MultiGPUSolver {
         -domains_ : vector~GPUDomain~
-        -halo_width_ : int (=2)
+        -halo_width_ : int (= kStencilReach = 1)
         -wrap_phi_lo_, wrap_phi_hi_, wrap_u_lo_, wrap_u_hi_ : bool
         -build_domains()
         -release_domains()
@@ -243,7 +242,7 @@ classDiagram
     class GPUDomain {
         +device_id : int
         +x_start, x_end : int (owned global planes)
-        +left_halo, right_halo : int (2 or 0)
+        +left_halo, right_halo : int (1 or 0)
         +local_Nx : int
         +solver : unique_ptr~CudaSolver~
         +halo_stream : Stream
@@ -285,7 +284,6 @@ graph TB
         end
         subgraph RK4Only["RK4 only"]
             ks["k1_phi_..k4_phi_, k1_u_..k4_u_"]
-            Fs["Fx_, Fy_, Fz_"]
         end
     end
     subgraph Swap["Pointer swap (O(1))"]
@@ -317,8 +315,8 @@ sequenceDiagram
     H->>G1: rk4_stage(1)
     loop stages 2, 3, 4
         H->>H: exchange(Stage): phi_tmp_, u_tmp_
-        G0->>G1: last 2 owned planes -> left halo
-        G1->>G0: first 2 owned planes -> right halo
+        G0->>G1: last owned plane -> left halo
+        G1->>G0: first owned plane -> right halo
         H->>G0: rk4_stage(s)
         H->>G1: rk4_stage(s)
     end

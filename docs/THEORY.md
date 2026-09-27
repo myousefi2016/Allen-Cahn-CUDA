@@ -19,7 +19,7 @@
 8. [Time Integration Schemes](#8-time-integration-schemes)
 9. [Boundary Conditions](#9-boundary-conditions)
 10. [Stability Analysis](#10-stability-analysis)
-11. [Kernel Fusion Optimization](#11-kernel-fusion-optimization)
+11. [Discretisation of ∇·F (face fluxes)](#11-discretisation-of-f-face-fluxes)
 12. [Multi-GPU Domain Decomposition](#12-multi-gpu-domain-decomposition)
 13. [Advanced Data Structures](#13-advanced-data-structures)
 14. [References](#14-references)
@@ -144,21 +144,27 @@ where:
 - `λ` — coupling constant
 - `n̂ = ∇φ/|∇φ|` — interface normal direction
 
-The code implements this by defining a **force vector** `F = (Fx, Fy, Fz)`:
+The two gradient terms are the divergence of the **flux** `F = ∂f/∂(∇φ)` of
+the gradient-energy density `f(p) = ½·W₀²·A(p)²·|p|²` (`p = ∇φ`):
 
 ```
-Fx = wn²·∂φ/∂x + |∇φ|²·wn·16·W₀·ε·dFunc(∂φ/∂x, ∂φ/∂y, ∂φ/∂z)
-Fy = wn²·∂φ/∂y + |∇φ|²·wn·16·W₀·ε·dFunc(∂φ/∂y, ∂φ/∂z, ∂φ/∂x)
-Fz = wn²·∂φ/∂z + |∇φ|²·wn·16·W₀·ε·dFunc(∂φ/∂z, ∂φ/∂x, ∂φ/∂y)
+Fx = wn²·px + 16·ε·W₀·wn·dFunc(px, py, pz)
+Fy = wn²·py + 16·ε·W₀·wn·dFunc(py, pz, px)
+Fz = wn²·pz + 16·ε·W₀·wn·dFunc(pz, px, py)
 ```
 
-where `wn = W₀·A(n̂)` and `τn = τ₀·A(n̂)²`.
+where `wn = W₀·A(p)` and `τn = τ₀·A(n̂)²`. (`∂A/∂p_i = 16ε·dFunc_i/|p|²`, and
+that `1/|p|²` cancels the `|p|²` of the chain rule, so no `|p|²` factor
+remains; `anisotropic_flux` in `Kernels.cuh`, checked against a long-double
+derivative of `f` by `FluxIsVariationalDerivativeOfGradientEnergy`.)
 
 The update becomes:
 
 ```
 φ^{n+1} = φ^n + (Δt/τn)·[∇·F - dF_dphi(φ, u, λ)]
 ```
+
+with `∇·F` discretised in conservative face-flux form (Section 11).
 
 ### 3.2 Thermal Diffusion Equation
 
@@ -777,55 +783,46 @@ safety factor provides a stability margin.
 
 ---
 
-## 11. Kernel Fusion Optimization
+## 11. Discretisation of ∇·F (face fluxes)
 
-The code implements an important GPU optimization: **kernel fusion** eliminates
-intermediate global memory arrays for the force field.
-
-### 11.1 Original Approach (Non-Fused)
+`anisotropic_divergence` (`src/cuda/Kernels.cuh`) evaluates ∇·F at an
+interior cell in conservative form,
 
 ```
-Step 1: Compute Fx[i], Fy[i], Fz[i] for all grid points → 3 global arrays
-Step 2: Compute ∇·F using Fx, Fy, Fz → read 3 arrays
-Step 3: Update φ
+∇·F ≈ Σ_d [ F_d(face d+½) − F_d(face d−½) ] / h_d ,
 ```
 
-Memory for 600³ grid: `3 × 600³ × 8 bytes ≈ 4.8 GB` just for force arrays.
-Total GPU memory (with index + force + field arrays): ~16.0 GB.
-
-### 11.2 Fused Approach
+with `F_d` computed at each of the six faces from the gradient **at that
+face**: the normal component is the compact difference of the two cells the
+face separates, and each tangential component is the average of the central
+differences in those two cells, e.g. for the face between `(i,j,k)` and
+`(i+1,j,k)`:
 
 ```
-Step 1: For each grid point, compute F at (x,y,z) AND at 6 neighbors
-        Compute ∇·F via central differences of the recomputed forces
-        Update φ in the same kernel
+px = (φ[i+1,j,k] − φ[i,j,k]) / dx
+py = (φ[i,j+1,k] − φ[i,j−1,k] + φ[i+1,j+1,k] − φ[i+1,j−1,k]) / (4·dy)
+pz = (φ[i,j,k+1] − φ[i,j,k−1] + φ[i+1,j,k+1] − φ[i+1,j,k−1]) / (4·dz)
 ```
 
-Memory: **0 bytes** for force arrays (computed on-the-fly).
-Total GPU memory: ~6.4 GB (53% reduction).
+Properties, each checked by a test:
 
-Trade-off: Each thread computes the force at 7 points instead of 1 (~7× more
-ALU operations), but modern GPUs are bandwidth-limited, making this trade-off
-highly favorable.
+| Property | Evidence |
+|---|---|
+| Reach ±1 cell (3×3×3), so one ghost plane per face suffices, including periodic BCs | `kStencilReach = 1`; multi-GPU halos of 1 plane reproduce single-GPU runs bit for bit |
+| At ε = 0 it is exactly W₀² × the 7-point Laplacian (no odd-even decoupling) | `DivergenceAtZeroAnisotropyIsSevenPointLaplacian` (difference within 32 roundoffs) |
+| Second-order accurate for the full anisotropic flux | `DivergenceIsSecondOrderAccurate`: observed order 1.99 for ε = 0, 0.05, 0.12, 0.2 |
+| Small grid anisotropy that vanishes under refinement | ε = 0 seed growth: \|R₁₀₀/R₁₁₁ − 1\| = 0.0125 at h = 0.8 W₀ and 0.0022 at h = 0.4 W₀ (`GridAnisotropyVanishesUnderRefinement`) |
 
-```mermaid
-graph LR
-    subgraph "Original: Memory-Bound"
-        O1["compute_force_kernel<br/>→ Write Fx,Fy,Fz<br/>(5.2 GB)"] --> O2["allen_cahn_rhs_kernel<br/>← Read Fx,Fy,Fz"] --> O3["Update φ"]
-    end
-    subgraph "Fused: Compute-Bound"
-        F1["allen_cahn_fused_kernel<br/>Recompute forces at 7 points<br/>∇·F inline<br/>Update φ<br/>(0 GB extra)"]
-    end
-    style O1 fill:#fcc
-    style F1 fill:#cfc
-```
+The previous discretisation took central differences (spacing 2h) of fluxes
+evaluated with central gradients at the ±1 neighbours: a 5-point-wide
+stencil that at ε = 0 is the Laplacian on a 2h lattice, decoupling odd and
+even cells. It gave \|R₁₀₀/R₁₁₁ − 1\| = 0.100 at h = 0.8 W₀ and 0.0108 at
+h = 0.4 W₀ in the same test, as large as the physical anisotropy at ε = 0.05,
+and needed two ghost planes (one-sided gradients at the walls, a wrong
+periodic neighbour at reach 2).
 
-| Metric | Original | Fused | Improvement |
-|--------|----------|-------|-------------|
-| GPU Memory (600³) | 16.0 GB | 6.4 GB | **60% reduction** |
-| Global Memory R/W | 3 arrays | 0 arrays | **Eliminated** |
-| ALU per thread | 1× | ~7× | More compute |
-| Bandwidth utilization | Bottleneck | Below limit | **Faster** |
+The Euler kernel and the RK stage kernel both call `allen_cahn_rate`, so all
+four time schemes use the same spatial operator; no force arrays are stored.
 
 ---
 
@@ -836,63 +833,15 @@ via domain decomposition along the X axis.
 
 ### 12.1 Decomposition Strategy
 
-The global domain of size `Nx × Ny × Nz` is split into `G` sub-domains along X:
-
-```
-GPU g gets: x ∈ [x_start_g, x_end_g)
-Local size: (chunk_g + 2·halo_width) × Ny × Nz
-```
-
-where `chunk_g = Nx/G` (plus remainder distributed to first GPUs).
-
-The **halo width is 2** because the fused Allen-Cahn kernel computes gradients
-at neighbor points, giving an effective stencil reach of ±2.
-
-### 12.2 Halo Exchange
-
-Before each time step, neighboring GPUs exchange boundary data:
-
-```
-Left GPU:  interior right boundary → Right GPU: left halo
-Right GPU: interior left boundary  → Left GPU: right halo
-```
-
-Data transfer uses `cudaMemcpyPeerAsync` for direct GPU-to-GPU copies (when
-peer access is available) or staged copies via host memory (fallback).
-
-```mermaid
-sequenceDiagram
-    participant GPU0
-    participant GPU1
-    participant GPU2
-
-    Note over GPU0,GPU2: Before each time step
-    
-    GPU0->>GPU1: Right boundary → Left halo (φ, u)
-    GPU1->>GPU0: Left boundary → Right halo (φ, u)
-    GPU1->>GPU2: Right boundary → Left halo (φ, u)
-    GPU2->>GPU1: Left boundary → Right halo (φ, u)
-    
-    Note over GPU0,GPU2: Synchronize all halo streams
-    
-    par Parallel Computation
-        GPU0->>GPU0: solver.step(dt)
-        GPU1->>GPU1: solver.step(dt)
-        GPU2->>GPU2: solver.step(dt)
-    end
-```
-
-### 12.3 Result Gathering
-
-After computation, results are gathered by copying each sub-domain's interior
-(excluding halos) to the appropriate position in the global field:
-
-```
-For each GPU g:
-    For lx in [halo, local_Nx - halo):
-        gx = x_start_g + (lx - halo)
-        global(gx, :, :) = local(lx, :, :)
-```
+The global domain is split along X into `G` contiguous slabs of `Nx/G` planes
+(the remainder going to the first slabs). Each slab carries halo planes only
+on sides that face another slab, `kStencilReach = 1` plane wide (the reach of
+the face-flux operator, the thermal Laplacian and the Jacobi sweep), so the
+first and last slabs hold the physical X walls and apply the configured BCs
+there. Halos, and for periodic X the ghost planes, are refreshed before every
+stencil evaluation, including between Heun/RK4 stages and after every IMEX
+Jacobi sweep, which makes the multi-GPU result bit-identical to a single-GPU
+run. The full protocol and its evidence are in `DESIGN.md` §7.
 
 ---
 

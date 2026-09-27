@@ -4,8 +4,12 @@
 #include "cuda/Kernels.cuh"
 #include "logging/Logger.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <gtest/gtest.h>
+#include <limits>
+#include <string>
 #include <vector>
 
 using namespace ac;
@@ -247,68 +251,203 @@ static long double energy_density(const long double g[3], long double W0, long d
     return 0.5L * W0 * W0 * a * a * s;
 }
 
-// The anisotropic flux assembled by compute_force_kernel must be the exact
-// variational derivative F = df/d(grad phi) of the gradient energy density.
-// A linear field phi = g . x has central-difference gradient exactly g at every
-// interior cell, so the kernel output there is F(g); it is compared with an
-// independent long-double central difference of f(g).
-TEST_F(AnisotropyTest, ForceIsVariationalDerivativeOfGradientEnergy) {
-    const int N = 6;
-    const double h = 0.5;
+__global__ void test_flux_kernel(const double* __restrict__ grads, double* __restrict__ out,
+                                 double W0, double eps, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n)
+        return;
+    const double gx = grads[3 * i], gy = grads[3 * i + 1], gz = grads[3 * i + 2];
+    // Cyclic order puts the flux component first (A and dFunc are symmetric
+    // in the other two), exactly as anisotropic_divergence calls it.
+    out[3 * i + 0] = anisotropic_flux(gx, gy, gz, W0, eps);
+    out[3 * i + 1] = anisotropic_flux(gy, gz, gx, W0, eps);
+    out[3 * i + 2] = anisotropic_flux(gz, gx, gy, W0, eps);
+}
+
+__global__ void test_divergence_kernel(const double* __restrict__ phi, double* __restrict__ div,
+                                       double* __restrict__ lap, KernelParams p) {
+    unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= static_cast<unsigned>(p.Nx * p.Ny * p.Nz))
+        return;
+    int x, y, z;
+    linear_to_3d(static_cast<int>(tid), p.Ny, p.Nz, x, y, z);
+    if (x < 1 || x >= p.Nx - 1 || y < 1 || y >= p.Ny - 1 || z < 1 || z >= p.Nz - 1)
+        return;
+    div[tid] = anisotropic_divergence(phi, x, y, z, p);
+    lap[tid] = laplacian_7pt(phi, x, y, z, p.Ny, p.Nz, p.dx, p.dy, p.dz);
+}
+
+// anisotropic_flux must be the exact variational derivative F = df/dp of the
+// gradient energy density, compared with an independent long-double central
+// difference of f.
+TEST_F(AnisotropyTest, FluxIsVariationalDerivativeOfGradientEnergy) {
     const double W0 = 1.3;
-    const double grads[][3] = {{1.0, 0.0, 0.0},  {0.0, -2.0, 0.0}, {0.0, 0.0, 0.7},
-                               {1.0, 1.0, 0.0},  {1.0, -1.0, 1.0}, {0.3, -1.2, 0.8},
-                               {2.1, 0.4, -0.9}, {-0.5, -0.5, 1.5}};
-    const double epsilons[] = {0.0, 0.05, 0.1, 0.2};
+    const std::vector<double> grads = {1.0,  0.0, 0.0, 0.0, -2.0, 0.0,  0.0,  0.0,
+                                       0.7,  1.0, 1.0, 0.0, 1.0,  -1.0, 1.0,  0.3,
+                                       -1.2, 0.8, 2.1, 0.4, -0.9, -0.5, -0.5, 1.5};
+    const int n = static_cast<int>(grads.size() / 3);
+    DeviceField<double> d_g(grads.size()), d_f(grads.size());
+    d_g.copy_from_host(grads.data());
+    std::vector<double> got(grads.size());
 
-    const std::size_t total = static_cast<std::size_t>(N) * N * N;
-    DeviceField<double> d_phi(total), d_fx(total), d_fy(total), d_fz(total);
-    std::vector<double> phi(total), fx(total), fy(total), fz(total);
-
-    for (double eps : epsilons) {
-        KernelParams p{};
-        p.Nx = p.Ny = p.Nz = N;
-        p.dx = p.dy = p.dz = h;
-        p.epsilon = eps;
-        p.W0 = W0;
-        for (const auto& g : grads) {
-            for (int x = 0; x < N; ++x)
-                for (int y = 0; y < N; ++y)
-                    for (int z = 0; z < N; ++z)
-                        phi[(x * N + y) * N + z] = g[0] * x * h + g[1] * y * h + g[2] * z * h;
-            d_phi.copy_from_host(phi.data());
-            auto cfg = LaunchConfig::for_1d(total, 256);
-            compute_force_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_fx.data(), d_fy.data(),
-                                                          d_fz.data(), p);
-            CUDA_CHECK(cudaGetLastError());
-            CUDA_CHECK(cudaDeviceSynchronize());
-            d_fx.copy_to_host(fx.data());
-            d_fy.copy_to_host(fy.data());
-            d_fz.copy_to_host(fz.data());
-            CUDA_CHECK(cudaDeviceSynchronize());
-
-            long double expected[3];
-            const long double gn =
-                std::sqrt(static_cast<long double>(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]));
+    for (double eps : {0.0, 0.05, 0.1, 0.2}) {
+        test_flux_kernel<<<1, 64>>>(d_g.data(), d_f.data(), W0, eps, n);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        d_f.copy_to_host(got.data());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        for (int k = 0; k < n; ++k) {
+            const long double g[3] = {grads[3 * k], grads[3 * k + 1], grads[3 * k + 2]};
+            const long double gn = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
             const long double eta = 1e-6L * (gn > 1.0L ? gn : 1.0L);
             for (int i = 0; i < 3; ++i) {
                 long double gp[3] = {g[0], g[1], g[2]}, gm[3] = {g[0], g[1], g[2]};
                 gp[i] += eta;
                 gm[i] -= eta;
-                expected[i] =
-                    (energy_density(gp, W0, eps) - energy_density(gm, W0, eps)) / (2.0L * eta);
+                const double expected = static_cast<double>(
+                    (energy_density(gp, W0, eps) - energy_density(gm, W0, eps)) / (2.0L * eta));
+                ASSERT_NEAR(got[3 * k + i], expected, 1e-8 * (1.0 + std::fabs(expected)))
+                    << "eps=" << eps << " g=(" << g[0] << "," << g[1] << "," << g[2]
+                    << ") component " << i;
             }
-            for (int x = 1; x < N - 1; ++x)
-                for (int y = 1; y < N - 1; ++y)
-                    for (int z = 1; z < N - 1; ++z) {
-                        const std::size_t c = (x * N + y) * N + z;
-                        const double got[3] = {fx[c], fy[c], fz[c]};
-                        for (int i = 0; i < 3; ++i)
-                            ASSERT_NEAR(got[i], static_cast<double>(expected[i]),
-                                        1e-8 * (1.0 + std::fabs(static_cast<double>(expected[i]))))
-                                << "eps=" << eps << " g=(" << g[0] << "," << g[1] << "," << g[2]
-                                << ") component " << i;
-                    }
         }
+    }
+}
+
+namespace {
+
+// Smooth test field with |grad phi| bounded away from 0 (the linear part
+// dominates the oscillating one), so A(n) is smooth along it.
+constexpr long double kK[3] = {1.1L, 0.9L, 0.8L};
+constexpr long double kPh[3] = {0.3L, -0.2L, 0.5L};
+constexpr long double kAmp = 0.4L;
+constexpr long double kLin[3] = {1.0L, 0.5L, 0.3L};
+
+long double field(long double x, long double y, long double z) {
+    return kAmp * std::sin(kK[0] * x + kPh[0]) * std::cos(kK[1] * y + kPh[1]) *
+               std::sin(kK[2] * z + kPh[2]) +
+           kLin[0] * x + kLin[1] * y + kLin[2] * z;
+}
+
+/// Exact gradient and Hessian of field().
+void field_derivatives(long double x, long double y, long double z, long double g[3],
+                       long double H[3][3]) {
+    const long double a = kK[0] * x + kPh[0], b = kK[1] * y + kPh[1], c = kK[2] * z + kPh[2];
+    const long double sa = std::sin(a), ca = std::cos(a), sb = std::sin(b), cb = std::cos(b),
+                      sc = std::sin(c), cc = std::cos(c);
+    g[0] = kAmp * kK[0] * ca * cb * sc + kLin[0];
+    g[1] = -kAmp * kK[1] * sa * sb * sc + kLin[1];
+    g[2] = kAmp * kK[2] * sa * cb * cc + kLin[2];
+    H[0][0] = -kAmp * kK[0] * kK[0] * sa * cb * sc;
+    H[1][1] = -kAmp * kK[1] * kK[1] * sa * cb * sc;
+    H[2][2] = -kAmp * kK[2] * kK[2] * sa * cb * sc;
+    H[0][1] = H[1][0] = -kAmp * kK[0] * kK[1] * ca * sb * sc;
+    H[0][2] = H[2][0] = kAmp * kK[0] * kK[2] * ca * cb * cc;
+    H[1][2] = H[2][1] = -kAmp * kK[1] * kK[2] * sa * sb * cc;
+}
+
+/// Exact div F(grad phi) = sum_{d,e} (d^2 f / dp_d dp_e) (d^2 phi / dx_d dx_e),
+/// with the Hessian of f from long-double central differences.
+long double exact_divergence(long double x, long double y, long double z, long double W0,
+                             long double eps) {
+    long double g[3], H[3][3];
+    field_derivatives(x, y, z, g, H);
+    const long double eta = 1e-4L;
+    long double sum = 0.0L;
+    for (int d = 0; d < 3; ++d)
+        for (int e = 0; e < 3; ++e) {
+            long double pp[3] = {g[0], g[1], g[2]}, pm[3] = {g[0], g[1], g[2]},
+                        mp[3] = {g[0], g[1], g[2]}, mm[3] = {g[0], g[1], g[2]};
+            pp[d] += eta, pp[e] += eta;
+            pm[d] += eta, pm[e] -= eta;
+            mp[d] -= eta, mp[e] += eta;
+            mm[d] -= eta, mm[e] -= eta;
+            const long double fde = (energy_density(pp, W0, eps) - energy_density(pm, W0, eps) -
+                                     energy_density(mp, W0, eps) + energy_density(mm, W0, eps)) /
+                                    (4.0L * eta * eta);
+            sum += fde * H[d][e];
+        }
+    return sum;
+}
+
+struct DivergenceRun {
+    double max_err = 0.0;      // vs exact div F
+    double max_lap_diff = 0.0; // |div - W0^2 * 7-point Laplacian| / rounding scale
+};
+
+DivergenceRun run_divergence(int N, double L, double W0, double eps) {
+    const double h = L / (N - 1);
+    const std::size_t total = static_cast<std::size_t>(N) * N * N;
+    std::vector<double> phi(total), div(total), lap(total);
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z)
+                phi[(static_cast<std::size_t>(x) * N + y) * N + z] =
+                    static_cast<double>(field(x * h, y * h, z * h));
+    DeviceField<double> d_phi(total), d_div(total), d_lap(total);
+    d_phi.copy_from_host(phi.data());
+    KernelParams p{};
+    p.Nx = p.Ny = p.Nz = N;
+    p.dx = p.dy = p.dz = h;
+    p.W0 = W0;
+    p.epsilon = eps;
+    auto cfg = LaunchConfig::for_1d(total, 256);
+    test_divergence_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_div.data(), d_lap.data(), p);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    d_div.copy_to_host(div.data());
+    d_lap.copy_to_host(lap.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    DivergenceRun r;
+    for (int x = 1; x < N - 1; ++x)
+        for (int y = 1; y < N - 1; ++y)
+            for (int z = 1; z < N - 1; ++z) {
+                const std::size_t c = (static_cast<std::size_t>(x) * N + y) * N + z;
+                const double exact =
+                    static_cast<double>(exact_divergence(x * h, y * h, z * h, W0, eps));
+                r.max_err = std::max(r.max_err, std::fabs(div[c] - exact));
+                // Rounding scale of either evaluation: W0^2 * sum |phi| / h^2 over
+                // the 7-point stencil; both are sums of O(10) such terms.
+                double scale = 6.0 * std::fabs(phi[c]);
+                const std::size_t sx = static_cast<std::size_t>(N) * N, sy = N;
+                for (std::size_t o : {sx, sy, std::size_t{1}})
+                    scale += std::fabs(phi[c + o]) + std::fabs(phi[c - o]);
+                scale *= W0 * W0 / (h * h);
+                r.max_lap_diff =
+                    std::max(r.max_lap_diff, std::fabs(div[c] - W0 * W0 * lap[c]) / scale);
+            }
+    return r;
+}
+
+} // namespace
+
+// At eps = 0 the face-flux divergence is W0^2 times the 7-point Laplacian up
+// to rounding, i.e. the isotropic operator has no 2h-wide stencil left. The
+// bound is 32 unit roundoffs of the stencil's magnitude W0^2 sum|phi|/h^2
+// (each side sums ~10 rounded terms of that size).
+TEST_F(AnisotropyTest, DivergenceAtZeroAnisotropyIsSevenPointLaplacian) {
+    const auto r = run_divergence(17, 3.0, 1.3, 0.0);
+    EXPECT_LT(r.max_lap_diff, 32.0 * std::numeric_limits<double>::epsilon());
+}
+
+// The face-flux divergence is a second-order approximation of div F(grad phi)
+// for the full anisotropic flux: halving h divides the maximum error over all
+// interior cells by ~4 (observed order > 1.9) for every eps tested, including
+// strong anisotropy.
+TEST_F(AnisotropyTest, DivergenceIsSecondOrderAccurate) {
+    const double L = 3.0, W0 = 1.3;
+    for (double eps : {0.0, 0.05, 0.12, 0.2}) {
+        SCOPED_TRACE("eps=" + std::to_string(eps));
+        const double e1 = run_divergence(13, L, W0, eps).max_err;
+        const double e2 = run_divergence(25, L, W0, eps).max_err;
+        const double e3 = run_divergence(49, L, W0, eps).max_err;
+        const double order12 = std::log2(e1 / e2), order23 = std::log2(e2 / e3);
+        std::printf(
+            "eps=%.2f  max|err| h=L/12: %.3e  h=L/24: %.3e  h=L/48: %.3e  order %.3f %.3f\n", eps,
+            e1, e2, e3, order12, order23);
+        EXPECT_GT(order12, 1.9);
+        EXPECT_GT(order23, 1.9);
+        EXPECT_LT(order23, 2.1);
     }
 }

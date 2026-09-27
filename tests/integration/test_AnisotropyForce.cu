@@ -8,12 +8,32 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <gtest/gtest.h>
 
 using namespace ac;
 using namespace ac::cuda;
 
 class AnisotropyForceTest : public ::testing::Test {
+public:
+    /// Config of the seed-growth runs: N^3 points at spacing h, undercooling
+    /// 0.55, zero-flux phi and u = -delta on the walls.
+    SimulationConfig config_for_growth(double eps, int N, double h, double dt) {
+        auto cfg = make_config(eps);
+        cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = N;
+        cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = h;
+        cfg.physics.delta = 0.55;
+        cfg.time.dt = dt;
+        cfg.boundary.phi_bc = {BCType::Neumann, 0.0, 0.0, 0.0, 0.0, 0.0};
+        cfg.boundary.u_bc = {BCType::Dirichlet, -0.55, 0.0, 0.0, 0.0, 0.0};
+        cfg.validate();
+        return cfg;
+    }
+
+    void init_sphere(FieldData& phi, FieldData& u, const SimulationConfig& cfg, double r0) {
+        init_tanh_sphere(phi, u, cfg, r0);
+    }
+
 protected:
     void SetUp() override {
         AC_GPU_TEST_SETUP();
@@ -135,6 +155,55 @@ struct GrowthExtent {
 
 } // namespace
 
+namespace {
+
+/// Mean interface extent along the 6 <100> axes and the 8 <111> diagonals of
+/// a seed of radius 4 grown for t = 15 at undercooling 0.55 in a box of side
+/// 50.4 (N points at spacing h), plus the spread over each family (cubic
+/// symmetry check).
+GrowthExtent grow_seed(AnisotropyForceTest& t, double eps, int N, double h, double dt, int steps) {
+    auto cfg = t.config_for_growth(eps, N, h, dt);
+    Grid grid = cfg.make_grid();
+    FieldData phi(grid, "phi"), u(grid, "u");
+    t.init_sphere(phi, u, cfg, 4.0);
+    CudaSolver solver(cfg);
+    solver.initialize(phi, u);
+    for (int s = 0; s < steps; ++s)
+        solver.step(dt);
+    solver.copy_phi_to_host(phi);
+
+    const double c = 0.5 * (N - 1);
+    const double s3 = 1.0 / std::sqrt(3.0);
+    GrowthExtent ext;
+    const double axes[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    double lo = 1e30, hi = -1e30, sum = 0;
+    for (const auto& d : axes) {
+        const double r = interface_radius(phi, c, d, N);
+        EXPECT_GT(r, 0.0) << "no interface along an axis (wall reached?)";
+        lo = std::min(lo, r);
+        hi = std::max(hi, r);
+        sum += r;
+    }
+    ext.r100 = sum / 6 * h; // physical length
+    ext.spread100 = (hi - lo) * h;
+    lo = 1e30, hi = -1e30, sum = 0;
+    for (int sx : {-1, 1})
+        for (int sy : {-1, 1})
+            for (int sz : {-1, 1}) {
+                const double d[3] = {sx * s3, sy * s3, sz * s3};
+                const double r = interface_radius(phi, c, d, N);
+                EXPECT_GT(r, 0.0) << "no interface along a diagonal";
+                lo = std::min(lo, r);
+                hi = std::max(hi, r);
+                sum += r;
+            }
+    ext.r111 = sum / 8 * h;
+    ext.spread111 = (hi - lo) * h;
+    return ext;
+}
+
+} // namespace
+
 /// Cubic anisotropy (eps > 0) must make a growing seed extend further along
 /// the <100> axes than along the <111> diagonals. The early-time local rate
 /// cannot show this (in the Karma-Rappel model tau(n) = tau0 A(n)^2 makes the
@@ -142,78 +211,44 @@ struct GrowthExtent {
 /// the interface extent after the Mullins-Sekerka growth regime has set in
 /// (t = 15 tau units), before any wall contact.
 ///
-/// The eps = 0 run is the control: the discrete phase-field operator itself is
-/// anisotropic (it favours <111>, ratio ~0.90 here), so the test requires the
-/// <100>/<111> extent ratio to increase strictly with eps, to exceed 1 at
-/// eps = 0.05, and cubic symmetry to hold across all 6 axes and 8 diagonals.
-/// Measured on RTX 4090 (CUDA 13.2): ratios 0.9002, 0.9710, 1.0990 for
-/// eps = 0, 0.02, 0.05; the thresholds keep margins of 0.035-0.1.
+/// The eps = 0 run is the control for the grid's own anisotropy: with the
+/// compact face-flux operator it is within 2% of isotropic at h = 0.8 W0
+/// (GridAnisotropyVanishesUnderRefinement shows it is discretization error).
+/// The <100>/<111> ratio must increase strictly with eps and cubic symmetry
+/// must hold across all 6 axes and 8 diagonals. Measured on RTX 4090 (CUDA
+/// 13.2): ratios 0.9875, 1.0467, 1.1478 for eps = 0, 0.02, 0.05.
 TEST_F(AnisotropyForceTest, GrowthExtentFavoursAxesUnderAnisotropy) {
-    const int N = 64;
-    const double h = 0.8, delta = 0.55, dt = 0.03;
-    const int steps = 500;
-    const double c = 0.5 * (N - 1);
-    const double s3 = 1.0 / std::sqrt(3.0);
     const double eps_values[] = {0.0, 0.02, 0.05};
-    GrowthExtent ext[3];
-
-    for (int k = 0; k < 3; ++k) {
-        auto cfg = make_config(eps_values[k]);
-        cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = N;
-        cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = h;
-        cfg.physics.delta = delta;
-        cfg.time.dt = dt;
-        cfg.boundary.phi_bc = {BCType::Neumann, 0.0, 0.0, 0.0, 0.0, 0.0};
-        cfg.boundary.u_bc = {BCType::Dirichlet, -delta, 0.0, 0.0, 0.0, 0.0};
-        cfg.validate();
-
-        Grid grid = cfg.make_grid();
-        FieldData phi(grid, "phi"), u(grid, "u");
-        init_tanh_sphere(phi, u, cfg, 4.0);
-        CudaSolver solver(cfg);
-        solver.initialize(phi, u);
-        for (int s = 0; s < steps; ++s)
-            solver.step(dt);
-        solver.copy_phi_to_host(phi);
-
-        const double axes[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
-                                   {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
-        double lo = 1e30, hi = -1e30, sum = 0;
-        for (const auto& d : axes) {
-            const double r = interface_radius(phi, c, d, N);
-            ASSERT_GT(r, 0.0) << "no interface along an axis (wall reached?)";
-            lo = std::min(lo, r);
-            hi = std::max(hi, r);
-            sum += r;
-        }
-        ext[k].r100 = sum / 6;
-        ext[k].spread100 = hi - lo;
-
-        lo = 1e30, hi = -1e30, sum = 0;
-        for (int sx : {-1, 1})
-            for (int sy : {-1, 1})
-                for (int sz : {-1, 1}) {
-                    const double d[3] = {sx * s3, sy * s3, sz * s3};
-                    const double r = interface_radius(phi, c, d, N);
-                    ASSERT_GT(r, 0.0) << "no interface along a diagonal";
-                    lo = std::min(lo, r);
-                    hi = std::max(hi, r);
-                    sum += r;
-                }
-        ext[k].r111 = sum / 8;
-        ext[k].spread111 = hi - lo;
-    }
-
     double ratio[3];
     for (int k = 0; k < 3; ++k) {
         SCOPED_TRACE(eps_values[k]);
-        EXPECT_LT(ext[k].spread100, 1e-9) << "cubic symmetry broken along <100>";
-        EXPECT_LT(ext[k].spread111, 1e-9) << "cubic symmetry broken along <111>";
-        ratio[k] = ext[k].r100 / ext[k].r111;
+        const GrowthExtent ext = grow_seed(*this, eps_values[k], 64, 0.8, 0.03, 500);
+        EXPECT_LT(ext.spread100, 1e-9) << "cubic symmetry broken along <100>";
+        EXPECT_LT(ext.spread111, 1e-9) << "cubic symmetry broken along <111>";
+        ratio[k] = ext.r100 / ext.r111;
+        std::printf("eps=%.2f  R100=%.4f  R111=%.4f  R100/R111=%.4f\n", eps_values[k], ext.r100,
+                    ext.r111, ratio[k]);
     }
+    EXPECT_LT(std::fabs(ratio[0] - 1.0), 0.02) << "grid anisotropy at eps = 0";
     EXPECT_GT(ratio[1], ratio[0] + 0.035) << ratio[0] << " -> " << ratio[1];
     EXPECT_GT(ratio[2], ratio[1] + 0.035) << ratio[1] << " -> " << ratio[2];
-    EXPECT_GT(ratio[2], 1.05) << "eps = 0.05 must out-grow the grid bias along <100>";
+    EXPECT_GT(ratio[2], 1.1) << "eps = 0.05 must clearly favour <100>";
+}
+
+/// At eps = 0 the model is isotropic, so any <100>/<111> difference in the
+/// grown seed is grid anisotropy. For a consistent second-order scheme it must
+/// shrink under refinement: the same physical problem at h = 0.4 (N = 127)
+/// must be at least 3x closer to isotropic than at h = 0.8 (N = 64 spans the
+/// same box to within half a cell), with dt scaled by h^2.
+TEST_F(AnisotropyForceTest, GridAnisotropyVanishesUnderRefinement) {
+    const GrowthExtent coarse = grow_seed(*this, 0.0, 64, 0.8, 0.03, 500);
+    const GrowthExtent fine = grow_seed(*this, 0.0, 127, 0.4, 0.0075, 2000);
+    const double dev_coarse = std::fabs(coarse.r100 / coarse.r111 - 1.0);
+    const double dev_fine = std::fabs(fine.r100 / fine.r111 - 1.0);
+    std::printf("eps=0  |R100/R111 - 1|: h=0.8 %.5f  h=0.4 %.5f  (R100 %.4f -> %.4f, R111 %.4f -> "
+                "%.4f)\n",
+                dev_coarse, dev_fine, coarse.r100, fine.r100, coarse.r111, fine.r111);
+    EXPECT_LT(dev_fine, dev_coarse / 3.0);
 }
 
 /// Verify that all fields remain finite after a step with anisotropy.
