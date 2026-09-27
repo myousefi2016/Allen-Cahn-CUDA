@@ -15,6 +15,8 @@
 #   5. The scan-json dump is well-formed and contains the expected keys
 #   6. MP4 stitching produces a playable file (positive size, non-empty
 #      header that ffprobe could read — we just check size)
+#   7. Rendering a second simulation into a reused output dir never keeps
+#      or stitches frames rendered from the first simulation
 #
 # Used by the Makefile target `make cuda-visualize-self-test`. Designed to
 # run inside the cuda-dev image with no GPU and no real .vts files.
@@ -44,7 +46,7 @@ try:
     import numpy as np
     import pyvista as pv  # noqa: F401
     from PIL import Image
-    import imageio.v2 as imageio  # noqa: F401
+    import imageio.v2 as imageio
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write(
         f"ERROR: missing dependency ({exc}). "
@@ -260,6 +262,62 @@ def main() -> int:
                 f"MP4 suspiciously small: {mp4.stat().st_size} bytes")
         sys.stdout.write(f"  PASS  MP4 stitched -- {mp4.name} "
                          f"({mp4.stat().st_size:,} bytes)\n")
+
+        # ── 9. Re-run into a reused output dir (no stale frames) ───────
+        # Simulation A (steps 0/10/20) and then simulation B (steps 0/10,
+        # different data, step 10 wall-touching) are rendered into the SAME
+        # output dir, as `make cuda-all` followed by `make cuda-dendrite-demo`
+        # does. Afterwards every frame there must come from B: step 0 must be
+        # byte-identical to B rendered into an empty dir, step 10 (skipped as
+        # saturated) must not keep A's PNG, and the MP4 must hold B's frame
+        # only — not A's step 20.
+        run_a = tmpdir / "rerun_a"
+        run_b = tmpdir / "rerun_b"
+        for step, r0 in ((0, 2.0), (10, 2.5), (20, 3.0)):
+            _make_tmp_grid(run_a, n=24, dx=0.5, r0=r0, name=f"output_{step}.vts")
+        for step, r0 in ((0, 4.0), (10, 12.0)):
+            _make_tmp_grid(run_b, n=24, dx=0.5, r0=r0, name=f"output_{step}.vts")
+
+        def _render_cli(in_dir: Path, out_dir: Path) -> None:
+            rc = subprocess.call([
+                sys.executable, str(cli_path),
+                "--input-dir", str(in_dir),
+                "--output-dir", str(out_dir),
+                "--layout", "single",
+                "--window-size", "320", "240",
+                "--no-silhouette",
+                "--skip-saturated",
+                "--make-video", "--fps", "4",
+                "--quiet",
+            ])
+            _assert(rc == 0, f"CLI run {in_dir} -> {out_dir} rc={rc}")
+
+        shared = tmpdir / "viz_shared"
+        fresh_b = tmpdir / "viz_fresh_b"
+        _render_cli(run_a / "out", shared)
+        a_frames = {p.name: p.read_bytes() for p in shared.glob("frame_*.png")}
+        _assert(sorted(a_frames) == ["frame_000000.png", "frame_000010.png",
+                                     "frame_000020.png"],
+                f"simulation A rendered unexpected frames: {sorted(a_frames)}")
+        _render_cli(run_b / "out", shared)
+        _render_cli(run_b / "out", fresh_b)
+
+        got = (shared / "frame_000000.png").read_bytes()
+        _assert(got != a_frames["frame_000000.png"],
+                "frame_000000.png in reused output dir is still simulation A's "
+                "frame (stale frame reused)")
+        _assert(got == (fresh_b / "frame_000000.png").read_bytes(),
+                "frame_000000.png in reused output dir differs from a fresh "
+                "render of simulation B")
+        _assert(not (shared / "frame_000010.png").exists(),
+                "frame_000010.png from simulation A survived although B's "
+                "step 10 was skipped as saturated")
+        n_video = sum(1 for _ in imageio.get_reader(str(shared / "dendrite.mp4")))
+        _assert(n_video == 1,
+                f"MP4 in reused output dir has {n_video} frames, expected 1 "
+                "(simulation B's step 0 only)")
+        sys.stdout.write("  PASS  re-run into reused output dir renders "
+                         "current input only (no stale frames)\n")
 
         sys.stdout.write("==> visualize_smoke: ALL CHECKS PASSED\n")
         return 0

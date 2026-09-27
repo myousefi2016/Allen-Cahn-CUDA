@@ -1320,15 +1320,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     png_paths: List[Path] = []
     ok = 0
-    skipped = 0
     for i, f in enumerate(frames):
         step = natural_step(str(f))
         png = out_dir / f"frame_{step:06d}.png"
-        if png.exists() and png.stat().st_size > 0:
-            png_paths.append(png)
-            ok += 1
-            skipped += 1
-            continue
+        # Always render from the current input. A frame depends on its own
+        # snapshot AND on the global prescan (colour limits, time-series
+        # sidebar), so a PNG left by an earlier run can never be reused. Drop
+        # it first so a skipped or failed render cannot leave the previous
+        # run's image behind under this step's name.
+        png.unlink(missing_ok=True)
         t_frame = time.perf_counter()
         success = render_frame(f, png, scan, cfg, index=i, total=len(frames))
         if success:
@@ -1341,12 +1341,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                     f"-> {png.name}  ({dt_f:.2f}s)\n"
                 )
                 sys.stdout.flush()
-    if skipped:
-        sys.stdout.write(f"==> Skipped {skipped} existing frames (resume)\n")
 
     sys.stdout.write(f"==> Rendered {ok}/{len(frames)} frames\n")
 
+    rendered = {p.name for p in png_paths}
+    leftovers = sorted(p.name for p in out_dir.glob("frame_*.png")
+                       if p.name not in rendered)
+    if leftovers:
+        shown = ", ".join(leftovers[:5]) + (", ..." if len(leftovers) > 5 else "")
+        sys.stderr.write(
+            f"WARN: {len(leftovers)} frame_*.png file(s) in {out_dir} were not "
+            f"rendered by this run (left over from an earlier run, or beyond "
+            f"--limit) and are NOT part of the video: {shown}\n")
+
     # ── Optional video stitching ─────────────────────────────────────────
+    # png_paths holds only frames rendered from this run's snapshots.
     if args.make_video and png_paths:
         stitch_video(png_paths, out_dir / args.video_name, args.fps)
 
