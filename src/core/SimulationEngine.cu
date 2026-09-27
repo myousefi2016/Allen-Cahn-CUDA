@@ -136,11 +136,11 @@ void SimulationEngine::time_loop() {
     const bool sat_guard = config_.time.exit_on_saturation;
     const int sat_freq = std::max(1, config_.time.saturation_check_freq);
 
-    cuda::Event timer_start(cudaEventDefault);
-    cuda::Event timer_stop(cudaEventDefault);
-
     for (int step = start_step_ + 1; step <= max_steps; ++step) {
-        timer_start.record(solver_->stream());
+        // Host clock around step() + synchronize(): a CUDA event can only be
+        // recorded on a stream of the device it was created on, and a
+        // multi-GPU step spans several devices.
+        const auto step_start = std::chrono::steady_clock::now();
 
         // Adaptive time stepping
         if (config_.time.adaptive && step > start_step_ + 1) {
@@ -151,9 +151,10 @@ void SimulationEngine::time_loop() {
         solver_->step(dt);
         time += dt;
 
-        timer_stop.record(solver_->stream());
-        timer_stop.synchronize();
-        float step_ms = timer_stop.elapsed_ms(timer_start);
+        solver_->synchronize();
+        const double step_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start)
+                .count();
 
         // Periodic logging
         if (step % 100 == 0 || step == max_steps) {

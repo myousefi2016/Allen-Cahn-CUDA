@@ -186,7 +186,7 @@ graph LR
     D1 -- "cudaMemcpyPeerAsync<br/>YZ-slab copy" --> H0R
 ```
 
-Halo width is 2 because the fused Allen–Cahn kernel computes the force divergence by re-evaluating the force at the ±1 neighbours, and each neighbour-force itself needs a ±1 gradient — so the effective read reach from any thread is ±2 cells. Inter-GPU sub-domain X faces are configured as Neumann (zero-flux) by `MultiGPUSolver`; the halo exchange supplies the real values, so this is benign and avoids the wrong global BC being applied at internal interfaces.
+Halo width is 2 because the fused Allen–Cahn kernel computes the force divergence by re-evaluating the force at the ±1 neighbours, and each neighbour-force itself needs a ±1 gradient — so the effective read reach from any thread is ±2 cells. Halos exist only on sides that face another domain: the first and last domains hold the physical X walls and apply the configured BCs there, and a periodic X boundary is wrapped across domains by the exchange. Halos are refreshed before every stencil evaluation (between Heun/RK4 stages and after every IMEX Jacobi sweep), so the multi-GPU result is bit-identical to the single-GPU one; `tests/unit/test_MultiGPUSolver.cu` checks this for every scheme with several domains sharing one GPU (`gpu.device_ids` may repeat an ID).
 
 ---
 

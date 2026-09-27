@@ -41,6 +41,13 @@ __device__ __forceinline__ int idx3d(int x, int y, int z, int Ny, int Nz) {
     return static_cast<int>(static_cast<long long>(x) * Ny * Nz + y * Nz + z);
 }
 
+/// max(a, b) that propagates NaN. fmax returns the non-NaN operand, which lets
+/// a diverged field reduce to a finite maximum and hide the blow-up from the
+/// saturation guard and adaptive time stepping.
+__device__ __forceinline__ double nan_max(double a, double b) {
+    return (isnan(a) || isnan(b)) ? a + b : fmax(a, b);
+}
+
 __device__ __forceinline__ void linear_to_3d(int idx, int Ny, int Nz, int& x, int& y, int& z) {
     z = idx % Nz;
     y = (idx / Nz) % Ny;

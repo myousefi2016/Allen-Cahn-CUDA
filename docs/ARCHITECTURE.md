@@ -158,25 +158,26 @@ sequenceDiagram
     Note over Sol: H2D copy + apply BC
 
     loop Time loop (step <= max_steps)
-        Eng->>Sol: step(dt)
-        Note over Sol: kernel sequence on compute_stream_
-        alt Output step
-            Eng->>Sol: copy_phi_to_host(), copy_u_to_host()
-            Eng->>VTK: write_async(step, time, phi, u)
-        end
-        alt Checkpoint step
-            Eng->>Mgr: save(step, time, dt, phi, u)
-        end
-        alt Adaptive dt
+        opt Adaptive dt (from the second step on)
             Eng->>Sol: compute_max_dphi()
             Eng->>Eng: adapt_time_step()
         end
-        alt Saturation guard
-            Eng->>Sol: compute_boundary_max_phi()
-            Note over Eng: break if > saturation_threshold
+        Eng->>Sol: step(dt)
+        Eng->>Sol: synchronize()
+        Note over Eng: step time from a host steady_clock
+        opt Output step
+            Eng->>Sol: copy_phi_to_host(), copy_u_to_host()
+            Eng->>VTK: write_async(step, time, phi, u)
         end
-        alt SIGINT / SIGTERM
-            Note over Eng: g_shutdown_requested set;<br/>final checkpoint + output, break
+        opt Checkpoint step
+            Eng->>Mgr: save(step, time, dt, phi, u)
+        end
+        opt SIGINT / SIGTERM
+            Note over Eng: g_shutdown_requested set,<br/>final checkpoint + output, break
+        end
+        opt Saturation guard
+            Eng->>Sol: compute_boundary_max_phi()
+            Note over Eng: final checkpoint + output and break<br/>if > saturation_threshold
         end
     end
 
@@ -203,7 +204,6 @@ classDiagram
         +copy_u_to_host(out)
         +apply_boundary_conditions()
         +synchronize()
-        +stream() cudaStream_t
     }
 
     class CudaSolver {
@@ -217,7 +217,11 @@ classDiagram
         -compute_stream_, transfer_stream_ : Stream
         -scheme_ : TimeScheme
         +step_euler(dt), step_heun(dt), step_rk4(dt), step_imex(dt)
-        +step_heun_stage2(dt)
+        +step_heun_stage1(dt), step_heun_stage2(dt)
+        +rk4_stage(stage, dt)
+        +imex_begin(dt), imex_sweep(), imex_residual(x0, x1), imex_finish()
+        +compute_max_dphi(x0, x1), compute_boundary_max_phi(x0, x1, lo, hi)
+        +stream() cudaStream_t
         +phi_data() double*
         +u_data() double*
         -apply_bc(field, bc)
@@ -227,17 +231,20 @@ classDiagram
     class MultiGPUSolver {
         -domains_ : vector~GPUDomain~
         -halo_width_ : int (=2)
-        +exchange_halos()
-        +exchange_halos_for_tmp()
-        -copy_slab(...)
+        -wrap_phi_lo_, wrap_phi_hi_, wrap_u_lo_, wrap_u_hi_ : bool
+        -build_domains()
+        -release_domains()
+        -exchange(Buffers)
+        -copy_planes(...)
         -extract_subdomain(global, local, domain)
+        -gather(out, phi)
     }
 
     class GPUDomain {
         +device_id : int
-        +x_start, x_end : int
+        +x_start, x_end : int (owned global planes)
+        +left_halo, right_halo : int (2 or 0)
         +local_Nx : int
-        +halo : int (=2)
         +solver : unique_ptr~CudaSolver~
         +halo_stream : Stream
         +compute_done : Event
@@ -250,10 +257,12 @@ classDiagram
 ```
 
 The interface is in `src/cuda/ISolver.cuh`; `CudaSolver` and
-`MultiGPUSolver` are in `src/cuda/`. Note `step_heun_stage2(dt)` is
-public on `CudaSolver` because `MultiGPUSolver` calls it directly to
-inject an inter-stage halo exchange between the predictor and corrector
-(`MultiGPUSolver.cu:265-273`).
+`MultiGPUSolver` are in `src/cuda/`. The stage-level methods of
+`CudaSolver` (`step_heun_stage1/2`, `rk4_stage`, `imex_*`) and the
+X-ranged reductions are public because `MultiGPUSolver` drives each
+domain's solver stage by stage and exchanges halos between the stages;
+`step_heun`, `step_rk4` and `step_imex` are the same stages run back to
+back.
 
 ---
 
@@ -294,37 +303,35 @@ indexing `idx = x*Ny*Nz + y*Nz + z`. Allocations are sized in
 
 ## 6. Multi-GPU Halo Exchange
 
+One RK4 step on two domains (Euler, Heun and IMEX follow the same pattern
+with the exchanges listed in `DESIGN.md` §7):
+
 ```mermaid
 sequenceDiagram
-    participant G0 as GPU 0 (Domain 0)
-    participant G1 as GPU 1 (Domain 1)
+    participant H as Host (MultiGPUSolver::step)
+    participant G0 as Domain 0 (owns x_lo wall)
+    participant G1 as Domain 1 (owns x_hi wall)
 
-    Note over G0,G1: Before each step
-
-    G0->>G0: record compute_done event<br/>on compute_stream
-    G1->>G1: record compute_done event
-    G0->>G0: halo_stream waits on G1.compute_done
-    G1->>G1: halo_stream waits on G0.compute_done
-
-    par Halo (2-cell YZ slabs, peer-async)
-        G0->>G1: phi_old right slab (cudaMemcpyPeerAsync)
-        G0->>G1: u_old   right slab
-        G1->>G0: phi_old left  slab
-        G1->>G0: u_old   left  slab
+    Note over G0,G1: invariant: phi_old_/u_old_ halos current
+    H->>G0: rk4_stage(1)
+    H->>G1: rk4_stage(1)
+    loop stages 2, 3, 4
+        H->>H: exchange(Stage): phi_tmp_, u_tmp_
+        G0->>G1: last 2 owned planes -> left halo
+        G1->>G0: first 2 owned planes -> right halo
+        H->>G0: rk4_stage(s)
+        H->>G1: rk4_stage(s)
     end
-
-    Note over G0,G1: host syncs all halo_streams
-
-    par Compute
-        G0->>G0: solver.step(dt)
-        G1->>G1: solver.step(dt)
-    end
+    H->>H: exchange(Current): phi_old_, u_old_
 ```
 
-Sub-domain X faces that abut a neighbour GPU are configured as Neumann
-(zero-flux); the halo exchange supplies the real data, so the BC kernel
-output is overwritten before being read on the next step
-(`MultiGPUSolver.cu:69-83`).
+Each `exchange()` records `compute_done` on every domain's compute
+stream, makes every halo stream wait on all of those events, then copies
+with `cudaMemcpyPeerAsync` in two host-synchronised phases: the periodic
+X wrap (only when X is periodic) and then the neighbour halos. Halo and
+periodic X planes of each sub-solver carry a zero-flux Neumann
+placeholder BC; `exchange()` overwrites those planes before any stencil
+reads them.
 
 ---
 
@@ -412,7 +419,7 @@ order is **Z, Y, X** so that periodic faces see the latest values
 | `SpatialHash`    | None (build-then-query)                   | Single-threaded build, read-only after         |
 | `VTKWriter`      | `std::mutex` + `std::condition_variable`  | Producer-consumer with bounded queue           |
 | `DeviceField`    | None (single CUDA stream per solver)      | Stream ordering provides serialisation          |
-| `MultiGPUSolver` | Per-GPU streams + CUDA events              | Halo stream waits on compute event before peer copy |
+| `MultiGPUSolver` | Per-domain streams + CUDA events           | Every halo stream waits on every domain's compute event; host syncs halo streams |
 | Signal handling  | `std::atomic<bool> ac::g_shutdown_requested` | `sigaction` with `SA_RESTART`               |
 
 `g_shutdown_requested` is defined in `src/core/SimulationEngine.cu:14`

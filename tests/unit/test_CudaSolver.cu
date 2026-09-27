@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <gtest/gtest.h>
+#include <string>
 #include <vector>
 
 using namespace ac;
@@ -276,6 +277,25 @@ TEST_F(CudaSolverTest, PerFaceBoundaryConditionsHoldAfterStepping) {
                 ASSERT_DOUBLE_EQ(u(x, y, N - 1), -0.8) << "x=" << x << " y=" << y;
             }
     }
+}
+
+// NaN in the field must surface in both reductions the engine relies on
+// (adaptive dt and the saturation guard) instead of being dropped by fmax.
+TEST_F(CudaSolverTest, ReductionsPropagateNaN) {
+    const int N = 12;
+    auto cfg = make_config(N);
+    CudaSolver solver(cfg);
+
+    Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    make_sphere_ic(phi, u, N);
+    // Next to the x_lo wall: the zero-flux Neumann BC copies it onto the wall.
+    phi(1, 5, 5) = std::nan("");
+    solver.initialize(phi, u);
+
+    EXPECT_TRUE(std::isnan(solver.compute_boundary_max_phi()));
+    solver.step(0.001);
+    EXPECT_TRUE(std::isnan(solver.compute_max_dphi()));
 }
 
 TEST_F(CudaSolverTest, MultipleStepsConverge) {

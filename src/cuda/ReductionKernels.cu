@@ -12,7 +12,7 @@ namespace ac::cuda {
 /// Warp-level max reduction using __shfl_down_sync (correct on Volta+ with ITS).
 __device__ double warp_reduce_max_val(double val) {
     for (int offset = 16; offset > 0; offset >>= 1) {
-        val = fmax(val, __shfl_down_sync(0xFFFFFFFF, val, offset));
+        val = nan_max(val, __shfl_down_sync(0xFFFFFFFF, val, offset));
     }
     return val;
 }
@@ -29,9 +29,9 @@ __global__ void max_abs_diff_kernel(const double* __restrict__ a, const double* 
 
     double thread_max = 0.0;
     for (; i < static_cast<unsigned>(N); i += grid_stride) {
-        thread_max = fmax(thread_max, fabs(a[i] - b[i]));
+        thread_max = nan_max(thread_max, fabs(a[i] - b[i]));
         if (i + blockDim.x < static_cast<unsigned>(N))
-            thread_max = fmax(thread_max, fabs(a[i + blockDim.x] - b[i + blockDim.x]));
+            thread_max = nan_max(thread_max, fabs(a[i + blockDim.x] - b[i + blockDim.x]));
     }
 
     sdata[tid] = thread_max;
@@ -40,7 +40,7 @@ __global__ void max_abs_diff_kernel(const double* __restrict__ a, const double* 
     // Tree reduction in shared memory
     for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
         if (tid < s) {
-            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+            sdata[tid] = nan_max(sdata[tid], sdata[tid + s]);
         }
         __syncthreads();
     }
@@ -49,7 +49,7 @@ __global__ void max_abs_diff_kernel(const double* __restrict__ a, const double* 
     if (tid < 32) {
         double val = sdata[tid];
         if (blockDim.x >= 64)
-            val = fmax(val, sdata[tid + 32]);
+            val = nan_max(val, sdata[tid + 32]);
         val = warp_reduce_max_val(val);
         if (tid == 0)
             block_results[blockIdx.x] = val;
@@ -65,7 +65,7 @@ __global__ void final_max_kernel(const double* __restrict__ block_results,
     double thread_max = 0.0;
 
     for (unsigned int i = tid; i < static_cast<unsigned>(num_blocks); i += blockDim.x) {
-        thread_max = fmax(thread_max, block_results[i]);
+        thread_max = nan_max(thread_max, block_results[i]);
     }
 
     sdata[tid] = thread_max;
@@ -73,7 +73,7 @@ __global__ void final_max_kernel(const double* __restrict__ block_results,
 
     for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
         if (tid < s) {
-            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+            sdata[tid] = nan_max(sdata[tid], sdata[tid + s]);
         }
         __syncthreads();
     }
@@ -81,7 +81,7 @@ __global__ void final_max_kernel(const double* __restrict__ block_results,
     if (tid < 32) {
         double val = sdata[tid];
         if (blockDim.x >= 64)
-            val = fmax(val, sdata[tid + 32]);
+            val = nan_max(val, sdata[tid + 32]);
         val = warp_reduce_max_val(val);
         if (tid == 0)
             result[0] = val;
@@ -121,9 +121,9 @@ __global__ void max_abs_kernel(const double* __restrict__ data, double* __restri
 
     double thread_max = 0.0;
     for (; i < static_cast<unsigned>(N); i += grid_stride) {
-        thread_max = fmax(thread_max, fabs(data[i]));
+        thread_max = nan_max(thread_max, fabs(data[i]));
         if (i + blockDim.x < static_cast<unsigned>(N))
-            thread_max = fmax(thread_max, fabs(data[i + blockDim.x]));
+            thread_max = nan_max(thread_max, fabs(data[i + blockDim.x]));
     }
 
     sdata[tid] = thread_max;
@@ -131,14 +131,14 @@ __global__ void max_abs_kernel(const double* __restrict__ data, double* __restri
 
     for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
         if (tid < s)
-            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+            sdata[tid] = nan_max(sdata[tid], sdata[tid + s]);
         __syncthreads();
     }
 
     if (tid < 32) {
         double val = sdata[tid];
         if (blockDim.x >= 64)
-            val = fmax(val, sdata[tid + 32]);
+            val = nan_max(val, sdata[tid + 32]);
         val = warp_reduce_max_val(val);
         if (tid == 0)
             block_results[blockIdx.x] = val;

@@ -27,7 +27,8 @@ public:
     void copy_u_to_host(FieldData& out) const override;
     void apply_boundary_conditions() override;
     void synchronize() const override;
-    [[nodiscard]] cudaStream_t stream() const override { return compute_stream_.get(); }
+    /// Compute stream (created on device_ids.front()).
+    [[nodiscard]] cudaStream_t stream() const { return compute_stream_.get(); }
 
     // Time integration methods
     void step_euler(double dt);
@@ -47,8 +48,37 @@ public:
     /// Get total number of grid points.
     [[nodiscard]] std::size_t total_points() const { return total_points_; }
 
-    /// Heun stage 2: corrector + average. Called by MultiGPUSolver after inter-stage halo exchange.
+    /// Heun stage 1 (Euler predictor into phi_tmp_/u_tmp_) and stage 2
+    /// (corrector + average + swap). step_heun runs both back to back;
+    /// MultiGPUSolver exchanges the predictor's halos between them.
+    void step_heun_stage1(double dt);
     void step_heun_stage2(double dt);
+
+    /// RK4 stage 1..4: evaluate k_stage at the stage state (y_n for stage 1,
+    /// phi_tmp_/u_tmp_ otherwise), then build the next stage state in the tmp
+    /// buffers, or (stage 4) combine into y_{n+1} and swap. step_rk4 runs the
+    /// four stages back to back; MultiGPUSolver exchanges tmp halos between them.
+    void rk4_stage(int stage, double dt);
+
+    /// IMEX building blocks (step_imex = begin, sweeps with periodic residual
+    /// checks, finish), exposed so MultiGPUSolver can exchange the Jacobi
+    /// iterate's halos before every sweep and test a global residual.
+    void imex_begin(double dt);
+    void imex_sweep();
+    [[nodiscard]] double imex_residual(int x_begin, int x_end) const;
+    void imex_finish();
+    static constexpr int kJacobiMaxIters = 200;
+    static constexpr int kJacobiCheckFreq = 10;
+    static constexpr double kJacobiTol = 1e-10;
+
+    /// max|phi_new - phi_old| over the x-slab [x_begin, x_end).
+    [[nodiscard]] double compute_max_dphi(int x_begin, int x_end) const;
+
+    /// max(phi) over the physical boundary cells of the x-slab [x_begin, x_end):
+    /// Y/Z faces restricted to the slab plus the X planes x_begin / x_end-1
+    /// when x_lo_face / x_hi_face say they are walls.
+    [[nodiscard]] double compute_boundary_max_phi(int x_begin, int x_end, bool x_lo_face,
+                                                  bool x_hi_face) const;
 
     /// Mutable access to kernel params (for multi-GPU dt updates).
     KernelParams& mutable_params() { return params_; }
@@ -57,6 +87,10 @@ public:
     friend class MultiGPUSolver;
 
 private:
+    /// Make device_ids.front() current before any other member is built:
+    /// streams and events belong to the device that is current when they are
+    /// created, so this must run before compute_stream_/transfer_stream_.
+    static int activate_device(const SimulationConfig& config);
     /// Apply the configured phi BCs (per-face when config.boundary.per_face, else uniform).
     void apply_phi_bc(double* field);
 
@@ -69,6 +103,7 @@ private:
     /// Apply per-face BCs to a single field.
     void apply_bc_per_face(double* field, const PerFaceBoundary& face_bcs);
 
+    int device_id_; // first data member: initialised (device selected) before the streams
     SimulationConfig config_;
     KernelParams params_;
 

@@ -18,6 +18,7 @@ add_executable(unit_tests
     unit/test_BoundaryConditions.cu
     unit/test_Reduction.cu
     unit/test_CudaSolver.cu
+    unit/test_MultiGPUSolver.cu
     unit/test_ThermalKernels.cu
     unit/test_Gradient.cu
     unit/test_SimulationEngine.cu

@@ -353,39 +353,88 @@ domain wall.
 ## 7. Multi-GPU Strategy
 
 `MultiGPUSolver` (`src/cuda/MultiGPUSolver.cu`) decomposes the domain
-along the X-axis with halo width 2:
+along the X axis and reproduces the single-GPU `CudaSolver` bit for bit
+for every time scheme and boundary layout.
 
-| Field                     | Value | Source                       |
-|---------------------------|-------|------------------------------|
-| `halo_width_`             | 2     | `MultiGPUSolver.cu:22`       |
-| Decomposition axis        | X     | `MultiGPUSolver.cu:46-61`    |
-| Inter-GPU BC              | Neumann (zero-flux) | `MultiGPUSolver.cu:69-83` |
+| Aspect | Choice | Where |
+|---|---|---|
+| Decomposition | contiguous X slabs, `Nx / n` planes each, remainder to the first domains | `MultiGPUSolver::build_domains` |
+| Halo width | 2 planes (the fused kernel reads ±2) | `MultiGPUSolver` constructor |
+| Halo placement | only on sides that face another domain | `GPUDomain::left_halo` / `right_halo` |
+| Physical X walls | held by the first / last domain, which apply the configured BC | `build_domains` |
+| Halo / periodic X faces inside a sub-solver | zero-flux Neumann placeholder, overwritten by `exchange()` before it is read | `build_domains` |
+| Minimum slab | every domain owns ≥ 2 planes, else `std::invalid_argument` | constructor |
+| Domains per device | any; `gpu.device_ids` may repeat an ID | constructor (peer access only between distinct IDs) |
 
-For each pair of neighbouring GPUs, two halo slabs (left→right and
-right→left) of two cells each are exchanged via `cudaMemcpyPeerAsync` on
-a dedicated `halo_stream`. CUDA events synchronise the halo stream with
-each side's compute stream (`MultiGPUSolver.cu:151-187`).
+**Why this is exact.** Every owned cell is computed by the same kernel from
+the same operands as in the single-GPU run, provided every plane the
+stencil reads is current:
 
-Heun and IMEX in multi-GPU mode require an inter-stage halo exchange of
-the temporary arrays via `exchange_halos_for_tmp()`
-(`MultiGPUSolver.cu:250-273`). RK4 in multi-GPU mode currently issues a
-warning that inter-stage halo exchange is approximated — error is
-confined to ~2 cells at each interior GPU boundary (`MultiGPUSolver.cu:274-290`).
+1. The first and last domains own the global planes `0` and `Nx-1`, so the
+   BC kernels (Z, then Y, then X) act on exactly the same cells as in the
+   single-GPU run. Y/Z BCs only read within an X plane, so they are
+   unaffected by the decomposition.
+2. A periodic X BC copies plane `Nx-2` to `0` and plane `1` to `Nx-1`; the
+   two planes live on different domains, so `exchange()` performs this
+   *wrap* (phase 1) before the neighbour exchange (phase 2), because a
+   domain that owns only two planes forwards a ghost plane to its
+   neighbour's halo.
+3. `exchange()` runs whenever a stencil is about to read a buffer whose
+   halos are stale (table below).
+4. Reductions (`compute_max_dphi`, `compute_boundary_max_phi`, the IMEX
+   residual) run over each domain's owned slab only, with the X walls
+   counted only on the first/last domain. Maximum is exact and
+   order-independent, and NaN propagates (`nan_max` on the device,
+   `nan_aware_max` across domains), so adaptive `dt`, the saturation guard
+   and the IMEX early exit take identical decisions.
+
+| Scheme | Exchanges per step |
+|---|---|
+| Euler | `phi_old_`/`u_old_` after the step |
+| Heun | predictor (`phi_tmp_`/`u_tmp_`) between the stages, then the new state |
+| RK4 | stage state (`phi_tmp_`/`u_tmp_`) before stages 2, 3 and 4, then the new state |
+| IMEX | the Jacobi iterate (`u_new_`) after every sweep, then the new state |
+
+The IMEX solver checks the global residual (max over domains) every 10
+sweeps, like the single-GPU solver, so both run the same number of Jacobi
+sweeps.
+
+**Synchronisation.** Before an exchange every domain records
+`compute_done` on its compute stream and every halo stream waits on all
+of those events (a copy reads another domain's memory). The copies use
+`cudaMemcpyPeerAsync` on the halo streams, and the host synchronises the
+halo streams after each phase, so the next kernels on any compute stream
+see the new halos. Each domain's streams and events are created with its
+device current, and the destructor releases each domain with its device
+current.
+
+**Evidence.** `tests/unit/test_MultiGPUSolver.cu` compares
+`MultiGPUSolver` (2 and 3 domains sharing device 0) with `CudaSolver`
+bit for bit after `initialize()` and after every one of 8 steps. It covers
+Euler, Heun, RK4 and IMEX × {uniform, per-face with Robin, fluxes, Z
+periodic and the 27-point stencil, periodic X}, including an `Nx = 6`
+split where every domain owns exactly two planes. It also compares
+`compute_max_dphi` and `compute_boundary_max_phi`, and a full adaptive-`dt`
+`SimulationEngine` run.
 
 ```mermaid
 sequenceDiagram
-    participant G0 as GPU 0
-    participant G1 as GPU 1
-    Note over G0,G1: Before each step
-    par Halo
-        G0->>G1: phi_old right-slab + u_old right-slab
-        G1->>G0: phi_old left-slab  + u_old left-slab
+    participant G0 as Domain 0 (x_lo wall)
+    participant G1 as Domain 1 (x_hi wall)
+    Note over G0,G1: exchange(buffers)
+    G0->>G0: record compute_done
+    G1->>G1: record compute_done
+    Note over G0,G1: every halo stream waits on every compute_done
+    opt periodic X (phase 1)
+        G1->>G0: global plane Nx-2 -> ghost plane 0
+        G0->>G1: global plane 1 -> ghost plane Nx-1
     end
-    Note over G0,G1: halo_stream synchronize
-    par Compute
-        G0->>G0: solver.step(dt)
-        G1->>G1: solver.step(dt)
+    Note over G0,G1: host syncs halo streams
+    par phase 2
+        G0->>G1: last 2 owned planes -> left halo
+        G1->>G0: first 2 owned planes -> right halo
     end
+    Note over G0,G1: host syncs halo streams
 ```
 
 ---

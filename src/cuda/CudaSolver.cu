@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
 
 namespace ac::cuda {
 
@@ -113,11 +114,18 @@ __global__ void __launch_bounds__(256)
 
 // ── CudaSolver implementation ──────────────────────────────────────────────
 
-CudaSolver::CudaSolver(const SimulationConfig& config)
-    : config_(config), params_(KernelParams::from_config(config)), scheme_(config.time.scheme),
-      total_points_(static_cast<std::size_t>(config.grid.Nx) * config.grid.Ny * config.grid.Nz) {
-    CUDA_CHECK(cudaSetDevice(config.gpu.device_ids.front()));
+int CudaSolver::activate_device(const SimulationConfig& config) {
+    if (config.gpu.device_ids.empty())
+        throw std::invalid_argument("CudaSolver requires at least one entry in gpu.device_ids");
+    const int device = config.gpu.device_ids.front();
+    CUDA_CHECK(cudaSetDevice(device));
+    return device;
+}
 
+CudaSolver::CudaSolver(const SimulationConfig& config)
+    : device_id_(activate_device(config)), config_(config),
+      params_(KernelParams::from_config(config)), scheme_(config.time.scheme),
+      total_points_(static_cast<std::size_t>(config.grid.Nx) * config.grid.Ny * config.grid.Nz) {
     // Allocate primary field buffers
     phi_old_ = DeviceField<double>(total_points_);
     phi_new_ = DeviceField<double>(total_points_);
@@ -231,11 +239,16 @@ __global__ void __launch_bounds__(256)
 }
 
 void CudaSolver::step_heun(double dt) {
-    params_.dt = dt;
-    int N = static_cast<int>(total_points_);
-    auto cfg = LaunchConfig::for_1d(total_points_, 256);
+    step_heun_stage1(dt);
+    step_heun_stage2(dt);
+}
 
-    // Stage 1: Euler predictor -> phi_tmp_, u_tmp_
+// ── Heun stages (split so MultiGPUSolver can exchange halos in between) ──
+
+void CudaSolver::step_heun_stage1(double dt) {
+    params_.dt = dt;
+
+    // Euler predictor -> phi_tmp_, u_tmp_
     // phi_tmp_ = phi_old + dt*f_phi(phi_old, u_old)
     launch_allen_cahn_fused(phi_old_.data(), phi_tmp_.data(), u_old_.data(), params_,
                             compute_stream_);
@@ -245,8 +258,14 @@ void CudaSolver::step_heun(double dt) {
     launch_thermal_equation(u_old_.data(), u_tmp_.data(), phi_tmp_.data(), phi_old_.data(), params_,
                             compute_stream_);
     apply_u_bc(u_tmp_.data());
+}
 
-    // Stage 2: Euler from predicted state -> phi_new_, u_new_
+void CudaSolver::step_heun_stage2(double dt) {
+    params_.dt = dt;
+    int N = static_cast<int>(total_points_);
+    auto cfg = LaunchConfig::for_1d(total_points_, 256);
+
+    // Euler from predicted state -> phi_new_, u_new_
     // phi_new_ = phi_tmp_ + dt*f_phi(phi_tmp_, u_tmp_)
     launch_allen_cahn_fused(phi_tmp_.data(), phi_new_.data(), u_tmp_.data(), params_,
                             compute_stream_);
@@ -275,122 +294,48 @@ void CudaSolver::step_heun(double dt) {
     swap(u_old_, u_new_);
 }
 
-// ── Heun stage 2 (for multi-GPU inter-stage halo exchange) ────────────────
-
-void CudaSolver::step_heun_stage2(double dt) {
-    params_.dt = dt;
-    int N = static_cast<int>(total_points_);
-    auto cfg = LaunchConfig::for_1d(total_points_, 256);
-
-    // Stage 2: Euler from predicted state -> phi_new_, u_new_
-    launch_allen_cahn_fused(phi_tmp_.data(), phi_new_.data(), u_tmp_.data(), params_,
-                            compute_stream_);
-    apply_phi_bc(phi_new_.data());
-
-    launch_thermal_equation(u_tmp_.data(), u_new_.data(), phi_new_.data(), phi_tmp_.data(), params_,
-                            compute_stream_);
-    apply_u_bc(u_new_.data());
-
-    // Heun average: y_{n+1} = 0.5*(y_n + y_tilde2)
-    average_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_new_.data(), phi_old_.data(), phi_new_.data(), N);
-    CUDA_CHECK(cudaGetLastError());
-
-    average_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_new_.data(), u_old_.data(),
-                                                                      u_new_.data(), N);
-    CUDA_CHECK(cudaGetLastError());
-
-    apply_phi_bc(phi_new_.data());
-    apply_u_bc(u_new_.data());
-
-    swap(phi_old_, phi_new_);
-    swap(u_old_, u_new_);
-}
-
 // ── RK4 step ───────────────────────────────────────────────────────────────
 
 void CudaSolver::step_rk4(double dt) {
+    for (int stage = 1; stage <= 4; ++stage)
+        rk4_stage(stage, dt);
+}
+
+void CudaSolver::rk4_stage(int stage, double dt) {
     params_.dt = dt;
     int N = static_cast<int>(total_points_);
     auto cfg = LaunchConfig::for_1d(total_points_, 256);
+    DeviceField<double>* k_phi[4] = {&k1_phi_, &k2_phi_, &k3_phi_, &k4_phi_};
+    DeviceField<double>* k_u[4] = {&k1_u_, &k2_u_, &k3_u_, &k4_u_};
+    const int s = stage - 1;
 
-    // Stage 1: k1 = f(t_n, y_n)
-    // Compute forces and RHS for phi
+    // k_s = f(stage state): y_n for stage 1, the tmp state built by the
+    // previous stage otherwise.
+    const double* phi_in = (stage == 1) ? phi_old_.data() : phi_tmp_.data();
+    const double* u_in = (stage == 1) ? u_old_.data() : u_tmp_.data();
     compute_force_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_old_.data(), Fx_.data(), Fy_.data(), Fz_.data(), params_);
-    CUDA_CHECK(cudaGetLastError());
-
-    allen_cahn_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_old_.data(), k1_phi_.data(), u_old_.data(), Fx_.data(), Fy_.data(), Fz_.data(),
-        params_);
-    CUDA_CHECK(cudaGetLastError());
-
-    thermal_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        u_old_.data(), k1_u_.data(), k1_phi_.data(), params_);
-    CUDA_CHECK(cudaGetLastError());
-
-    // Stage 2: k2 = f(t_n + dt/2, y_n + dt/2 * k1)
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(phi_tmp_.data(), phi_old_.data(),
-                                                                   k1_phi_.data(), 0.5 * dt, N);
-    CUDA_CHECK(cudaGetLastError());
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_tmp_.data(), u_old_.data(),
-                                                                   k1_u_.data(), 0.5 * dt, N);
-    CUDA_CHECK(cudaGetLastError());
-    apply_phi_bc(phi_tmp_.data());
-    apply_u_bc(u_tmp_.data());
-
-    compute_force_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(), params_);
+        phi_in, Fx_.data(), Fy_.data(), Fz_.data(), params_);
     CUDA_CHECK(cudaGetLastError());
     allen_cahn_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_tmp_.data(), k2_phi_.data(), u_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(),
-        params_);
+        phi_in, k_phi[s]->data(), u_in, Fx_.data(), Fy_.data(), Fz_.data(), params_);
     CUDA_CHECK(cudaGetLastError());
     thermal_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        u_tmp_.data(), k2_u_.data(), k2_phi_.data(), params_);
+        u_in, k_u[s]->data(), k_phi[s]->data(), params_);
     CUDA_CHECK(cudaGetLastError());
 
-    // Stage 3: k3 = f(t_n + dt/2, y_n + dt/2 * k2)
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(phi_tmp_.data(), phi_old_.data(),
-                                                                   k2_phi_.data(), 0.5 * dt, N);
-    CUDA_CHECK(cudaGetLastError());
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_tmp_.data(), u_old_.data(),
-                                                                   k2_u_.data(), 0.5 * dt, N);
-    CUDA_CHECK(cudaGetLastError());
-    apply_phi_bc(phi_tmp_.data());
-    apply_u_bc(u_tmp_.data());
-
-    compute_force_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(), params_);
-    CUDA_CHECK(cudaGetLastError());
-    allen_cahn_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_tmp_.data(), k3_phi_.data(), u_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(),
-        params_);
-    CUDA_CHECK(cudaGetLastError());
-    thermal_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        u_tmp_.data(), k3_u_.data(), k3_phi_.data(), params_);
-    CUDA_CHECK(cudaGetLastError());
-
-    // Stage 4: k4 = f(t_n + dt, y_n + dt * k3)
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(phi_tmp_.data(), phi_old_.data(),
-                                                                   k3_phi_.data(), dt, N);
-    CUDA_CHECK(cudaGetLastError());
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_tmp_.data(), u_old_.data(),
-                                                                   k3_u_.data(), dt, N);
-    CUDA_CHECK(cudaGetLastError());
-    apply_phi_bc(phi_tmp_.data());
-    apply_u_bc(u_tmp_.data());
-
-    compute_force_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(), params_);
-    CUDA_CHECK(cudaGetLastError());
-    allen_cahn_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        phi_tmp_.data(), k4_phi_.data(), u_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(),
-        params_);
-    CUDA_CHECK(cudaGetLastError());
-    thermal_rhs_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-        u_tmp_.data(), k4_u_.data(), k4_phi_.data(), params_);
-    CUDA_CHECK(cudaGetLastError());
+    if (stage < 4) {
+        // Next stage state: y_n + c*dt*k_s with c = 1/2, 1/2, 1.
+        const double c = (stage == 3) ? dt : 0.5 * dt;
+        axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
+            phi_tmp_.data(), phi_old_.data(), k_phi[s]->data(), c, N);
+        CUDA_CHECK(cudaGetLastError());
+        axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_tmp_.data(), u_old_.data(),
+                                                                       k_u[s]->data(), c, N);
+        CUDA_CHECK(cudaGetLastError());
+        apply_phi_bc(phi_tmp_.data());
+        apply_u_bc(u_tmp_.data());
+        return;
+    }
 
     // Combine: y_{n+1} = y_n + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
     rk4_combine_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
@@ -412,6 +357,16 @@ void CudaSolver::step_rk4(double dt) {
 // ── IMEX step ──────────────────────────────────────────────────────────────
 
 void CudaSolver::step_imex(double dt) {
+    imex_begin(dt);
+    for (int iter = 0; iter < kJacobiMaxIters; ++iter) {
+        imex_sweep();
+        if ((iter + 1) % kJacobiCheckFreq == 0 && imex_residual(0, params_.Nx) < kJacobiTol)
+            break;
+    }
+    imex_finish();
+}
+
+void CudaSolver::imex_begin(double dt) {
     params_.dt = dt;
     int N = static_cast<int>(total_points_);
     auto cfg = LaunchConfig::for_1d(total_points_, 256);
@@ -434,34 +389,38 @@ void CudaSolver::step_imex(double dt) {
     // jacobi_step_kernel writes interior cells only, so both iterate buffers
     // start from u_old and the BC is re-applied to every new iterate: boundary
     // cells then always hold values consistent with the current interior
-    // (instead of leftover scratch data), and the residual below measures real
-    // convergence. Adaptive iteration count: check residual every 10 iters,
-    // exit early when converged; max 200 to handle large dt*D/h^2 ratios.
+    // (instead of leftover scratch data), and the residual measures real
+    // convergence. Adaptive iteration count: check residual every
+    // kJacobiCheckFreq sweeps, exit early when converged; at most
+    // kJacobiMaxIters to handle large dt*D/h^2 ratios.
     u_new_.copy_from(u_old_, compute_stream_);
     u_tmp_.copy_from(u_old_, compute_stream_);
-    constexpr int JACOBI_MAX_ITERS = 200;
-    constexpr int JACOBI_CHECK_FREQ = 10;
-    constexpr double JACOBI_TOL = 1e-10;
-    for (int iter = 0; iter < JACOBI_MAX_ITERS; ++iter) {
-        jacobi_step_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
-            u_new_.data(), u_tmp_.data(), phi_tmp_.data(), params_, dt);
-        CUDA_CHECK(cudaGetLastError());
-        apply_u_bc(u_tmp_.data());
-        swap(u_new_, u_tmp_);
+}
 
-        if ((iter + 1) % JACOBI_CHECK_FREQ == 0) {
-            launch_max_abs_diff(u_new_.data(), u_tmp_.data(), d_reduction_result_.data(),
-                                total_points_, reduction_scratch_.data(),
-                                static_cast<int>(reduction_scratch_.size()), compute_stream_);
-            double residual = 0.0;
-            CUDA_CHECK(cudaMemcpyAsync(&residual, d_reduction_result_.data(), sizeof(double),
-                                       cudaMemcpyDeviceToHost, compute_stream_));
-            compute_stream_.synchronize();
-            if (residual < JACOBI_TOL)
-                break;
-        }
-    }
+void CudaSolver::imex_sweep() {
+    auto cfg = LaunchConfig::for_1d(total_points_, 256);
+    jacobi_step_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
+        u_new_.data(), u_tmp_.data(), phi_tmp_.data(), params_, params_.dt);
+    CUDA_CHECK(cudaGetLastError());
+    apply_u_bc(u_tmp_.data());
+    swap(u_new_, u_tmp_);
+}
 
+double CudaSolver::imex_residual(int x_begin, int x_end) const {
+    const std::size_t plane = static_cast<std::size_t>(params_.Ny) * params_.Nz;
+    const std::size_t offset = static_cast<std::size_t>(x_begin) * plane;
+    const std::size_t count = static_cast<std::size_t>(x_end - x_begin) * plane;
+    launch_max_abs_diff(u_new_.data() + offset, u_tmp_.data() + offset, d_reduction_result_.data(),
+                        count, reduction_scratch_.data(),
+                        static_cast<int>(reduction_scratch_.size()), compute_stream_);
+    double residual = 0.0;
+    CUDA_CHECK(cudaMemcpyAsync(&residual, d_reduction_result_.data(), sizeof(double),
+                               cudaMemcpyDeviceToHost, compute_stream_));
+    compute_stream_.synchronize();
+    return residual;
+}
+
+void CudaSolver::imex_finish() {
     apply_u_bc(u_new_.data());
 
     swap(phi_old_, phi_new_);
@@ -505,69 +464,75 @@ void CudaSolver::apply_boundary_conditions() {
 /// Warp-level max reduction (reused from ReductionKernels pattern).
 __device__ double warp_reduce_max(double val) {
     for (int offset = 16; offset > 0; offset >>= 1)
-        val = fmax(val, __shfl_down_sync(0xFFFFFFFF, val, offset));
+        val = nan_max(val, __shfl_down_sync(0xFFFFFFFF, val, offset));
     return val;
 }
 
-/// Per-block reduction: max(phi) over the 6 one-cell-thick boundary slabs.
+/// Per-block reduction: max(phi) over the physical boundary cells of the
+/// X range [x_begin, x_end): the Y and Z faces restricted to that range, plus
+/// the X planes x_begin / x_end-1 when they are walls (not inter-GPU halos).
+/// NaN propagates, so a diverged field cannot read as unsaturated.
 /// Writes one per-block result (no cross-block atomics — avoids the broken
 /// atomicMax-for-negative-doubles pattern).
 __global__ void __launch_bounds__(256)
-    boundary_max_kernel(const double* __restrict__ phi, double* __restrict__ block_results, int Nx,
-                        int Ny, int Nz) {
+    boundary_max_kernel(const double* __restrict__ phi, double* __restrict__ block_results, int Ny,
+                        int Nz, int x_begin, int x_end, int x_lo_face, int x_hi_face) {
     extern __shared__ double sdata[];
     unsigned int tid = threadIdx.x;
     unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
-    std::size_t face_yz = static_cast<std::size_t>(Ny) * Nz;
-    std::size_t face_xz = static_cast<std::size_t>(Nx) * Nz;
-    std::size_t face_xy = static_cast<std::size_t>(Nx) * Ny;
-    std::size_t total_boundary = 2 * face_yz + 2 * face_xz + 2 * face_xy;
+    const std::size_t nx = static_cast<std::size_t>(x_end - x_begin);
+    const std::size_t face_yz = static_cast<std::size_t>(Ny) * Nz;
+    const std::size_t n_xlo = x_lo_face ? face_yz : 0;
+    const std::size_t n_xhi = x_hi_face ? face_yz : 0;
+    const std::size_t face_xz = nx * Nz;
+    const std::size_t face_xy = nx * Ny;
+    const std::size_t total_boundary = n_xlo + n_xhi + 2 * face_xz + 2 * face_xy;
     double local_max = -1e30;
 
     for (std::size_t i = gid; i < total_boundary; i += gridDim.x * blockDim.x) {
         int x, y, z;
         std::size_t off = i;
-        if (off < face_yz) {
-            x = 0;
+        if (off < n_xlo) {
+            x = x_begin;
             y = static_cast<int>(off / Nz);
             z = static_cast<int>(off % Nz);
-        } else if ((off -= face_yz) < face_yz) {
-            x = Nx - 1;
+        } else if ((off -= n_xlo) < n_xhi) {
+            x = x_end - 1;
             y = static_cast<int>(off / Nz);
             z = static_cast<int>(off % Nz);
-        } else if ((off -= face_yz) < face_xz) {
-            x = static_cast<int>(off / Nz);
+        } else if ((off -= n_xhi) < face_xz) {
+            x = x_begin + static_cast<int>(off / Nz);
             y = 0;
             z = static_cast<int>(off % Nz);
         } else if ((off -= face_xz) < face_xz) {
-            x = static_cast<int>(off / Nz);
+            x = x_begin + static_cast<int>(off / Nz);
             y = Ny - 1;
             z = static_cast<int>(off % Nz);
         } else if ((off -= face_xz) < face_xy) {
-            x = static_cast<int>(off / Ny);
+            x = x_begin + static_cast<int>(off / Ny);
             y = static_cast<int>(off % Ny);
             z = 0;
         } else {
             off -= face_xy;
-            x = static_cast<int>(off / Ny);
+            x = x_begin + static_cast<int>(off / Ny);
             y = static_cast<int>(off % Ny);
             z = Nz - 1;
         }
-        double v = phi[static_cast<std::size_t>(x) * Ny * Nz + y * Nz + z];
-        local_max = fmax(local_max, v);
+        double v = phi[(static_cast<std::size_t>(x) * Ny + y) * Nz + z];
+        local_max = nan_max(local_max, v);
     }
 
     sdata[tid] = local_max;
     __syncthreads();
     for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
         if (tid < s)
-            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+            sdata[tid] = nan_max(sdata[tid], sdata[tid + s]);
         __syncthreads();
     }
     if (tid < 32) {
         double val = sdata[tid];
         if (blockDim.x >= 64)
-            val = fmax(val, sdata[tid + 32]);
+            val = nan_max(val, sdata[tid + 32]);
         val = warp_reduce_max(val);
         if (tid == 0)
             block_results[blockIdx.x] = val;
@@ -582,18 +547,18 @@ __global__ void __launch_bounds__(256)
     unsigned int tid = threadIdx.x;
     double val = -1e30;
     for (unsigned int i = tid; i < static_cast<unsigned>(num_blocks); i += blockDim.x)
-        val = fmax(val, block_results[i]);
+        val = nan_max(val, block_results[i]);
     sdata[tid] = val;
     __syncthreads();
     for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
         if (tid < s)
-            sdata[tid] = fmax(sdata[tid], sdata[tid + s]);
+            sdata[tid] = nan_max(sdata[tid], sdata[tid + s]);
         __syncthreads();
     }
     if (tid < 32) {
         val = sdata[tid];
         if (blockDim.x >= 64)
-            val = fmax(val, sdata[tid + 32]);
+            val = nan_max(val, sdata[tid + 32]);
         val = warp_reduce_max(val);
         if (tid == 0)
             result[0] = val;
@@ -601,15 +566,25 @@ __global__ void __launch_bounds__(256)
 }
 
 double CudaSolver::compute_boundary_max_phi() const {
-    std::size_t total_boundary = static_cast<std::size_t>(2) * params_.Ny * params_.Nz +
-                                 static_cast<std::size_t>(2) * params_.Nx * params_.Nz +
-                                 static_cast<std::size_t>(2) * params_.Nx * params_.Ny;
+    return compute_boundary_max_phi(0, params_.Nx, true, true);
+}
+
+double CudaSolver::compute_boundary_max_phi(int x_begin, int x_end, bool x_lo_face,
+                                            bool x_hi_face) const {
+    const std::size_t nx = static_cast<std::size_t>(x_end - x_begin);
+    std::size_t total_boundary = static_cast<std::size_t>(2) * nx * params_.Nz +
+                                 static_cast<std::size_t>(2) * nx * params_.Ny;
+    if (x_lo_face)
+        total_boundary += static_cast<std::size_t>(params_.Ny) * params_.Nz;
+    if (x_hi_face)
+        total_boundary += static_cast<std::size_t>(params_.Ny) * params_.Nz;
     auto cfg = LaunchConfig::for_1d(total_boundary, 256);
     int num_blocks = static_cast<int>(cfg.grid.x);
 
     DeviceField<double> block_results(static_cast<std::size_t>(num_blocks));
     boundary_max_kernel<<<cfg.grid, cfg.block, 256 * sizeof(double), compute_stream_.get()>>>(
-        phi_old_.data(), block_results.data(), params_.Nx, params_.Ny, params_.Nz);
+        phi_old_.data(), block_results.data(), params_.Ny, params_.Nz, x_begin, x_end,
+        x_lo_face ? 1 : 0, x_hi_face ? 1 : 0);
     CUDA_CHECK(cudaGetLastError());
 
     boundary_final_max_kernel<<<1, 256, 256 * sizeof(double), compute_stream_.get()>>>(
@@ -624,9 +599,17 @@ double CudaSolver::compute_boundary_max_phi() const {
 }
 
 double CudaSolver::compute_max_dphi() const {
-    launch_max_abs_diff(phi_old_.data(), phi_new_.data(), d_reduction_result_.data(), total_points_,
-                        reduction_scratch_.data(), static_cast<int>(reduction_scratch_.size()),
-                        compute_stream_);
+    return compute_max_dphi(0, params_.Nx);
+}
+
+double CudaSolver::compute_max_dphi(int x_begin, int x_end) const {
+    // The layout is x-major, so an X range is one contiguous slab.
+    const std::size_t plane = static_cast<std::size_t>(params_.Ny) * params_.Nz;
+    const std::size_t offset = static_cast<std::size_t>(x_begin) * plane;
+    const std::size_t count = static_cast<std::size_t>(x_end - x_begin) * plane;
+    launch_max_abs_diff(phi_old_.data() + offset, phi_new_.data() + offset,
+                        d_reduction_result_.data(), count, reduction_scratch_.data(),
+                        static_cast<int>(reduction_scratch_.size()), compute_stream_);
 
     double result = 0.0;
     CUDA_CHECK(cudaMemcpyAsync(&result, d_reduction_result_.data(), sizeof(double),

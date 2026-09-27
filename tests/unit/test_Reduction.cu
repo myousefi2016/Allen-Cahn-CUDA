@@ -7,6 +7,7 @@
 #include <cmath>
 #include <gtest/gtest.h>
 #include <numeric>
+#include <string>
 #include <vector>
 
 using namespace ac;
@@ -137,4 +138,34 @@ TEST_F(ReductionTest, LargeArray) {
     CUDA_CHECK(cudaDeviceSynchronize());
 
     EXPECT_DOUBLE_EQ(result, 99.0);
+}
+
+// A diverged field must not reduce to a finite maximum: fmax drops a NaN
+// operand, which would let adaptive dt and the saturation guard carry on
+// with a blown-up solution. The NaN is placed in the first, a middle and the
+// last element (last block, and the second half of a thread's element pair).
+TEST_F(ReductionTest, MaxAbsDiffAndMaxAbsPropagateNaN) {
+    const std::size_t N = 1024 * 1024 + 37;
+    for (std::size_t at : {std::size_t{0}, N / 2 + 300, N - 1}) {
+        SCOPED_TRACE("NaN at " + std::to_string(at));
+        std::vector<double> a(N, 1.0), b(N, 2.0);
+        a[at] = std::nan("");
+
+        DeviceField<double> d_a(N), d_b(N), d_result(1);
+        d_a.copy_from_host(a.data());
+        d_b.copy_from_host(b.data());
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        double result = 0.0;
+        launch_max_abs_diff(d_a.data(), d_b.data(), d_result.data(), N);
+        d_result.copy_to_host(&result);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        EXPECT_TRUE(std::isnan(result)) << "max|a-b| = " << result;
+
+        result = 0.0;
+        launch_max_abs_reduction(d_a.data(), d_result.data(), N);
+        d_result.copy_to_host(&result);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        EXPECT_TRUE(std::isnan(result)) << "max|a| = " << result;
+    }
 }

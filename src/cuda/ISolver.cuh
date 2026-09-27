@@ -32,9 +32,6 @@ public:
 
     /// Synchronize all GPU work.
     virtual void synchronize() const = 0;
-
-    /// Get compute stream handle (primary GPU for multi-GPU).
-    [[nodiscard]] virtual cudaStream_t stream() const = 0;
 };
 
 } // namespace ac::cuda
