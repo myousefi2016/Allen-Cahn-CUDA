@@ -156,18 +156,12 @@ TEST_F(BoundaryConditionsTest, PeriodicBC) {
 }
 
 TEST_F(BoundaryConditionsTest, RobinBC) {
-    // Robin: alpha*u + beta*du/dn = gamma
-    // Test with alpha=1, beta=1, gamma=0 on a uniform field u=2.0
-    // At X-lo face (side=0): du/dn ~ (u_bnd - u_inner)/(-1*dx) => sign=-1
-    // u_bnd*(alpha + beta/(sign*dx)) = gamma + beta*u_inner/(sign*dx)
-    // u_bnd*(1 + 1/(-1)) = 0 + 1*2/(-1) = -2
-    // denom = 1 - 1 = 0 => falls back to u_inner = 2.0 (singular case)
-    //
-    // Instead, test with alpha=1, beta=0.5, gamma=1.0, dx=1.0:
-    // X-lo (sign=-1): u_bnd*(1 + 0.5/(-1)) = 1.0 + 0.5*u_inner/(-1)
-    // u_bnd*(0.5) = 1.0 - 0.5*u_inner
-    // u_bnd = (1.0 - 0.5*u_inner) / 0.5 = 2.0 - u_inner
-    // With u_inner=2.0: u_bnd = 2.0 - 2.0 = 0.0
+    // Robin: alpha*u + beta*du/dn = gamma with n the OUTWARD normal, as for
+    // Neumann. On every face du/dn ~ (u_bnd - u_inner)/ds (at the lo face the
+    // outward normal is -x, so du/dn = -(u[1]-u[0])/ds = (u[0]-u[1])/ds), hence
+    //   u_bnd = (gamma + beta*u_inner/ds) / (alpha + beta/ds).
+    // alpha=1, beta=0.5, gamma=1, ds=1, u_inner=2 gives 4/3 on all six faces;
+    // lo and hi faces must agree by mirror symmetry of the uniform problem.
 
     const int N = 8;
     const double h = 1.0;
@@ -201,29 +195,54 @@ TEST_F(BoundaryConditionsTest, RobinBC) {
             for (int z = 1; z < N - 1; ++z)
                 EXPECT_DOUBLE_EQ(field_host[x * N * N + y * N + z], 2.0);
 
-    // Check X-lo face: sign=-1, u_inner = field[1,y,z] = 2.0
-    // denom = alpha + beta/(sign*ds) = 1.0 + 0.5/(-1.0) = 0.5
-    // u_bnd = (gamma + beta*u_inner/(sign*ds)) / denom
-    //       = (1.0 + 0.5*2.0/(-1.0)) / 0.5 = (1.0 - 1.0) / 0.5 = 0.0
-    //
-    // Skip cells on shared edges/corners (y or z on a Y/Z face): the
-    // Y/Z BC kernels write those cells too and the application order
-    // makes the corner value implementation-defined. The interior of
-    // the X face is what the Robin BC formula is testing.
-    for (int y = 1; y < N - 1; ++y)
-        for (int z = 1; z < N - 1; ++z) {
-            double u_bnd = field_host[0 * N * N + y * N + z];
-            EXPECT_NEAR(u_bnd, 0.0, 1e-12) << "Robin X-lo at y=" << y << " z=" << z;
+    // Face interiors only: edge/corner cells are shared between faces and
+    // follow the Z, Y, X ownership order, not a single face's formula.
+    const double expected = (gamma_val + beta * 2.0 / h) / (alpha + beta / h); // 4/3
+    auto at = [&](int x, int y, int z) { return field_host[(x * N + y) * N + z]; };
+    for (int a = 1; a < N - 1; ++a)
+        for (int b = 1; b < N - 1; ++b) {
+            EXPECT_NEAR(at(0, a, b), expected, 1e-12) << "X-lo " << a << "," << b;
+            EXPECT_NEAR(at(N - 1, a, b), expected, 1e-12) << "X-hi " << a << "," << b;
+            EXPECT_NEAR(at(a, 0, b), expected, 1e-12) << "Y-lo " << a << "," << b;
+            EXPECT_NEAR(at(a, N - 1, b), expected, 1e-12) << "Y-hi " << a << "," << b;
+            EXPECT_NEAR(at(a, b, 0), expected, 1e-12) << "Z-lo " << a << "," << b;
+            EXPECT_NEAR(at(a, b, N - 1), expected, 1e-12) << "Z-hi " << a << "," << b;
         }
+}
 
-    // Check X-hi face: sign=+1, u_inner = field[N-2,y,z] = 2.0
-    // denom = 1.0 + 0.5/(1.0) = 1.5
-    // u_bnd = (1.0 + 0.5*2.0/(1.0)) / 1.5 = (1.0 + 1.0) / 1.5 = 4/3
-    double expected_hi = (gamma_val + beta * 2.0 / (1.0 * h)) / (alpha + beta / (1.0 * h));
+// Each Robin face must use its own adjacent interior cell. With u = x the
+// X-lo neighbour is u[1] = 1 and the X-hi neighbour is u[N-2] = N-2.
+TEST_F(BoundaryConditionsTest, RobinBCUsesAdjacentInteriorCell) {
+    const int N = 8;
+    const double h = 0.5;
+    const double alpha = 2.0, beta = 0.25, gamma_val = -1.0;
+
+    KernelParams p{};
+    p.Nx = p.Ny = p.Nz = N;
+    p.dx = p.dy = p.dz = h;
+
+    std::size_t total = static_cast<std::size_t>(N) * N * N;
+    std::vector<double> field_host(total);
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z)
+                field_host[(x * N + y) * N + z] = static_cast<double>(x);
+    DeviceField<double> d_field(total);
+    d_field.copy_from_host(field_host.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    launch_boundary_conditions(d_field.data(), p, BCType::Robin, 0.0, 0.0, alpha, beta, gamma_val);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    d_field.copy_to_host(field_host.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    auto robin = [&](double u_inner) {
+        return (gamma_val + beta * u_inner / h) / (alpha + beta / h);
+    };
     for (int y = 1; y < N - 1; ++y)
         for (int z = 1; z < N - 1; ++z) {
-            double u_bnd = field_host[(N - 1) * N * N + y * N + z];
-            EXPECT_NEAR(u_bnd, expected_hi, 1e-12) << "Robin X-hi at y=" << y << " z=" << z;
+            EXPECT_NEAR(field_host[(0 * N + y) * N + z], robin(1.0), 1e-12);
+            EXPECT_NEAR(field_host[((N - 1) * N + y) * N + z], robin(N - 2.0), 1e-12);
         }
 }
 
