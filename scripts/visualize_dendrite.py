@@ -191,8 +191,13 @@ def detect_saturation(grid: pv.StructuredGrid,
 @dataclass
 class ScanResult:
     """Aggregated statistics across all frames, computed once before rendering."""
+    # Colour limits: phi clamped to [-1, 1], u padded by 5%. NOT the data range.
     phi_clim: Tuple[float, float] = (-1.0, 1.0)
     u_clim: Tuple[float, float] = (-1.0, 0.0)
+    # True [min, max] of the finite data over all scanned frames, or None if
+    # no scanned frame carries the field.
+    phi_data_range: Optional[Tuple[float, float]] = None
+    u_data_range: Optional[Tuple[float, float]] = None
     steps: List[int] = field(default_factory=list)
     solid_fraction: List[float] = field(default_factory=list)
     mean_u: List[float] = field(default_factory=list)
@@ -219,10 +224,14 @@ def compute_global_scan(frames: Sequence[Path],
     For phi we clamp to [-1, +1] (theoretical bound of the order parameter)
     so the colormap is symmetric. For u we take the true [min, max] across
     all frames with a 5% pad so the extremes don't render as flat colour.
+    The unclamped, unpadded ranges of the finite data are recorded separately
+    in phi_data_range / u_data_range.
     """
     result = ScanResult()
     u_lo, u_hi = math.inf, -math.inf
     phi_lo, phi_hi = math.inf, -math.inf
+    u_data_lo, u_data_hi = math.inf, -math.inf
+    phi_data_lo, phi_data_hi = math.inf, -math.inf
     scanned = 0
     subset = list(frames if max_scan is None else frames[:max_scan])
     n_total = len(subset)
@@ -256,12 +265,16 @@ def compute_global_scan(frames: Sequence[Path],
 
         if "u" in grid.point_data:
             ua = np.asarray(grid.point_data["u"])
-            if not np.all(np.isfinite(ua)):
-                n_bad = int(np.count_nonzero(~np.isfinite(ua)))
+            finite = np.isfinite(ua)
+            # Data range from the finite values, before the 0.0 substitution.
+            u_data_lo = min(u_data_lo, float(np.min(ua, where=finite, initial=math.inf)))
+            u_data_hi = max(u_data_hi, float(np.max(ua, where=finite, initial=-math.inf)))
+            if not np.all(finite):
+                n_bad = int(np.count_nonzero(~finite))
                 sys.stderr.write(
                     f"\nWARN: {f.name} has {n_bad} NaN/Inf values in u — "
                     f"clamping to finite range\n")
-                ua = np.where(np.isfinite(ua), ua, 0.0)
+                ua = np.where(finite, ua, 0.0)
             u_lo = min(u_lo, float(ua.min()))
             u_hi = max(u_hi, float(ua.max()))
             result.mean_u.append(float(ua.mean()))
@@ -270,12 +283,16 @@ def compute_global_scan(frames: Sequence[Path],
 
         if "phi" in grid.point_data:
             pa = np.asarray(grid.point_data["phi"])
-            if not np.all(np.isfinite(pa)):
-                n_bad = int(np.count_nonzero(~np.isfinite(pa)))
+            finite = np.isfinite(pa)
+            # Data range from the finite values, before the 0.0 substitution.
+            phi_data_lo = min(phi_data_lo, float(np.min(pa, where=finite, initial=math.inf)))
+            phi_data_hi = max(phi_data_hi, float(np.max(pa, where=finite, initial=-math.inf)))
+            if not np.all(finite):
+                n_bad = int(np.count_nonzero(~finite))
                 sys.stderr.write(
                     f"\nWARN: {f.name} has {n_bad} NaN/Inf values in phi — "
                     f"clamping to finite range\n")
-                pa = np.where(np.isfinite(pa), pa, 0.0)
+                pa = np.where(finite, pa, 0.0)
             phi_lo = min(phi_lo, float(pa.min()))
             phi_hi = max(phi_hi, float(pa.max()))
             result.solid_fraction.append(float((pa > 0.0).mean()))
@@ -297,6 +314,11 @@ def compute_global_scan(frames: Sequence[Path],
 
     result.build_index()
 
+    if math.isfinite(phi_data_lo):
+        result.phi_data_range = (phi_data_lo, phi_data_hi)
+    if math.isfinite(u_data_lo):
+        result.u_data_range = (u_data_lo, u_data_hi)
+
     # phi is physically in [-1, 1] — clamp for a stable, symmetric colormap.
     phi_lo = max(-1.0, phi_lo if math.isfinite(phi_lo) else -1.0)
     phi_hi = min(+1.0, phi_hi if math.isfinite(phi_hi) else +1.0)
@@ -310,6 +332,22 @@ def compute_global_scan(frames: Sequence[Path],
     result.u_clim = (u_lo - pad, u_hi + pad)
 
     return result
+
+
+def format_scan_ranges(scan: ScanResult, indent: str = "    ") -> str:
+    """One line per field: the true data range, then the colour range.
+
+    The colour ranges are clamped (phi) or padded (u), so reporting them as
+    the data range would show over/undershoots that are not in the data.
+    """
+    def _fmt(r: Optional[Tuple[float, float]]) -> str:
+        return "n/a" if r is None else f"[{r[0]:.5f}, {r[1]:.5f}]"
+
+    return "".join(
+        f"{indent}{name:<3} data range {_fmt(data)}, colour range {_fmt(clim)}\n"
+        for name, data, clim in (("phi", scan.phi_data_range, scan.phi_clim),
+                                 ("u", scan.u_data_range, scan.u_clim))
+    )
 
 
 # ── Camera ───────────────────────────────────────────────────────────────────
@@ -1063,10 +1101,7 @@ def run_self_test(workdir: Optional[Path] = None) -> int:
         return 1
 
     scan = compute_global_scan(frames, progress=False)
-    sys.stdout.write(
-        f"    prescan ok: phi in [{scan.phi_clim[0]:.3f}, {scan.phi_clim[1]:.3f}], "
-        f"u in [{scan.u_clim[0]:.3f}, {scan.u_clim[1]:.3f}]\n"
-    )
+    sys.stdout.write("    prescan ok:\n" + format_scan_ranges(scan, indent="      "))
 
     cfg = RenderConfig(
         layout="panels",
@@ -1281,9 +1316,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     dt = time.perf_counter() - t0
     sys.stdout.write(
         f"==> Prescan ({dt:.2f}s): "
-        f"phi in [{scan.phi_clim[0]:.3f}, {scan.phi_clim[1]:.3f}], "
-        f"u in [{scan.u_clim[0]:.3f}, {scan.u_clim[1]:.3f}], "
         f"saturated frames = {sum(scan.saturated)}/{len(scan.saturated)}\n"
+        + format_scan_ranges(scan)
     )
 
     if args.scan_json is not None:
@@ -1292,6 +1326,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             json.dump({
                 "phi_clim": list(scan.phi_clim),
                 "u_clim": list(scan.u_clim),
+                "phi_data_range": (list(scan.phi_data_range)
+                                   if scan.phi_data_range is not None else None),
+                "u_data_range": (list(scan.u_data_range)
+                                 if scan.u_data_range is not None else None),
                 "steps": scan.steps,
                 "solid_fraction": scan.solid_fraction,
                 "mean_u": scan.mean_u,

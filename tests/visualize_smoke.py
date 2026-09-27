@@ -12,7 +12,9 @@
 #   3. The 'single' layout produces a non-trivial PNG
 #   4. detect_saturation returns True when the seed reaches the wall and
 #      False when it does not
-#   5. The scan-json dump is well-formed and contains the expected keys
+#   5. The scan-json dump is well-formed and contains the expected keys;
+#      its phi/u data ranges equal the synthetic min/max (distinct from the
+#      padded u colour range), and the log prints them labelled as such
 #   6. MP4 stitching produces a playable file (positive size, non-empty
 #      header that ffprobe could read — we just check size)
 #   7. Rendering a second simulation into a reused output dir never keeps
@@ -57,18 +59,24 @@ except ImportError as exc:  # pragma: no cover
 import visualize_dendrite as viz  # type: ignore  # noqa: E402
 
 
-def _make_tmp_grid(tmpdir: Path, *, n: int, dx: float,
-                   r0: float, name: str = "output_0.vts") -> Path:
-    """Write a synthetic vtkStructuredGrid with phi/u to disk."""
-    in_dir = tmpdir / "out"
-    in_dir.mkdir(parents=True, exist_ok=True)
-
+def _synthetic_fields(*, n: int, dx: float, r0: float):
+    """Point coordinates (X, Y, Z) and the phi/u fields of the synthetic seed."""
     xs = np.arange(n) * dx
     X, Y, Z = np.meshgrid(xs, xs, xs, indexing="ij")
     cx = cy = cz = 0.5 * (n - 1) * dx
     r = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2 + (Z - cz) ** 2)
     phi = -np.tanh((r - r0) / 1.0)
     u = -0.6 * np.exp(-((r - r0) / 3.0) ** 2)
+    return (X, Y, Z), phi, u
+
+
+def _make_tmp_grid(tmpdir: Path, *, n: int, dx: float,
+                   r0: float, name: str = "output_0.vts") -> Path:
+    """Write a synthetic vtkStructuredGrid with phi/u to disk."""
+    in_dir = tmpdir / "out"
+    in_dir.mkdir(parents=True, exist_ok=True)
+
+    (X, Y, Z), phi, u = _synthetic_fields(n=n, dx=dx, r0=r0)
 
     grid = pv.StructuredGrid()
     grid.points = np.column_stack([X.ravel(order="F"),
@@ -147,6 +155,21 @@ def main() -> int:
         _assert(0 <= scan.solid_fraction[0] <= 1.0, "solid fraction not in [0,1]")
         _assert(scan.saturated == [False],
                 f"non-saturated grid mis-classified: {scan.saturated}")
+        # Data ranges must be the synthetic min/max exactly; the u colour
+        # range must be the padded one that strictly contains it.
+        _, phi_ref, u_ref = _synthetic_fields(n=24, dx=0.5, r0=2.5)
+        phi_range = (float(phi_ref.min()), float(phi_ref.max()))
+        u_range = (float(u_ref.min()), float(u_ref.max()))
+        phi_scanned = getattr(scan, "phi_data_range", None)
+        u_scanned = getattr(scan, "u_data_range", None)
+        _assert(phi_scanned is not None
+                and np.allclose(phi_scanned, phi_range, rtol=0, atol=1e-12),
+                f"phi_data_range {phi_scanned} != synthetic {phi_range}")
+        _assert(u_scanned is not None
+                and np.allclose(u_scanned, u_range, rtol=0, atol=1e-12),
+                f"u_data_range {u_scanned} != synthetic {u_range}")
+        _assert(scan.u_clim[0] < u_range[0] and scan.u_clim[1] > u_range[1],
+                f"u_clim {scan.u_clim} does not pad data range {u_range}")
         sys.stdout.write("  PASS  prescan + non-saturated detection\n")
 
         # ── 3. Saturation detection on a wall-touching grid ────────────
@@ -226,7 +249,7 @@ def main() -> int:
 
         # ── 7. Scan-JSON dump via CLI ──────────────────────────────────
         scan_json = tmpdir / "scan.json"
-        rc = subprocess.call([
+        proc = subprocess.run([
             sys.executable, str(cli_path),
             "--input-dir", str(small.parent),
             "--output-dir", str(tmpdir / "viz_cli"),
@@ -235,17 +258,31 @@ def main() -> int:
             "--no-silhouette",
             "--scan-json", str(scan_json),
             "--quiet",
-        ])
-        _assert(rc == 0, f"CLI run rc={rc}")
+        ], stdout=subprocess.PIPE, text=True)
+        sys.stdout.write(proc.stdout)
+        _assert(proc.returncode == 0, f"CLI run rc={proc.returncode}")
         _assert(scan_json.exists(), "scan.json was not written")
         with scan_json.open() as fh:
             payload = json.load(fh)
-        for key in ("phi_clim", "u_clim", "steps", "solid_fraction",
-                    "mean_u", "saturated", "grid_dims", "grid_bounds"):
+        for key in ("phi_clim", "u_clim", "phi_data_range", "u_data_range",
+                    "steps", "solid_fraction", "mean_u", "saturated",
+                    "grid_dims", "grid_bounds"):
             _assert(key in payload, f"scan.json missing key {key!r}")
         _assert(len(payload["solid_fraction"]) == len(payload["steps"]),
                 "scan.json arrays have inconsistent length")
-        sys.stdout.write("  PASS  CLI --scan-json dump\n")
+        _assert(np.allclose(payload["phi_data_range"], phi_range, rtol=0, atol=1e-12),
+                f"scan.json phi_data_range {payload['phi_data_range']} "
+                f"!= synthetic {phi_range}")
+        _assert(np.allclose(payload["u_data_range"], u_range, rtol=0, atol=1e-12),
+                f"scan.json u_data_range {payload['u_data_range']} "
+                f"!= synthetic {u_range}")
+        u_line = (f"u   data range [{u_range[0]:.5f}, {u_range[1]:.5f}], "
+                  f"colour range [{payload['u_clim'][0]:.5f}, "
+                  f"{payload['u_clim'][1]:.5f}]")
+        _assert(u_line in proc.stdout,
+                f"prescan log does not report {u_line!r}")
+        sys.stdout.write("  PASS  CLI --scan-json dump (data ranges match synthetic "
+                         "min/max)\n")
 
         # ── 8. MP4 stitching ───────────────────────────────────────────
         # Synthesize 3 dummy frames so imageio has something to stitch.
