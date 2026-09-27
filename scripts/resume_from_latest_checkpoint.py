@@ -21,6 +21,12 @@
 #
 # Stdout  -> path of the new resume-config (consumed by the Makefile)
 # Stderr  -> human-readable progress
+#
+# Paths written to stdout and into `restart_file` are relative to the current
+# directory whenever they lie inside it (see portable_path), because the
+# Makefile runs this helper on the host from the repository root but runs
+# the binary in a container that mounts that directory at /work (-w /work).
+#
 # Exit codes
 #   0 = OK, resume config written
 #   1 = no checkpoint found (cold-start required, caller should use base config)
@@ -36,6 +42,21 @@ from pathlib import Path
 from typing import Optional
 
 CHECKPOINT_RE = re.compile(r"checkpoint_(\d+)\.acbin$")
+
+
+def portable_path(path: Path) -> Path:
+    """Return `path` relative to the cwd if it lies inside it, else absolute.
+
+    `make cuda-resume-dendrite` calls this helper on the host, from the
+    repository root, and passes the result to the binary inside
+    `docker run -v $PWD:/work -w /work`. A cwd-relative path names the same
+    file on both sides; a host-absolute one does not exist in the container.
+    """
+    absolute = path.resolve()
+    try:
+        return absolute.relative_to(Path.cwd().resolve())
+    except ValueError:
+        return absolute
 
 
 def expected_checkpoint_bytes(cfg: dict) -> Optional[int]:
@@ -147,7 +168,7 @@ def main(argv: list[str]) -> int:
 
     # Inject restart_file into a deep copy and write to <base>_resume.json
     cfg.setdefault("checkpoint", {})
-    cfg["checkpoint"]["restart_file"] = str(latest)
+    cfg["checkpoint"]["restart_file"] = str(portable_path(latest))
 
     resume_path = config_path.with_name(config_path.stem + "_resume.json")
     with resume_path.open("w") as fh:
@@ -167,7 +188,7 @@ def main(argv: list[str]) -> int:
                      f"remaining ~{max_steps - step} steps\n")
 
     # Stdout = JUST the path, for clean Makefile consumption.
-    sys.stdout.write(str(resume_path))
+    sys.stdout.write(str(portable_path(resume_path)))
     sys.stdout.write("\n")
     return 0
 

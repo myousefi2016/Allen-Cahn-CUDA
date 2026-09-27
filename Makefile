@@ -314,6 +314,10 @@ cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest int
 	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LONG_CONFIG) $(CHECKPOINT_DIR)); \
 	rc_helper=$$?; \
 	if [ $$rc_helper -eq 0 ]; then \
+	  case "$$RESUME_CFG" in /*) \
+	    echo "ERROR: $$RESUME_CFG is outside $$PWD, the only directory mounted into the container (at /work)"; \
+	    exit 1;; \
+	  esac; \
 	  echo "==> Resuming with $$RESUME_CFG"; \
 	  $(CUDA_DOCKER_RUN) bash -c "./$(NATIVE_BIN) $$RESUME_CFG; \
 	    rc_run=\$$?; $(CUDA_CHOWN); exit \$$rc_run"; \
@@ -349,6 +353,10 @@ cuda-resume-dendrite-large: cuda-build ## (docker) Resume the large run from lat
 	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LARGE_CONFIG) $(CHECKPOINT_DIR)); \
 	rc_helper=$$?; \
 	if [ $$rc_helper -eq 0 ]; then \
+	  case "$$RESUME_CFG" in /*) \
+	    echo "ERROR: $$RESUME_CFG is outside $$PWD, the only directory mounted into the container (at /work)"; \
+	    exit 1;; \
+	  esac; \
 	  echo "==> Resuming with $$RESUME_CFG"; \
 	  $(CUDA_DOCKER_RUN) bash -c "./$(NATIVE_BIN) $$RESUME_CFG; \
 	    rc_run=\$$?; $(CUDA_CHOWN); exit \$$rc_run"; \
