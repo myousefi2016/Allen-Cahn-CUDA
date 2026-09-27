@@ -6,6 +6,7 @@ include(FetchContent)
 find_package(VTK 9.0 QUIET COMPONENTS
     CommonCore
     CommonDataModel
+    CommonMisc
     IOXML
 )
 

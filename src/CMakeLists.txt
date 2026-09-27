@@ -46,7 +46,7 @@ target_include_directories(ac_io PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ac_io PUBLIC ac_core)
 
 if(AC_HAS_VTK)
-    target_link_libraries(ac_io PUBLIC VTK::CommonCore VTK::CommonDataModel VTK::IOXML)
+    target_link_libraries(ac_io PUBLIC VTK::CommonCore VTK::CommonDataModel VTK::CommonMisc VTK::IOXML)
     target_compile_definitions(ac_io PUBLIC AC_HAS_VTK=1)
 endif()
 

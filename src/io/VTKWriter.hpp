@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <exception>
 #include <filesystem>
 #include <mutex>
 #include <queue>
@@ -24,8 +25,11 @@ struct FieldStatistics {
     double l2_norm = 0.0;
 };
 
-/// Asynchronous VTK file writer.
-/// Uses a background thread to avoid blocking the simulation.
+/// VTK / raw field writer running on a background thread.
+/// With OutputParams::async_io the simulation continues while a snapshot is
+/// written (bounded queue, backpressure); without it write_async() returns
+/// only once that snapshot is on disk. A failed write is never dropped: the
+/// first failure is rethrown by the next write_async() or flush().
 /// Caches field statistics via LRU cache for efficient metadata output.
 class VTKWriter {
 public:
@@ -35,12 +39,13 @@ public:
     VTKWriter(const VTKWriter&) = delete;
     VTKWriter& operator=(const VTKWriter&) = delete;
 
-    /// Enqueue a write job (non-blocking: copies data internally).
-    /// Enqueue a write job. Blocks if the queue already holds max_queue_depth
-    /// jobs (backpressure to prevent unbounded memory growth).
+    /// Enqueue a snapshot (the fields are copied). Blocks while the queue
+    /// already holds max_queue_depth jobs (backpressure against unbounded
+    /// memory growth) and, when async_io is false, until the snapshot is
+    /// written. Throws the error of an earlier failed write.
     void write_async(int step, double time, const FieldData& phi, const FieldData& u);
 
-    /// Wait for all pending writes to complete.
+    /// Wait for all pending writes; throws if any write has failed.
     void flush();
 
     /// Get number of pending write jobs.
@@ -76,6 +81,11 @@ private:
     /// Number of jobs currently being written (popped from queue but not finished).
     /// flush() must wait for both queue empty AND active_jobs_ == 0.
     int active_jobs_{0};
+    /// First write failure (guarded by queue_mutex_); sticky once set.
+    std::exception_ptr first_error_;
+
+    /// Rethrow first_error_ if set; queue_mutex_ must be held.
+    void rethrow_error_locked() const;
 
     /// LRU cache for field statistics keyed by "step:field_name".
     /// Capacity of 256 covers the last 128 output steps (2 fields each).

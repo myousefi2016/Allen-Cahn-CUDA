@@ -94,7 +94,6 @@ struct CheckpointParams {
 // ── GPU parameters ─────────────────────────────────────────────────────────
 struct GPUParams {
     std::vector<int> device_ids = {0};
-    int block_size_1d = 256;
     bool multi_gpu = false;
 };
 

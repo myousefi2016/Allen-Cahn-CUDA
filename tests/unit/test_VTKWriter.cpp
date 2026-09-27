@@ -3,8 +3,12 @@
 #include "logging/Logger.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
+#include <stdexcept>
+#include <string>
 
 #ifdef AC_HAS_VTK
 #include <vtkDataArray.h>
@@ -183,5 +187,90 @@ TEST_F(VTKWriterTest, VtsTopologyMatchesGeometryAndData) {
         ASSERT_DOUBLE_EQ(phi_arr->GetTuple1(id), phi(i, j, k)) << "id=" << id;
         ASSERT_DOUBLE_EQ(u_arr->GetTuple1(id), u(i, j, k)) << "id=" << id;
     }
+}
+#endif
+
+namespace {
+
+void fill(FieldData& phi, FieldData& u) {
+    for (std::size_t i = 0; i < phi.size(); ++i) {
+        phi.data()[i] = std::sin(0.01 * static_cast<double>(i));
+        u.data()[i] = -0.5;
+    }
+}
+
+} // namespace
+
+// output.async_io = false: write_async() returns only once the snapshot is on
+// disk (nothing pending, file complete). Before, the flag was parsed but never
+// read and every write was asynchronous.
+TEST_F(VTKWriterTest, SynchronousModeReturnsOnlyWhenWritten) {
+    const int N = 48;
+    Grid grid(Dim3{N, N, N}, Spacing{1.0, 1.0, 1.0});
+    OutputParams params;
+    params.output_dir = test_dir_;
+    params.format = "raw";
+    params.async_io = false;
+    VTKWriter writer(grid, params);
+    FieldData phi(grid, "phi"), u(grid, "u");
+    fill(phi, u);
+
+    for (int step = 0; step < 5; ++step) {
+        writer.write_async(step, 0.1 * step, phi, u);
+        EXPECT_EQ(writer.pending_jobs(), 0) << "step " << step;
+        const auto f = test_dir_ / ("output_" + std::to_string(step) + "_u.raw");
+        ASSERT_TRUE(fs::exists(f)) << f;
+        EXPECT_EQ(fs::file_size(f), static_cast<std::uintmax_t>(N) * N * N * sizeof(double));
+    }
+}
+
+// A failed write must surface: flush() and every later write_async() throw.
+// Before, the writer thread logged the error and the run finished "fine".
+TEST_F(VTKWriterTest, WriteFailureIsReportedByFlushAndNextWrite) {
+    for (const char* format : {"raw", "vts"}) {
+        SCOPED_TRACE(format);
+        const auto dir = test_dir_ / format;
+        Grid grid(Dim3{8, 8, 8}, Spacing{1.0, 1.0, 1.0});
+        OutputParams params;
+        params.output_dir = dir;
+        params.format = format;
+        VTKWriter writer(grid, params);
+        FieldData phi(grid, "phi"), u(grid, "u");
+        fill(phi, u);
+
+        // Replace the output directory by a regular file: every write fails.
+        fs::remove_all(dir);
+        std::ofstream(dir) << "not a directory";
+
+        writer.write_async(7, 0.0, phi, u);
+        try {
+            writer.flush();
+            ADD_FAILURE() << "flush() did not report the failed write";
+        } catch (const std::runtime_error& e) {
+            EXPECT_NE(std::string(e.what()).find("step 7"), std::string::npos) << e.what();
+        }
+        EXPECT_THROW(writer.write_async(8, 0.0, phi, u), std::runtime_error);
+    }
+}
+
+#ifdef AC_HAS_VTK
+// A VTK write that fails part-way (here: the temporary file is /dev/full, so
+// every write returns ENOSPC) must not be renamed into place as if complete.
+// Before, Write()'s result was ignored and the broken file was published.
+TEST_F(VTKWriterTest, FailedVtkWriteIsNotPublished) {
+    ASSERT_TRUE(fs::exists("/dev/full")) << "the test needs /dev/full";
+    Grid grid(Dim3{8, 8, 8}, Spacing{1.0, 1.0, 1.0});
+    OutputParams params;
+    params.output_dir = test_dir_;
+    params.format = "vts";
+    VTKWriter writer(grid, params);
+    FieldData phi(grid, "phi"), u(grid, "u");
+    fill(phi, u);
+
+    fs::create_symlink("/dev/full", test_dir_ / "output_0.vts.tmp");
+    writer.write_async(0, 0.0, phi, u);
+    EXPECT_THROW(writer.flush(), std::runtime_error);
+    EXPECT_FALSE(fs::exists(fs::symlink_status(test_dir_ / "output_0.vts")))
+        << "a failed write was published as output_0.vts";
 }
 #endif

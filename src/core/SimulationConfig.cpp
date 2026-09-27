@@ -1,11 +1,15 @@
 #include "core/SimulationConfig.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace ac {
 
@@ -45,7 +49,38 @@ static BCType parse_bc_type(const std::string& s) {
     throw std::invalid_argument("Unknown boundary condition type: " + s);
 }
 
-static BoundaryConfig parse_boundary_config(const json& j) {
+/// Throws unless `obj` is a JSON object.
+static void require_object(const json& obj, const std::string& section) {
+    if (!obj.is_object())
+        throw std::invalid_argument("config: \"" + section + "\" must be a JSON object");
+}
+
+/// Throws if `obj` has a key that is neither in `allowed` nor a comment (a key
+/// starting with '_'). A silently ignored key is a setting the user believes
+/// is in effect but is not (a typo, a removed option, a misplaced key).
+static void require_known_keys(const json& obj, const std::string& section,
+                               std::initializer_list<std::string_view> allowed) {
+    require_object(obj, section);
+    std::string unknown;
+    for (const auto& item : obj.items()) {
+        const std::string& key = item.key();
+        if (!key.empty() && key.front() == '_')
+            continue;
+        if (std::find(allowed.begin(), allowed.end(), key) == allowed.end())
+            unknown += (unknown.empty() ? "\"" : ", \"") + key + "\"";
+    }
+    if (!unknown.empty()) {
+        std::string list;
+        for (std::string_view a : allowed)
+            list += (list.empty() ? "" : ", ") + std::string(a);
+        throw std::invalid_argument("config: unknown key(s) " + unknown + " in \"" + section +
+                                    "\" (allowed: " + list + "; keys starting with '_' are " +
+                                    "comments)");
+    }
+}
+
+static BoundaryConfig parse_boundary_config(const json& j, const std::string& section) {
+    require_known_keys(j, section, {"type", "value", "flux", "alpha", "beta", "gamma"});
     BoundaryConfig bc;
     if (j.contains("type"))
         bc.type = parse_bc_type(j["type"].get<std::string>());
@@ -62,12 +97,50 @@ static BoundaryConfig parse_boundary_config(const json& j) {
     return bc;
 }
 
+/// boundary.phi / boundary.u: either one BC object applied to every face, or
+/// an object with exactly the six face keys (x_lo, x_hi, y_lo, y_hi, z_lo,
+/// z_hi), each a BC object. Any face key selects the per-face form, which
+/// then must name all six faces and nothing else.
+static void parse_field_boundary(const json& f, const std::string& section, BoundaryConfig& uniform,
+                                 PerFaceBoundary& faces, bool& per_face) {
+    static constexpr std::string_view face_names[] = {"x_lo", "x_hi", "y_lo",
+                                                      "y_hi", "z_lo", "z_hi"};
+    require_object(f, section);
+    bool any_face = false;
+    for (std::string_view name : face_names)
+        any_face = any_face || f.contains(std::string(name));
+    if (!any_face) {
+        uniform = parse_boundary_config(f, section);
+        faces = PerFaceBoundary::uniform(uniform);
+        return;
+    }
+    require_known_keys(f, section, {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"});
+    std::string missing;
+    for (std::string_view name : face_names)
+        if (!f.contains(std::string(name)))
+            missing += (missing.empty() ? "" : ", ") + std::string(name);
+    if (!missing.empty()) {
+        throw std::invalid_argument("config: per-face \"" + section +
+                                    "\" must specify all six faces; missing: " + missing);
+    }
+    for (std::size_t i = 0; i < 6; ++i) {
+        const std::string name(face_names[i]);
+        faces.faces[i] = parse_boundary_config(f[name], section + "." + name);
+    }
+    per_face = true;
+}
+
 static SimulationConfig parse_config(const json& j) {
+    require_known_keys(j, "<root>",
+                       {"physics", "grid", "time", "stencil", "output", "checkpoint", "gpu",
+                        "initial", "boundary"});
     SimulationConfig cfg;
 
     // Physics
     if (j.contains("physics")) {
         const auto& p = j["physics"];
+        require_known_keys(p, "physics",
+                           {"delta", "epsilon", "W0", "beta0", "D", "d0", "a1", "a2"});
         if (p.contains("delta"))
             cfg.physics.delta = p["delta"].get<Real>();
         if (p.contains("epsilon"))
@@ -89,6 +162,7 @@ static SimulationConfig parse_config(const json& j) {
     // Grid
     if (j.contains("grid")) {
         const auto& g = j["grid"];
+        require_known_keys(g, "grid", {"Nx", "Ny", "Nz", "dx", "dy", "dz"});
         if (g.contains("Nx"))
             cfg.grid.Nx = g["Nx"].get<int>();
         if (g.contains("Ny"))
@@ -106,6 +180,10 @@ static SimulationConfig parse_config(const json& j) {
     // Time
     if (j.contains("time")) {
         const auto& t = j["time"];
+        require_known_keys(t, "time",
+                           {"dt", "dt_min", "dt_max", "max_steps", "scheme", "adaptive",
+                            "adaptive_tolerance", "cfl_safety", "exit_on_saturation",
+                            "saturation_threshold", "saturation_check_freq"});
         if (t.contains("dt"))
             cfg.time.dt = t["dt"].get<Real>();
         if (t.contains("dt_min"))
@@ -138,6 +216,7 @@ static SimulationConfig parse_config(const json& j) {
     // Output
     if (j.contains("output")) {
         const auto& o = j["output"];
+        require_known_keys(o, "output", {"frequency", "output_dir", "format", "async_io"});
         if (o.contains("frequency"))
             cfg.output.frequency = o["frequency"].get<int>();
         if (o.contains("output_dir"))
@@ -151,6 +230,8 @@ static SimulationConfig parse_config(const json& j) {
     // Checkpoint
     if (j.contains("checkpoint")) {
         const auto& c = j["checkpoint"];
+        require_known_keys(c, "checkpoint",
+                           {"frequency", "checkpoint_dir", "keep_last", "restart_file"});
         if (c.contains("frequency"))
             cfg.checkpoint.frequency = c["frequency"].get<int>();
         if (c.contains("checkpoint_dir"))
@@ -164,10 +245,9 @@ static SimulationConfig parse_config(const json& j) {
     // GPU
     if (j.contains("gpu")) {
         const auto& g = j["gpu"];
+        require_known_keys(g, "gpu", {"device_ids", "multi_gpu"});
         if (g.contains("device_ids"))
             cfg.gpu.device_ids = g["device_ids"].get<std::vector<int>>();
-        if (g.contains("block_size"))
-            cfg.gpu.block_size_1d = g["block_size"].get<int>();
         if (g.contains("multi_gpu"))
             cfg.gpu.multi_gpu = g["multi_gpu"].get<bool>();
     }
@@ -175,6 +255,7 @@ static SimulationConfig parse_config(const json& j) {
     // Initial condition
     if (j.contains("initial")) {
         const auto& ic = j["initial"];
+        require_known_keys(ic, "initial", {"seed_radius"});
         if (ic.contains("seed_radius"))
             cfg.initial.seed_radius = ic["seed_radius"].get<Real>();
     }
@@ -182,36 +263,13 @@ static SimulationConfig parse_config(const json& j) {
     // Boundary conditions
     if (j.contains("boundary")) {
         const auto& b = j["boundary"];
-        // Uniform BC (backward compatible)
-        if (b.contains("phi") && b["phi"].is_object() && !b["phi"].contains("x_lo")) {
-            cfg.boundary.phi_bc = parse_boundary_config(b["phi"]);
-            cfg.boundary.phi_faces = PerFaceBoundary::uniform(cfg.boundary.phi_bc);
-        }
-        if (b.contains("u") && b["u"].is_object() && !b["u"].contains("x_lo")) {
-            cfg.boundary.u_bc = parse_boundary_config(b["u"]);
-            cfg.boundary.u_faces = PerFaceBoundary::uniform(cfg.boundary.u_bc);
-        }
-        // Per-face BC (new format)
-        static constexpr const char* face_names[] = {"x_lo", "x_hi", "y_lo",
-                                                     "y_hi", "z_lo", "z_hi"};
-        if (b.contains("phi") && b["phi"].is_object() && b["phi"].contains("x_lo")) {
-            cfg.boundary.per_face = true;
-            const auto& p = b["phi"];
-            for (std::size_t i = 0; i < 6; ++i) {
-                if (p.contains(face_names[i])) {
-                    cfg.boundary.phi_faces.faces[i] = parse_boundary_config(p[face_names[i]]);
-                }
-            }
-        }
-        if (b.contains("u") && b["u"].is_object() && b["u"].contains("x_lo")) {
-            cfg.boundary.per_face = true;
-            const auto& u = b["u"];
-            for (std::size_t i = 0; i < 6; ++i) {
-                if (u.contains(face_names[i])) {
-                    cfg.boundary.u_faces.faces[i] = parse_boundary_config(u[face_names[i]]);
-                }
-            }
-        }
+        require_known_keys(b, "boundary", {"phi", "u"});
+        if (b.contains("phi"))
+            parse_field_boundary(b["phi"], "boundary.phi", cfg.boundary.phi_bc,
+                                 cfg.boundary.phi_faces, cfg.boundary.per_face);
+        if (b.contains("u"))
+            parse_field_boundary(b["u"], "boundary.u", cfg.boundary.u_bc, cfg.boundary.u_faces,
+                                 cfg.boundary.per_face);
     }
 
     return cfg;
@@ -344,12 +402,6 @@ void SimulationConfig::validate() const {
     // GPU
     if (gpu.device_ids.empty())
         throw std::invalid_argument("At least one GPU device required");
-    if (gpu.block_size_1d < 32 || gpu.block_size_1d > 1024) {
-        throw std::invalid_argument("block_size must be in [32, 1024]");
-    }
-    if (gpu.block_size_1d % 32 != 0) {
-        throw std::invalid_argument("block_size must be a multiple of 32 (warp size)");
-    }
 
     spdlog::info("Configuration validated: {}x{}x{} grid, dt={}, {} scheme, {} stencil", grid.Nx,
                  grid.Ny, grid.Nz, time.dt,

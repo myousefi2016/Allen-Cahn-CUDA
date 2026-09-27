@@ -4,6 +4,8 @@
 #include <cmath>
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <initializer_list>
+#include <string>
 
 using namespace ac;
 
@@ -193,7 +195,6 @@ TEST_F(SimulationConfigTest, ParseGPUConfig) {
     std::string json = R"({
         "gpu": {
             "device_ids": [0, 1],
-            "block_size": 512,
             "multi_gpu": true
         }
     })";
@@ -201,6 +202,111 @@ TEST_F(SimulationConfigTest, ParseGPUConfig) {
     EXPECT_EQ(cfg.gpu.device_ids.size(), 2u);
     EXPECT_EQ(cfg.gpu.device_ids[0], 0);
     EXPECT_EQ(cfg.gpu.device_ids[1], 1);
-    EXPECT_EQ(cfg.gpu.block_size_1d, 512);
     EXPECT_TRUE(cfg.gpu.multi_gpu);
+}
+
+// ── Strict parsing: nothing in a config file is silently ignored ────────────
+
+namespace {
+
+/// from_json_string must throw invalid_argument whose message contains every
+/// string in `needles`.
+void expect_rejected(const std::string& json, std::initializer_list<std::string> needles) {
+    try {
+        (void)SimulationConfig::from_json_string(json);
+        ADD_FAILURE() << "accepted: " << json;
+    } catch (const std::invalid_argument& e) {
+        for (const auto& n : needles)
+            EXPECT_NE(std::string(e.what()).find(n), std::string::npos)
+                << "message \"" << e.what() << "\" lacks \"" << n << "\"";
+    }
+}
+
+std::string all_faces(const std::string& extra = "") {
+    std::string s = "{";
+    for (const char* f : {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"})
+        s += std::string(s.size() > 1 ? "," : "") + "\"" + f + "\": {\"type\": \"neumann\"}";
+    return s + extra + "}";
+}
+
+} // namespace
+
+TEST_F(SimulationConfigTest, UnknownKeyIsRejectedInEverySection) {
+    expect_rejected(R"({"physiks": {}})", {"physiks", "<root>"});
+    for (const char* section :
+         {"physics", "grid", "time", "output", "checkpoint", "gpu", "initial", "boundary"})
+        expect_rejected(std::string("{\"") + section + "\": {\"bogus\": 1}}",
+                        {"bogus", std::string("\"") + section + "\""});
+    expect_rejected(R"({"boundary": {"phi": {"type": "neumann", "vale": 1.0}}})",
+                    {"vale", "boundary.phi"});
+    expect_rejected(R"({"physics": {"epsilom": 0.05}})", {"epsilom", "physics"});
+}
+
+TEST_F(SimulationConfigTest, RemovedBlockSizeIsRejected) {
+    // gpu.block_size was parsed but never used (every kernel launches 256
+    // threads); accepting it would advertise a setting that does nothing.
+    expect_rejected(R"({"gpu": {"block_size": 512}})", {"block_size", "gpu"});
+}
+
+TEST_F(SimulationConfigTest, SectionsMustBeObjects) {
+    expect_rejected(R"({"physics": 3})", {"physics", "JSON object"});
+    expect_rejected(R"({"boundary": {"phi": [1, 2]}})", {"boundary.phi", "JSON object"});
+}
+
+TEST_F(SimulationConfigTest, KeysStartingWithUnderscoreAreComments) {
+    auto cfg = SimulationConfig::from_json_string(
+        R"({"_comment": "x", "physics": {"_note": "y", "epsilon": 0.03},
+            "boundary": {"phi": {"_why": "z", "type": "neumann"}}})");
+    EXPECT_DOUBLE_EQ(cfg.physics.epsilon, 0.03);
+    EXPECT_EQ(cfg.boundary.phi_bc.type, BCType::Neumann);
+}
+
+// A per-face object without x_lo used to be read as a uniform BC: the face
+// keys were ignored and every face silently kept the default Dirichlet -1.
+TEST_F(SimulationConfigTest, PerFaceWithoutXLoIsNotSilentlyUniform) {
+    expect_rejected(R"({"boundary": {"phi": {"y_lo": {"type": "periodic"},
+                                              "y_hi": {"type": "periodic"}}}})",
+                    {"boundary.phi", "missing", "x_lo", "x_hi", "z_lo", "z_hi"});
+}
+
+TEST_F(SimulationConfigTest, PerFaceMustNameAllSixFacesAndNothingElse) {
+    expect_rejected(R"({"boundary": {"u": {"x_lo": {"type": "neumann"}}}})",
+                    {"boundary.u", "missing", "x_hi"});
+    expect_rejected(std::string(R"({"boundary": {"phi": )") + all_faces(R"(, "type": "robin")") +
+                        "}}",
+                    {"\"type\"", "boundary.phi"});
+    expect_rejected(std::string(R"({"boundary": {"phi": )") +
+                        all_faces(R"(, "x_low": {"type": "neumann"})") + "}}",
+                    {"x_low"});
+}
+
+TEST_F(SimulationConfigTest, PerFaceParsesEveryFace) {
+    const std::string json = R"({"boundary": {
+        "phi": {"x_lo": {"type": "neumann", "flux": 0.5}, "x_hi": {"type": "dirichlet", "value": -0.9},
+                "y_lo": {"type": "periodic"}, "y_hi": {"type": "periodic"},
+                "z_lo": {"type": "robin", "alpha": 1.0, "beta": 0.5, "gamma": 0.2},
+                "z_hi": {"type": "neumann"}},
+        "u": {"type": "dirichlet", "value": -0.7}}})";
+    auto cfg = SimulationConfig::from_json_string(json);
+    ASSERT_TRUE(cfg.boundary.per_face);
+    const auto& f = cfg.boundary.phi_faces.faces;
+    EXPECT_EQ(f[0].type, BCType::Neumann);
+    EXPECT_DOUBLE_EQ(f[0].flux, 0.5);
+    EXPECT_EQ(f[1].type, BCType::Dirichlet);
+    EXPECT_DOUBLE_EQ(f[1].value, -0.9);
+    EXPECT_EQ(f[2].type, BCType::Periodic);
+    EXPECT_EQ(f[3].type, BCType::Periodic);
+    EXPECT_EQ(f[4].type, BCType::Robin);
+    EXPECT_DOUBLE_EQ(f[4].beta, 0.5);
+    EXPECT_DOUBLE_EQ(f[4].gamma, 0.2);
+    EXPECT_EQ(f[5].type, BCType::Neumann);
+    // The uniform u applies to all of u's faces in per-face mode.
+    for (const auto& face : cfg.boundary.u_faces.faces) {
+        EXPECT_EQ(face.type, BCType::Dirichlet);
+        EXPECT_DOUBLE_EQ(face.value, -0.7);
+    }
+}
+
+TEST_F(SimulationConfigTest, BoundaryAcceptsOnlyPhiAndU) {
+    expect_rejected(R"({"boundary": {"psi": {"type": "neumann"}}})", {"psi", "boundary"});
 }

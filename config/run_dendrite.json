@@ -38,7 +38,6 @@
     },
     "gpu": {
         "device_ids": [0],
-        "block_size": 256,
         "multi_gpu": false
     },
     "initial": {

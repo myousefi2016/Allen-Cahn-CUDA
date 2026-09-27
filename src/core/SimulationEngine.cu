@@ -62,8 +62,15 @@ SimulationEngine::SimulationEngine(SimulationConfig config)
 }
 
 SimulationEngine::~SimulationEngine() {
-    if (vtk_writer_)
-        vtk_writer_->flush();
+    // run() already flushed and reported write errors; this only waits for
+    // writes left by a run() that threw. A destructor must not throw.
+    if (vtk_writer_) {
+        try {
+            vtk_writer_->flush();
+        } catch (const std::exception& e) {
+            spdlog::error("Output write failed: {}", e.what());
+        }
+    }
 }
 
 void SimulationEngine::run() {

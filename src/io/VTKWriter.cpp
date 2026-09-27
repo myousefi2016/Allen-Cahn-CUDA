@@ -6,9 +6,13 @@
 #include <fstream>
 #include <numeric>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
+#include <string>
+#include <system_error>
 
 #ifdef AC_HAS_VTK
 #include <vtkDoubleArray.h>
+#include <vtkErrorCode.h>
 #include <vtkNew.h>
 #include <vtkPointData.h>
 #include <vtkPoints.h>
@@ -47,17 +51,26 @@ void VTKWriter::write_async(int step, double time, const FieldData& phi, const F
 
     {
         std::unique_lock<std::mutex> lock(queue_mutex_);
+        rethrow_error_locked();
         queue_cv_.wait(lock, [this] {
             return static_cast<int>(job_queue_.size()) + active_jobs_ < max_queue_depth_;
         });
         job_queue_.push(std::move(job));
     }
     queue_cv_.notify_all();
+    if (!params_.async_io)
+        flush();
 }
 
 void VTKWriter::flush() {
     std::unique_lock<std::mutex> lock(queue_mutex_);
     queue_cv_.wait(lock, [this] { return job_queue_.empty() && active_jobs_ == 0; });
+    rethrow_error_locked();
+}
+
+void VTKWriter::rethrow_error_locked() const {
+    if (first_error_)
+        std::rethrow_exception(first_error_);
 }
 
 int VTKWriter::pending_jobs() const {
@@ -82,6 +95,7 @@ void VTKWriter::writer_loop() {
             ++active_jobs_;
         }
 
+        std::exception_ptr error;
         try {
             // Compute and cache field statistics
             auto phi_stats = compute_statistics(job.phi_data, job.step, "phi");
@@ -97,14 +111,20 @@ void VTKWriter::writer_loop() {
             }
         } catch (const std::exception& e) {
             spdlog::error("VTK writer failed for step {}: {}", job.step, e.what());
+            error = std::make_exception_ptr(std::runtime_error(
+                "output write failed for step " + std::to_string(job.step) + ": " + e.what()));
         } catch (...) {
             spdlog::error("VTK writer failed for step {} with unknown error", job.step);
+            error = std::make_exception_ptr(std::runtime_error(
+                "output write failed for step " + std::to_string(job.step) + ": unknown error"));
         }
 
-        // Mark job as done and notify flush()
+        // Mark job as done (recording the first failure) and notify flush()
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             --active_jobs_;
+            if (error && !first_error_)
+                first_error_ = error;
         }
         queue_cv_.notify_all();
     }
@@ -161,7 +181,15 @@ void VTKWriter::write_vtk_file(const WriteJob& job) {
     vtkNew<vtkXMLStructuredGridWriter> writer;
     writer->SetFileName(tmp_filename.c_str());
     writer->SetInputData(sg);
-    writer->Write();
+    // Write() returns 1 on success; the error code names the cause (e.g. out
+    // of disk space). A failed file must never be renamed into place.
+    if (writer->Write() != 1 || writer->GetErrorCode() != vtkErrorCode::NoError) {
+        const unsigned long code = writer->GetErrorCode();
+        std::error_code ec;
+        std::filesystem::remove(tmp_filename, ec);
+        throw std::runtime_error("VTK write of " + tmp_filename +
+                                 " failed: " + vtkErrorCode::GetStringFromErrorCode(code));
+    }
 
     std::filesystem::rename(tmp_filename, filename);
     spdlog::info("Wrote VTK file: {} (step={}, time={:.4f})", filename, job.step, job.time);

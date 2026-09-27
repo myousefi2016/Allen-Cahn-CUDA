@@ -263,8 +263,6 @@ new_dt      = clamp(min(new_dt, min(thermal_cfl, phi_cfl)),
 (`SimulationEngine.cu:217-228`, `SimulationConfig.cpp:281-292`).
 
 The validator also rejects:
-- `block_size_1d` outside `[32, 1024]` or not a multiple of 32
-  (`SimulationConfig.cpp:336-341`).
 - `time.adaptive_tolerance <= 0` when `time.adaptive == true`
   (`SimulationConfig.cpp:312-315`).
 - `output.format` other than `"vts"` or `"raw"`
@@ -272,6 +270,16 @@ The validator also rejects:
 - `checkpoint.keep_last < 1`, an empty `checkpoint.restart_file`,
   `initial.seed_radius <= 0`, `epsilon` outside `[0, 1/3)`, etc.
 - more than 2^31 − 1 grid points (kernels index cells with 32-bit `int`).
+
+The parser (`parse_config`) is strict: an unknown key in any section is an
+error that names the key and the allowed ones (keys starting with `_` are
+comments), a section that is not a JSON object is an error, and a per-face
+`boundary.phi` / `boundary.u` (any of `x_lo` … `z_hi` present) must name all
+six faces and nothing else. `allen-cahn-cuda --validate-config FILE` runs the
+parser and validator without touching the GPU; the ctest
+`e2e.ShippedConfigsValidate` runs it on every configuration the repository
+ships (`config/*.json`, the k8s payloads, the Makefile's `run_vtk.json` and
+the JSON examples in the docs).
 
 ---
 

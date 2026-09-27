@@ -476,7 +476,7 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
     "stencil":  "7pt",
     "output":   { "frequency": 100, "output_dir": "./out", "format": "vts", "async_io": true },
     "checkpoint": { "frequency": 500, "checkpoint_dir": "./checkpoints", "keep_last": 3 },
-    "gpu":      { "device_ids": [0], "block_size": 256, "multi_gpu": false },
+    "gpu":      { "device_ids": [0], "multi_gpu": false },
     "initial":  { "seed_radius": 2.4 },
     "boundary": {
         "phi": { "type": "dirichlet", "value": -1.0 },
@@ -493,11 +493,19 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
 | `boundary.*.type`     | `"dirichlet"`, `"neumann"`, `"periodic"`, `"robin"` |
 | `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary) |
-| `gpu.block_size`      | multiple of 32 in `[32, 1024]` |
+| `output.async_io`     | `true`: write snapshots in the background; `false`: each output step waits until its file is on disk |
+
+Unknown keys are errors (keys starting with `_` are comments), so a typo
+cannot silently fall back to a default. Check a file without a GPU:
+
+```bash
+./build/release/src/allen-cahn-cuda --validate-config config/run_dendrite.json
+```
 
 ### Per-face boundary conditions
 
-Each field can have independent BCs on each of the 6 faces:
+Each field can have independent BCs on each of the 6 faces. A per-face
+object must name all six faces (a missing face is an error, not a default):
 
 ```json
 {
@@ -651,7 +659,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 |-------------------------------|----------------------------------------------------------------------------------|
 | `test_Grid.cpp`               | Grid construction, indexing, spacing, validity checks                            |
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
-| `test_SimulationConfig.cpp`   | JSON config parsing, validation, defaults, derived quantities                    |
+| `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, per-face all-six rule), validation, defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
 | `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32                        |
@@ -670,7 +678,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split; engine run |
 | `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt, short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks |
-| `test_VTKWriter.cpp`          | Async writer queue, raw / VTS output, flush completion, statistics cache         |
+| `test_VTKWriter.cpp`          | Async and synchronous writes, raw / VTS output, VTS topology, write failures reported (never a published broken file), statistics cache |
 
 ### Integration tests (`tests/integration/`, 7 files)
 
@@ -689,6 +697,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | File              | What it covers                                                                  |
 |-------------------|----------------------------------------------------------------------------------|
 | `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at |
+| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config`; a misspelled key is rejected |
 
 ### Run a single test
 

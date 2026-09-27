@@ -92,3 +92,11 @@ set_tests_properties(e2e.SignalExitStatus PROPERTIES
     SKIP_RETURN_CODE 77
     TIMEOUT 600
 )
+
+# Every configuration the repository ships (config/*.json, k8s payloads, the
+# Makefile's run_vtk.json, README/docs examples) must pass --validate-config.
+add_test(NAME e2e.ShippedConfigsValidate
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/validate_shipped_configs.py
+            $<TARGET_FILE:allen-cahn-cuda> ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.ShippedConfigsValidate PROPERTIES TIMEOUT 300)
