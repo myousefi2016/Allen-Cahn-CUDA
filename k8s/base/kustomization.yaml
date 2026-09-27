@@ -15,3 +15,14 @@ resources:
   - rbac.yaml
   - networkpolicy.yaml
   - job.yaml
+
+# The simulation image, as published by the release-docker job in
+# .github/workflows/ci.yml (docker/metadata-action lowercases
+# ghcr.io/${{ github.repository }}; `latest` tracks the default branch,
+# `sha-<commit>` pins a build). To pin one in an overlay, match the name
+# rewritten here:
+#   kustomize edit set image ghcr.io/myousefi2016/allen-cahn-cuda:sha-<commit>
+images:
+  - name: allen-cahn-cuda
+    newName: ghcr.io/myousefi2016/allen-cahn-cuda
+    newTag: latest

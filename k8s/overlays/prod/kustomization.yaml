@@ -37,9 +37,6 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/resources/limits/memory
         value: "32Gi"
-      - op: replace
-        path: /spec/template/spec/containers/0/image
-        value: allen-cahn-cuda:latest
 
   # Larger PVC for production output
   - target:

@@ -578,6 +578,11 @@ Manifests in `k8s/base/`:
 Per-environment overlays in `k8s/overlays/{dev,prod}/` add the namespace and
 patch resources / activeDeadlineSeconds / PVC size / config payload.
 
+The Job runs `ghcr.io/myousefi2016/allen-cahn-cuda:latest`, which the CI
+`release-docker` job pushes from the default branch (alongside
+`sha-<commit>` tags). The image is set once, via `images:` in
+`k8s/base/kustomization.yaml`.
+
 CI validates these manifests offline via `kubeconform` (no API server
 required) — see `.github/workflows/ci.yml`.
 

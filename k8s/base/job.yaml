@@ -51,8 +51,11 @@ spec:
               drop: ["ALL"]
       containers:
         - name: allen-cahn-cuda
-          image: allen-cahn-cuda:latest
-          imagePullPolicy: IfNotPresent
+          # Registry and tag are set by `images:` in kustomization.yaml.
+          image: allen-cahn-cuda
+          # `latest` moves with every release, so pull on each run instead
+          # of reusing whatever a node cached.
+          imagePullPolicy: Always
           args:
             - "/config/simulation.json"
           securityContext:
