@@ -69,6 +69,13 @@ MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config) : config_(config)
         // For inter-GPU boundaries, use Neumann (zero-flux) BCs on X faces
         // that abut a neighbor GPU. The halo exchange provides the real data;
         // Neumann just copies the adjacent interior value, which is benign.
+        // A uniform global config only carries phi_bc/u_bc, so seed every face
+        // from it first; otherwise the Y/Z faces would silently take the
+        // BoundaryConfig defaults once per_face is switched on below.
+        if (!config.boundary.per_face) {
+            sub_config.boundary.phi_faces = PerFaceBoundary::uniform(config.boundary.phi_bc);
+            sub_config.boundary.u_faces = PerFaceBoundary::uniform(config.boundary.u_bc);
+        }
         BoundaryConfig neumann_bc;
         neumann_bc.type = BCType::Neumann;
         neumann_bc.flux = 0.0;
@@ -273,10 +280,10 @@ void MultiGPUSolver::step(double dt) {
             s.mutable_params().dt = dt;
             launch_allen_cahn_fused(s.phi_old_.data(), s.phi_tmp_.data(), s.u_old_.data(),
                                     s.params_, s.compute_stream_);
-            s.apply_bc(s.phi_tmp_.data(), s.config_.boundary.phi_bc);
+            s.apply_phi_bc(s.phi_tmp_.data());
             launch_thermal_equation(s.u_old_.data(), s.u_tmp_.data(), s.phi_tmp_.data(),
                                     s.phi_old_.data(), s.params_, s.compute_stream_);
-            s.apply_bc(s.u_tmp_.data(), s.config_.boundary.u_bc);
+            s.apply_u_bc(s.u_tmp_.data());
         }
 
         // Exchange halos for the predictor fields (phi_tmp_, u_tmp_)

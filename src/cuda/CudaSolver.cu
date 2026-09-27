@@ -200,14 +200,14 @@ void CudaSolver::step_euler(double dt) {
                             compute_stream_);
 
     // Apply BCs to phi
-    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
+    apply_phi_bc(phi_new_.data());
 
     // Thermal update
     launch_thermal_equation(u_old_.data(), u_new_.data(), phi_new_.data(), phi_old_.data(), params_,
                             compute_stream_);
 
     // Apply BCs to u
-    apply_bc(u_new_.data(), config_.boundary.u_bc);
+    apply_u_bc(u_new_.data());
 
     // Swap old <-> new (O(1) pointer swap, zero GPU cost)
     swap(phi_old_, phi_new_);
@@ -239,23 +239,23 @@ void CudaSolver::step_heun(double dt) {
     // phi_tmp_ = phi_old + dt*f_phi(phi_old, u_old)
     launch_allen_cahn_fused(phi_old_.data(), phi_tmp_.data(), u_old_.data(), params_,
                             compute_stream_);
-    apply_bc(phi_tmp_.data(), config_.boundary.phi_bc);
+    apply_phi_bc(phi_tmp_.data());
 
     // u_tmp_ = u_old + latent_heat + dt*D*lap(u_old)
     launch_thermal_equation(u_old_.data(), u_tmp_.data(), phi_tmp_.data(), phi_old_.data(), params_,
                             compute_stream_);
-    apply_bc(u_tmp_.data(), config_.boundary.u_bc);
+    apply_u_bc(u_tmp_.data());
 
     // Stage 2: Euler from predicted state -> phi_new_, u_new_
     // phi_new_ = phi_tmp_ + dt*f_phi(phi_tmp_, u_tmp_)
     launch_allen_cahn_fused(phi_tmp_.data(), phi_new_.data(), u_tmp_.data(), params_,
                             compute_stream_);
-    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
+    apply_phi_bc(phi_new_.data());
 
     // u_new_ = u_tmp_ + latent_heat + dt*D*lap(u_tmp_)
     launch_thermal_equation(u_tmp_.data(), u_new_.data(), phi_new_.data(), phi_tmp_.data(), params_,
                             compute_stream_);
-    apply_bc(u_new_.data(), config_.boundary.u_bc);
+    apply_u_bc(u_new_.data());
 
     // Heun average: y_{n+1} = 0.5*(y_n + y_tilde + dt*f(y_tilde))
     //             = 0.5*(phi_old + phi_new)  where phi_new = phi_tmp + dt*f(phi_tmp)
@@ -268,8 +268,8 @@ void CudaSolver::step_heun(double dt) {
                                                                       u_new_.data(), N);
     CUDA_CHECK(cudaGetLastError());
 
-    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
-    apply_bc(u_new_.data(), config_.boundary.u_bc);
+    apply_phi_bc(phi_new_.data());
+    apply_u_bc(u_new_.data());
 
     swap(phi_old_, phi_new_);
     swap(u_old_, u_new_);
@@ -285,11 +285,11 @@ void CudaSolver::step_heun_stage2(double dt) {
     // Stage 2: Euler from predicted state -> phi_new_, u_new_
     launch_allen_cahn_fused(phi_tmp_.data(), phi_new_.data(), u_tmp_.data(), params_,
                             compute_stream_);
-    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
+    apply_phi_bc(phi_new_.data());
 
     launch_thermal_equation(u_tmp_.data(), u_new_.data(), phi_new_.data(), phi_tmp_.data(), params_,
                             compute_stream_);
-    apply_bc(u_new_.data(), config_.boundary.u_bc);
+    apply_u_bc(u_new_.data());
 
     // Heun average: y_{n+1} = 0.5*(y_n + y_tilde2)
     average_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
@@ -300,8 +300,8 @@ void CudaSolver::step_heun_stage2(double dt) {
                                                                       u_new_.data(), N);
     CUDA_CHECK(cudaGetLastError());
 
-    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
-    apply_bc(u_new_.data(), config_.boundary.u_bc);
+    apply_phi_bc(phi_new_.data());
+    apply_u_bc(u_new_.data());
 
     swap(phi_old_, phi_new_);
     swap(u_old_, u_new_);
@@ -336,8 +336,8 @@ void CudaSolver::step_rk4(double dt) {
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_tmp_.data(), u_old_.data(),
                                                                    k1_u_.data(), 0.5 * dt, N);
     CUDA_CHECK(cudaGetLastError());
-    apply_bc(phi_tmp_.data(), config_.boundary.phi_bc);
-    apply_bc(u_tmp_.data(), config_.boundary.u_bc);
+    apply_phi_bc(phi_tmp_.data());
+    apply_u_bc(u_tmp_.data());
 
     compute_force_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(), params_);
@@ -357,8 +357,8 @@ void CudaSolver::step_rk4(double dt) {
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_tmp_.data(), u_old_.data(),
                                                                    k2_u_.data(), 0.5 * dt, N);
     CUDA_CHECK(cudaGetLastError());
-    apply_bc(phi_tmp_.data(), config_.boundary.phi_bc);
-    apply_bc(u_tmp_.data(), config_.boundary.u_bc);
+    apply_phi_bc(phi_tmp_.data());
+    apply_u_bc(u_tmp_.data());
 
     compute_force_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(), params_);
@@ -378,8 +378,8 @@ void CudaSolver::step_rk4(double dt) {
     axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_tmp_.data(), u_old_.data(),
                                                                    k3_u_.data(), dt, N);
     CUDA_CHECK(cudaGetLastError());
-    apply_bc(phi_tmp_.data(), config_.boundary.phi_bc);
-    apply_bc(u_tmp_.data(), config_.boundary.u_bc);
+    apply_phi_bc(phi_tmp_.data());
+    apply_u_bc(u_tmp_.data());
 
     compute_force_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
         phi_tmp_.data(), Fx_.data(), Fy_.data(), Fz_.data(), params_);
@@ -402,8 +402,8 @@ void CudaSolver::step_rk4(double dt) {
         N);
     CUDA_CHECK(cudaGetLastError());
 
-    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
-    apply_bc(u_new_.data(), config_.boundary.u_bc);
+    apply_phi_bc(phi_new_.data());
+    apply_u_bc(u_new_.data());
 
     swap(phi_old_, phi_new_);
     swap(u_old_, u_new_);
@@ -419,7 +419,7 @@ void CudaSolver::step_imex(double dt) {
     // Explicit step for Allen-Cahn (reaction + anisotropy are explicit)
     launch_allen_cahn_fused(phi_old_.data(), phi_new_.data(), u_old_.data(), params_,
                             compute_stream_);
-    apply_bc(phi_new_.data(), config_.boundary.phi_bc);
+    apply_phi_bc(phi_new_.data());
 
     // Implicit step for thermal diffusion
     // Solve: (I - dt*D*Laplacian) u_new = u_old + 0.5*(phi_new - phi_old)
@@ -457,7 +457,7 @@ void CudaSolver::step_imex(double dt) {
         }
     }
 
-    apply_bc(u_new_.data(), config_.boundary.u_bc);
+    apply_u_bc(u_new_.data());
 
     swap(phi_old_, phi_new_);
     swap(u_old_, u_new_);
@@ -474,14 +474,27 @@ void CudaSolver::apply_bc_per_face(double* field, const PerFaceBoundary& face_bc
     launch_boundary_conditions_per_face(field, params_, face_bcs, compute_stream_);
 }
 
+// Every time-integration stage must honour per-face BCs, not just initialize():
+// the uniform phi_bc/u_bc are left at their defaults when a config specifies
+// faces individually, so dispatching on per_face here is what makes the
+// per-face specification effective for the whole run.
+void CudaSolver::apply_phi_bc(double* field) {
+    if (config_.boundary.per_face)
+        apply_bc_per_face(field, config_.boundary.phi_faces);
+    else
+        apply_bc(field, config_.boundary.phi_bc);
+}
+
+void CudaSolver::apply_u_bc(double* field) {
+    if (config_.boundary.per_face)
+        apply_bc_per_face(field, config_.boundary.u_faces);
+    else
+        apply_bc(field, config_.boundary.u_bc);
+}
+
 void CudaSolver::apply_boundary_conditions() {
-    if (config_.boundary.per_face) {
-        apply_bc_per_face(phi_old_.data(), config_.boundary.phi_faces);
-        apply_bc_per_face(u_old_.data(), config_.boundary.u_faces);
-    } else {
-        apply_bc(phi_old_.data(), config_.boundary.phi_bc);
-        apply_bc(u_old_.data(), config_.boundary.u_bc);
-    }
+    apply_phi_bc(phi_old_.data());
+    apply_u_bc(u_old_.data());
 }
 
 /// Warp-level max reduction (reused from ReductionKernels pattern).

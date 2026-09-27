@@ -57,6 +57,12 @@ public:
     friend class MultiGPUSolver;
 
 private:
+    /// Apply the configured phi BCs (per-face when config.boundary.per_face, else uniform).
+    void apply_phi_bc(double* field);
+
+    /// Apply the configured u BCs (per-face when config.boundary.per_face, else uniform).
+    void apply_u_bc(double* field);
+
     /// Apply uniform BCs to a single field.
     void apply_bc(double* field, const BoundaryConfig& bc);
 

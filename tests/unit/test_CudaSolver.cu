@@ -178,6 +178,78 @@ TEST_F(CudaSolverTest, PerFaceBoundaryConditions) {
     EXPECT_NO_THROW(solver.apply_boundary_conditions());
 }
 
+// Per-face BCs must be enforced by every time-integration stage, not only by
+// initialize(). The uniform phi_bc/u_bc are deliberately left at values that
+// differ from every face so that any stage falling back to them is detected.
+TEST_F(CudaSolverTest, PerFaceBoundaryConditionsHoldAfterStepping) {
+    const int N = 12;
+    const TimeScheme schemes[] = {TimeScheme::Euler, TimeScheme::Heun, TimeScheme::RK4,
+                                  TimeScheme::IMEX};
+    for (TimeScheme scheme : schemes) {
+        SCOPED_TRACE(static_cast<int>(scheme));
+        auto cfg = make_config(N, scheme);
+        cfg.boundary.phi_bc.type = BCType::Dirichlet; // must never be applied
+        cfg.boundary.phi_bc.value = 0.9;
+        cfg.boundary.u_bc.type = BCType::Dirichlet; // must never be applied
+        cfg.boundary.u_bc.value = 0.9;
+        cfg.boundary.per_face = true;
+
+        BoundaryConfig dir;
+        dir.type = BCType::Dirichlet;
+        BoundaryConfig neu;
+        neu.type = BCType::Neumann;
+        neu.flux = 0.0;
+
+        auto& pf = cfg.boundary.phi_faces;
+        pf[Face::XLo] = dir;
+        pf[Face::XLo].value = 0.3;
+        pf[Face::XHi] = dir;
+        pf[Face::XHi].value = -0.7;
+        pf[Face::YLo] = neu;
+        pf[Face::YHi] = neu;
+        pf[Face::ZLo] = dir;
+        pf[Face::ZLo].value = 0.1;
+        pf[Face::ZHi] = dir;
+        pf[Face::ZHi].value = 0.2;
+
+        cfg.boundary.u_faces = PerFaceBoundary::uniform(dir);
+        for (auto& f : cfg.boundary.u_faces.faces)
+            f.value = -0.8;
+        cfg.boundary.u_faces[Face::XLo].value = -0.5;
+
+        CudaSolver solver(cfg);
+        Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
+        FieldData phi(grid, "phi"), u(grid, "u");
+        make_sphere_ic(phi, u, N);
+        solver.initialize(phi, u);
+        for (int s = 0; s < 3; ++s)
+            solver.step(0.001);
+        solver.copy_phi_to_host(phi);
+        solver.copy_u_to_host(u);
+
+        // X faces own their whole plane (applied last).
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z) {
+                ASSERT_DOUBLE_EQ(phi(0, y, z), 0.3) << "y=" << y << " z=" << z;
+                ASSERT_DOUBLE_EQ(phi(N - 1, y, z), -0.7) << "y=" << y << " z=" << z;
+                ASSERT_DOUBLE_EQ(u(0, y, z), -0.5) << "y=" << y << " z=" << z;
+            }
+        // Y faces (zero-flux Neumann) own x in [1, N-2] and every z.
+        for (int x = 1; x < N - 1; ++x)
+            for (int z = 0; z < N; ++z) {
+                ASSERT_DOUBLE_EQ(phi(x, 0, z), phi(x, 1, z)) << "x=" << x << " z=" << z;
+                ASSERT_DOUBLE_EQ(phi(x, N - 1, z), phi(x, N - 2, z)) << "x=" << x << " z=" << z;
+            }
+        // Z faces own the remaining interior of their plane.
+        for (int x = 1; x < N - 1; ++x)
+            for (int y = 1; y < N - 1; ++y) {
+                ASSERT_DOUBLE_EQ(phi(x, y, 0), 0.1) << "x=" << x << " y=" << y;
+                ASSERT_DOUBLE_EQ(phi(x, y, N - 1), 0.2) << "x=" << x << " y=" << y;
+                ASSERT_DOUBLE_EQ(u(x, y, N - 1), -0.8) << "x=" << x << " y=" << y;
+            }
+    }
+}
+
 TEST_F(CudaSolverTest, MultipleStepsConverge) {
     int N = 16;
     auto cfg = make_config(N);
