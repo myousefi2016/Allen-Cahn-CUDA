@@ -236,3 +236,81 @@ TEST_F(AnisotropyTest, dFdphiAtMinima) {
     EXPECT_NEAR(results[0], 0.0, 1e-12);
     EXPECT_NEAR(results[1], 0.0, 1e-12);
 }
+
+/// Gradient-energy density of the anisotropic model, f(g) = 1/2 W0^2 A(g)^2 |g|^2
+/// with A(g) = (1 - 3 eps) + 4 eps (sum g_i^4) / |g|^4, in long double.
+static long double energy_density(const long double g[3], long double W0, long double eps) {
+    const long double s = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+    if (s == 0.0L)
+        return 0.0L;
+    const long double q =
+        g[0] * g[0] * g[0] * g[0] + g[1] * g[1] * g[1] * g[1] + g[2] * g[2] * g[2] * g[2];
+    const long double a = (1.0L - 3.0L * eps) + 4.0L * eps * q / (s * s);
+    return 0.5L * W0 * W0 * a * a * s;
+}
+
+// The anisotropic flux assembled by compute_force_kernel must be the exact
+// variational derivative F = df/d(grad phi) of the gradient energy density.
+// A linear field phi = g . x has central-difference gradient exactly g at every
+// interior cell, so the kernel output there is F(g); it is compared with an
+// independent long-double central difference of f(g).
+TEST_F(AnisotropyTest, ForceIsVariationalDerivativeOfGradientEnergy) {
+    const int N = 6;
+    const double h = 0.5;
+    const double W0 = 1.3;
+    const double grads[][3] = {{1.0, 0.0, 0.0},  {0.0, -2.0, 0.0}, {0.0, 0.0, 0.7},
+                               {1.0, 1.0, 0.0},  {1.0, -1.0, 1.0}, {0.3, -1.2, 0.8},
+                               {2.1, 0.4, -0.9}, {-0.5, -0.5, 1.5}};
+    const double epsilons[] = {0.0, 0.05, 0.1, 0.2};
+
+    const std::size_t total = static_cast<std::size_t>(N) * N * N;
+    DeviceField<double> d_phi(total), d_fx(total), d_fy(total), d_fz(total);
+    std::vector<double> phi(total), fx(total), fy(total), fz(total);
+
+    for (double eps : epsilons) {
+        KernelParams p{};
+        p.Nx = p.Ny = p.Nz = N;
+        p.dx = p.dy = p.dz = h;
+        p.epsilon = eps;
+        p.W0 = W0;
+        for (const auto& g : grads) {
+            for (int x = 0; x < N; ++x)
+                for (int y = 0; y < N; ++y)
+                    for (int z = 0; z < N; ++z)
+                        phi[(x * N + y) * N + z] = g[0] * x * h + g[1] * y * h + g[2] * z * h;
+            d_phi.copy_from_host(phi.data());
+            auto cfg = LaunchConfig::for_1d(total, 256);
+            compute_force_kernel<<<cfg.grid, cfg.block>>>(d_phi.data(), d_fx.data(), d_fy.data(),
+                                                          d_fz.data(), p);
+            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaDeviceSynchronize());
+            d_fx.copy_to_host(fx.data());
+            d_fy.copy_to_host(fy.data());
+            d_fz.copy_to_host(fz.data());
+            CUDA_CHECK(cudaDeviceSynchronize());
+
+            long double expected[3];
+            const long double gn =
+                std::sqrt(static_cast<long double>(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]));
+            const long double eta = 1e-6L * (gn > 1.0L ? gn : 1.0L);
+            for (int i = 0; i < 3; ++i) {
+                long double gp[3] = {g[0], g[1], g[2]}, gm[3] = {g[0], g[1], g[2]};
+                gp[i] += eta;
+                gm[i] -= eta;
+                expected[i] =
+                    (energy_density(gp, W0, eps) - energy_density(gm, W0, eps)) / (2.0L * eta);
+            }
+            for (int x = 1; x < N - 1; ++x)
+                for (int y = 1; y < N - 1; ++y)
+                    for (int z = 1; z < N - 1; ++z) {
+                        const std::size_t c = (x * N + y) * N + z;
+                        const double got[3] = {fx[c], fy[c], fz[c]};
+                        for (int i = 0; i < 3; ++i)
+                            ASSERT_NEAR(got[i], static_cast<double>(expected[i]),
+                                        1e-8 * (1.0 + std::fabs(static_cast<double>(expected[i]))))
+                                << "eps=" << eps << " g=(" << g[0] << "," << g[1] << "," << g[2]
+                                << ") component " << i;
+                    }
+        }
+    }
+}

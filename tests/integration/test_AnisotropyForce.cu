@@ -5,6 +5,7 @@
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <gtest/gtest.h>
 
@@ -42,18 +43,19 @@ protected:
         return cfg;
     }
 
-    /// Initialize phi with a tanh-profile sphere (r0=4, W0=1) and u = -delta.
-    void init_tanh_sphere(FieldData& phi, FieldData& u, const SimulationConfig& cfg) {
+    /// Equilibrium tanh-profile sphere of physical radius r0 centred at the
+    /// domain midpoint 0.5*(N-1) (exact mirror symmetry), with u = -delta.
+    void init_tanh_sphere(FieldData& phi, FieldData& u, const SimulationConfig& cfg,
+                          double r0 = 1.6) {
         int Nx = cfg.grid.Nx, Ny = cfg.grid.Ny, Nz = cfg.grid.Nz;
-        Real cx = 0.5 * Nx, cy = 0.5 * Ny, cz = 0.5 * Nz;
-        Real r0 = 4.0;
-        Real W0 = cfg.physics.W0;
-        Real inv_sqrt2_W0 = 1.0 / (std::sqrt(2.0) * W0);
+        Real cx = 0.5 * (Nx - 1), cy = 0.5 * (Ny - 1), cz = 0.5 * (Nz - 1);
+        Real inv_sqrt2_W0 = 1.0 / (std::sqrt(2.0) * cfg.physics.W0);
 
         for (int x = 0; x < Nx; ++x)
             for (int y = 0; y < Ny; ++y)
                 for (int z = 0; z < Nz; ++z) {
-                    Real rx = x - cx, ry = y - cy, rz = z - cz;
+                    Real rx = (x - cx) * cfg.grid.dx, ry = (y - cy) * cfg.grid.dy,
+                         rz = (z - cz) * cfg.grid.dz;
                     Real r = std::sqrt(rx * rx + ry * ry + rz * rz);
                     phi(x, y, z) = -std::tanh((r - r0) * inv_sqrt2_W0);
                     u(x, y, z) = -cfg.physics.delta;
@@ -100,65 +102,120 @@ TEST_F(AnisotropyForceTest, AnisotropyIsActive) {
     EXPECT_GT(max_diff, 1e-10) << "Anisotropy (epsilon=0.10) had no effect on phi evolution";
 }
 
-/// Verify that growth rate is anisotropic: the <100> direction should grow
-/// faster than the <111> direction because A(100) = 1+ε > A(111) = 1 - 5ε/3.
-TEST_F(AnisotropyForceTest, DirectionalGrowthRate) {
-    auto cfg = make_config(0.10);
-    Grid grid = cfg.make_grid();
+namespace {
 
-    // Save initial phi
-    FieldData phi_init(grid, "phi_init"), u_init(grid, "u_init");
-    init_tanh_sphere(phi_init, u_init, cfg);
+double trilinear(const FieldData& f, double x, double y, double z) {
+    const int x0 = static_cast<int>(std::floor(x)), y0 = static_cast<int>(std::floor(y)),
+              z0 = static_cast<int>(std::floor(z));
+    const double tx = x - x0, ty = y - y0, tz = z - z0;
+    double v = 0.0;
+    for (int a = 0; a < 2; ++a)
+        for (int b = 0; b < 2; ++b)
+            for (int c = 0; c < 2; ++c)
+                v += (a ? tx : 1 - tx) * (b ? ty : 1 - ty) * (c ? tz : 1 - tz) *
+                     f(x0 + a, y0 + b, z0 + c);
+    return v;
+}
 
-    // Evolve
-    FieldData phi(grid, "phi"), u(grid, "u");
-    init_tanh_sphere(phi, u, cfg);
-
-    CudaSolver solver(cfg);
-    solver.initialize(phi, u);
-    // Run a few Euler steps to accumulate a measurable anisotropy signal
-    for (int step = 0; step < 5; ++step) {
-        solver.step(cfg.time.dt);
+/// Distance (cells) from the centre to the first phi = 0 crossing along unit
+/// direction d, linearly interpolated between samples; -1 if none found.
+double interface_radius(const FieldData& phi, double c, const double d[3], int N) {
+    double prev = trilinear(phi, c, c, c), s_prev = 0.0;
+    for (double s = 0.05; s < 0.5 * N - 2; s += 0.05) {
+        const double v = trilinear(phi, c + s * d[0], c + s * d[1], c + s * d[2]);
+        if (prev > 0.0 && v <= 0.0)
+            return s_prev + (s - s_prev) * prev / (prev - v);
+        prev = v;
+        s_prev = s;
     }
-    solver.copy_phi_to_host(phi);
+    return -1.0;
+}
 
-    int Nx = cfg.grid.Nx, Ny = cfg.grid.Ny, Nz = cfg.grid.Nz;
-    int cx = Nx / 2, cy = Ny / 2, cz = Nz / 2;
+struct GrowthExtent {
+    double r100 = 0, r111 = 0, spread100 = 0, spread111 = 0;
+};
 
-    // Measure |Δφ| along the (1,0,0) direction: sample a point at the
-    // interface along x-axis (roughly at x=cx+4, y=cy, z=cz).
-    // We scan a few points near the expected interface radius to find the
-    // maximum |Δφ|.
-    auto max_delta_phi_along = [&](int dx, int dy, int dz) -> double {
-        double max_dphi = 0.0;
-        // Normalize direction and walk from radius 2 to 6
-        double len = std::sqrt(double(dx * dx + dy * dy + dz * dz));
-        for (int t = 2; t <= 6; ++t) {
-            int px = cx + static_cast<int>(std::round(t * dx / len));
-            int py = cy + static_cast<int>(std::round(t * dy / len));
-            int pz = cz + static_cast<int>(std::round(t * dz / len));
-            if (px >= 0 && px < Nx && py >= 0 && py < Ny && pz >= 0 && pz < Nz) {
-                double dphi = std::abs(phi(px, py, pz) - phi_init(px, py, pz));
-                if (dphi > max_dphi)
-                    max_dphi = dphi;
-            }
+} // namespace
+
+/// Cubic anisotropy (eps > 0) must make a growing seed extend further along
+/// the <100> axes than along the <111> diagonals. The early-time local rate
+/// cannot show this (in the Karma-Rappel model tau(n) = tau0 A(n)^2 makes the
+/// instantaneous relaxation *faster* where A is smaller), so the test measures
+/// the interface extent after the Mullins-Sekerka growth regime has set in
+/// (t = 15 tau units), before any wall contact.
+///
+/// The eps = 0 run is the control: the discrete phase-field operator itself is
+/// anisotropic (it favours <111>, ratio ~0.90 here), so the test requires the
+/// <100>/<111> extent ratio to increase strictly with eps, to exceed 1 at
+/// eps = 0.05, and cubic symmetry to hold across all 6 axes and 8 diagonals.
+/// Measured on RTX 4090 (CUDA 13.2): ratios 0.9002, 0.9710, 1.0990 for
+/// eps = 0, 0.02, 0.05; the thresholds keep margins of 0.035-0.1.
+TEST_F(AnisotropyForceTest, GrowthExtentFavoursAxesUnderAnisotropy) {
+    const int N = 64;
+    const double h = 0.8, delta = 0.55, dt = 0.03;
+    const int steps = 500;
+    const double c = 0.5 * (N - 1);
+    const double s3 = 1.0 / std::sqrt(3.0);
+    const double eps_values[] = {0.0, 0.02, 0.05};
+    GrowthExtent ext[3];
+
+    for (int k = 0; k < 3; ++k) {
+        auto cfg = make_config(eps_values[k]);
+        cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = N;
+        cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = h;
+        cfg.physics.delta = delta;
+        cfg.time.dt = dt;
+        cfg.boundary.phi_bc = {BCType::Neumann, 0.0, 0.0, 0.0, 0.0, 0.0};
+        cfg.boundary.u_bc = {BCType::Dirichlet, -delta, 0.0, 0.0, 0.0, 0.0};
+        cfg.validate();
+
+        Grid grid = cfg.make_grid();
+        FieldData phi(grid, "phi"), u(grid, "u");
+        init_tanh_sphere(phi, u, cfg, 4.0);
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        for (int s = 0; s < steps; ++s)
+            solver.step(dt);
+        solver.copy_phi_to_host(phi);
+
+        const double axes[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                   {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+        double lo = 1e30, hi = -1e30, sum = 0;
+        for (const auto& d : axes) {
+            const double r = interface_radius(phi, c, d, N);
+            ASSERT_GT(r, 0.0) << "no interface along an axis (wall reached?)";
+            lo = std::min(lo, r);
+            hi = std::max(hi, r);
+            sum += r;
         }
-        return max_dphi;
-    };
+        ext[k].r100 = sum / 6;
+        ext[k].spread100 = hi - lo;
 
-    // <100> direction: along x-axis
-    double dphi_100 = max_delta_phi_along(1, 0, 0);
+        lo = 1e30, hi = -1e30, sum = 0;
+        for (int sx : {-1, 1})
+            for (int sy : {-1, 1})
+                for (int sz : {-1, 1}) {
+                    const double d[3] = {sx * s3, sy * s3, sz * s3};
+                    const double r = interface_radius(phi, c, d, N);
+                    ASSERT_GT(r, 0.0) << "no interface along a diagonal";
+                    lo = std::min(lo, r);
+                    hi = std::max(hi, r);
+                    sum += r;
+                }
+        ext[k].r111 = sum / 8;
+        ext[k].spread111 = hi - lo;
+    }
 
-    // <111> direction: along (1,1,1) diagonal
-    double dphi_111 = max_delta_phi_along(1, 1, 1);
-
-    // Both should have some growth
-    EXPECT_GT(dphi_100, 1e-12) << "No measurable growth along <100>";
-    EXPECT_GT(dphi_111, 1e-12) << "No measurable growth along <111>";
-
-    // The <100> direction should grow faster: A(100)=1+ε > A(111)=1-5ε/3
-    EXPECT_GT(dphi_100, dphi_111) << "Expected faster growth along <100> than <111>; "
-                                  << "dphi_100=" << dphi_100 << " dphi_111=" << dphi_111;
+    double ratio[3];
+    for (int k = 0; k < 3; ++k) {
+        SCOPED_TRACE(eps_values[k]);
+        EXPECT_LT(ext[k].spread100, 1e-9) << "cubic symmetry broken along <100>";
+        EXPECT_LT(ext[k].spread111, 1e-9) << "cubic symmetry broken along <111>";
+        ratio[k] = ext[k].r100 / ext[k].r111;
+    }
+    EXPECT_GT(ratio[1], ratio[0] + 0.035) << ratio[0] << " -> " << ratio[1];
+    EXPECT_GT(ratio[2], ratio[1] + 0.035) << ratio[1] << " -> " << ratio[2];
+    EXPECT_GT(ratio[2], 1.05) << "eps = 0.05 must out-grow the grid bias along <100>";
 }
 
 /// Verify that all fields remain finite after a step with anisotropy.
