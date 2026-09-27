@@ -80,6 +80,11 @@ jobs:
   build-and-test:
     name: Build & Test (CUDA ${{ matrix.cuda }})
     runs-on: [self-hosted, gpu, linux]
+    # Fork pull requests are never scheduled onto the self-hosted GPU runner.
+    # This condition is only a convenience (a fork can edit it); the runner
+    # itself refuses every job not triggered by the repository owner from
+    # this repository, see ci/gpu-runner/job-started-guard.sh.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -219,6 +224,9 @@ jobs:
 
       - name: Run resume-checkpoint helper tests
         run: python tests/test_resume_checkpoint.py
+
+      - name: Run GPU-runner guard tests
+        run: python tests/test_gpu_runner_guard.py -v
 
   # ── Docker Build ────────────────────────────────────────────────────────────
   # Builds every docker/Dockerfile.<target>, loads it into the local daemon and
