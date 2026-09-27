@@ -56,13 +56,28 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN cmake --version | head -1
 
 # ── Create non-root developer user ────────────────────────────────────────
+# The base image already has user/group `ubuntu` at UID/GID 1000. If it owns
+# the requested UID, rename it to `developer` (keeping its IDs, dropping the
+# supplementary groups it carries: adm, sudo, ...); otherwise create
+# `developer` with the requested IDs. The final check fails the build
+# if the account does not end up with exactly USER_UID:USER_GID.
+# build/ and .ccache/ are named-volume mount points in docker-compose.yml;
+# Docker seeds an empty named volume from the image directory, so they are
+# created here owned by developer.
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-RUN groupadd --force --gid ${USER_GID} developer && \
-    useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash developer 2>/dev/null || true && \
-    mkdir -p /workspace && \
-    chown ${USER_UID}:${USER_GID} /workspace
+RUN if [ "$(getent passwd ${USER_UID} | cut -d: -f1)" = "ubuntu" ]; then \
+        usermod --login developer --home /home/developer --move-home \
+            --groups "" ubuntu && \
+        groupmod --new-name developer ubuntu; \
+    else \
+        groupadd --gid ${USER_GID} developer && \
+        useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash developer; \
+    fi && \
+    [ "$(id -u developer):$(id -g developer)" = "${USER_UID}:${USER_GID}" ] && \
+    mkdir -p /workspace/build /workspace/.ccache && \
+    chown -R developer:developer /workspace
 
 # ── Configure ccache ──────────────────────────────────────────────────────
 ENV CCACHE_DIR=/workspace/.ccache

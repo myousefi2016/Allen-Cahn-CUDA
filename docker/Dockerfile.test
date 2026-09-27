@@ -77,9 +77,23 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && \
     rm -rf /var/lib/apt/lists/*
 
-# Create non-root test user
-RUN groupadd --force --gid 1000 tester && \
-    useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash tester 2>/dev/null || true
+# Create non-root test user at UID/GID 1000. The base image already has
+# user/group `ubuntu` with those IDs, so rename it and drop the supplementary
+# groups it carries (adm, sudo, ...); otherwise create `tester`. The final
+# check fails the build if tester does not end up as 1000:1000.
+# /build and /build/build are created tester-owned so ctest can write
+# Testing/ into the copied build tree below.
+RUN if [ "$(getent passwd 1000 | cut -d: -f1)" = "ubuntu" ]; then \
+        usermod --login tester --home /home/tester --move-home \
+            --groups "" ubuntu && \
+        groupmod --new-name tester ubuntu; \
+    else \
+        groupadd --gid 1000 tester && \
+        useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash tester; \
+    fi && \
+    [ "$(id -u tester):$(id -g tester)" = "1000:1000" ] && \
+    mkdir -p /build/build && \
+    chown tester:tester /build /build/build
 
 WORKDIR /build
 
