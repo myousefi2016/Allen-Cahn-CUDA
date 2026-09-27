@@ -61,8 +61,11 @@ RUN pip3 install --no-cache-dir \
         'pillow>=10.0' \
         'matplotlib>=3.7'
 
-# ---- Non-root user (matches Dockerfile.prod UID 1000) -----------------------
-RUN groupadd -g 1000 developer && \
-    useradd -u 1000 -g developer -m -s /bin/bash developer
-
+# ---- Runs as root ------------------------------------------------------------
+# No USER on purpose: the cuda-* targets bind-mount the checkout at /work and
+# run without --user, so the container is root. CUDA_CHOWN in the Makefile then
+# hands build/, out/, checkpoints/ and viz/ back to the host UID/GID at the end
+# of every job, and cuda-clean relies on root to remove them. (The base image
+# already has user/group `ubuntu` at UID/GID 1000, so creating another account
+# with those IDs would fail the build.)
 WORKDIR /work
