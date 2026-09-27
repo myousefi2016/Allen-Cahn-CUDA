@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allen-cahn-netpol
+  labels:
+    app.kubernetes.io/name: allen-cahn-cuda
+    app.kubernetes.io/component: network
+    app.kubernetes.io/part-of: allen-cahn-cuda
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: allen-cahn-cuda
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
