@@ -1,3 +1,4 @@
+#include "common/TempDir.hpp"
 #include "core/CheckpointManager.hpp"
 #include "core/FieldData.hpp"
 #include "core/Grid.hpp"
@@ -17,7 +18,7 @@ protected:
 
     void SetUp() override {
         Logger::init(spdlog::level::off);
-        test_dir_ = std::filesystem::temp_directory_path() / "test_ckpt_mgr";
+        test_dir_ = ac::test::unique_temp_dir("test_ckpt_mgr");
         std::filesystem::create_directories(test_dir_);
 
         grid_ = Grid(Dim3{N, N, N}, Spacing{1.0, 1.0, 1.0});
@@ -162,7 +163,7 @@ TEST_F(CheckpointManagerTest, RestoreLatestFromDir) {
 
 TEST_F(CheckpointManagerTest, RestoreEmptyDirThrows) {
     // Create a fresh empty directory
-    auto empty_dir = std::filesystem::temp_directory_path() / "test_ckpt_empty";
+    auto empty_dir = ac::test::unique_temp_dir("test_ckpt_empty");
     std::filesystem::create_directories(empty_dir);
 
     CheckpointParams params;

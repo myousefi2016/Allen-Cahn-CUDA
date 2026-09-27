@@ -1,3 +1,4 @@
+#include "common/TempDir.hpp"
 #include "core/FieldData.hpp"
 #include "core/Grid.hpp"
 #include "core/SimulationConfig.hpp"
@@ -25,7 +26,7 @@ protected:
         Logger::init(spdlog::level::off);
 
         // Create a unique temporary directory for this test run
-        tmp_dir_ = std::filesystem::temp_directory_path() / "ac_test_checkpoint";
+        tmp_dir_ = ac::test::unique_temp_dir("ac_test_checkpoint");
         std::filesystem::create_directories(tmp_dir_);
     }
 

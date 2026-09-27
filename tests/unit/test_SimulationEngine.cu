@@ -1,3 +1,4 @@
+#include "common/TempDir.hpp"
 #include "core/SimulationConfig.hpp"
 #include "core/SimulationEngine.hpp"
 #include "logging/Logger.hpp"
@@ -16,7 +17,7 @@ protected:
         if (device_count == 0)
             GTEST_SKIP() << "No CUDA devices available";
         Logger::init(spdlog::level::off);
-        test_dir_ = std::filesystem::temp_directory_path() / "test_sim_engine";
+        test_dir_ = ac::test::unique_temp_dir("test_sim_engine");
         std::filesystem::create_directories(test_dir_);
     }
 

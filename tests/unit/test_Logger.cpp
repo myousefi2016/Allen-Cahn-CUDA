@@ -1,3 +1,4 @@
+#include "common/TempDir.hpp"
 #include "logging/Logger.hpp"
 
 #include <filesystem>
@@ -11,7 +12,7 @@ using namespace ac;
 class LoggerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        test_dir_ = std::filesystem::temp_directory_path() / "test_logger";
+        test_dir_ = ac::test::unique_temp_dir("test_logger");
         std::filesystem::create_directories(test_dir_);
     }
 

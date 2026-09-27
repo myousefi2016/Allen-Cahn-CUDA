@@ -1,3 +1,4 @@
+#include "common/TempDir.hpp"
 #include "io/VTKWriter.hpp"
 #include "logging/Logger.hpp"
 
@@ -12,7 +13,7 @@ class VTKWriterTest : public ::testing::Test {
 protected:
     void SetUp() override {
         Logger::init(spdlog::level::off);
-        test_dir_ = fs::temp_directory_path() / "vtk_test";
+        test_dir_ = ac::test::unique_temp_dir("vtk_test");
         fs::create_directories(test_dir_);
     }
 
