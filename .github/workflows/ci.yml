@@ -119,17 +119,20 @@ jobs:
       - name: Run Unit Tests
         run: |
           cd build
-          ctest --output-on-failure --parallel $(nproc) -R "unit_tests" --timeout 300
+          ctest --output-on-failure --no-tests=error --parallel $(nproc) -R "^unit[.]" --timeout 300
 
       - name: Run Integration Tests
         run: |
           cd build
-          ctest --output-on-failure --parallel $(nproc) -R "integration_tests" --timeout 600
+          ctest --output-on-failure --no-tests=error --parallel $(nproc) -R "^integration[.]" --timeout 600
 
   # ── Build & Test (CPU-only, no GPU) ─────────────────────────────────────────
+  # Runs every discovered test. CPU suites execute for real; CUDA suites
+  # GTEST_SKIP because the hosted runner has no GPU (reported as Skipped).
   build-cpu-only:
-    name: Build (CPU-only, no GPU tests)
+    name: Build & CPU Tests (no GPU)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     container:
       image: nvidia/cuda:12.6.0-devel-ubuntu24.04
     env:
@@ -159,6 +162,11 @@ jobs:
       - name: Build
         run: cmake --build build --parallel $(nproc)
 
+      - name: Run tests (CPU suites execute, GPU suites skip)
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            --parallel $(nproc) --timeout 300
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -167,6 +175,39 @@ jobs:
             build/src/allen-cahn-cuda
             build/tests/
           retention-days: 7
+
+  # ── Visualization toolkit (headless, no GPU) ────────────────────────────────
+  # End-to-end check of scripts/visualize_dendrite.py on synthetic .vts data:
+  # prescan, saturation detection, both layouts, --skip-saturated,
+  # --scan-json and MP4 stitching.
+  viz-smoke:
+    name: Visualization Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install headless rendering libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1 libglu1-mesa libxrender1 libxext6 libsm6 libice6 \
+            libxt6 libfontconfig1 libglx-mesa0 libosmesa6 ffmpeg
+
+      - name: Install Python requirements
+        run: pip install -r scripts/requirements.txt
+
+      - name: Run visualizer self-test
+        run: python scripts/visualize_dendrite.py --self-test
+
+      - name: Run visualizer smoke test
+        run: python tests/visualize_smoke.py
 
   # ── Docker Build ────────────────────────────────────────────────────────────
   docker-build:
@@ -237,7 +278,7 @@ jobs:
   release-docker:
     name: Push Docker Images
     runs-on: ubuntu-latest
-    needs: [build-and-test, build-cpu-only, docker-build, format-check, k8s-validate]
+    needs: [build-and-test, build-cpu-only, viz-smoke, docker-build, format-check, k8s-validate]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       packages: write
