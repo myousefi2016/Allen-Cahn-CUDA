@@ -31,7 +31,7 @@
         "frequency": 0
     },
     "initial": {
-        "seed_radius": 5.0
+        "seed_radius": 2.0
     },
     "boundary": {
         "phi": { "type": "dirichlet", "value": -1.0 },

@@ -100,7 +100,7 @@ struct GPUParams {
 
 // ── Initial condition ──────────────────────────────────────────────────────
 struct InitialCondition {
-    Real seed_radius = 5.0;
+    Real seed_radius = 2.0; ///< Physical length (same units as W0 and grid spacing)
 };
 
 /// Face identifiers for per-face boundary conditions.

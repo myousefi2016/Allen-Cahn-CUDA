@@ -42,7 +42,7 @@
         "multi_gpu": false
     },
     "initial": {
-        "seed_radius": 5.0
+        "seed_radius": 2.0
     },
     "boundary": {
         "phi": {

@@ -51,7 +51,7 @@
     },
     "_comment_initial": "r0=10 cells = 4.0 W0, well above critical radius R_c = 2*d0/delta = 1.54 = 3.85 cells. Tanh initial profile avoids spurious interface-relaxation transient.",
     "initial": {
-        "seed_radius": 10.0
+        "seed_radius": 4.0
     },
     "boundary": {
         "phi": {

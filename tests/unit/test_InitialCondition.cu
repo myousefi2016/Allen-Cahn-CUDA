@@ -45,7 +45,7 @@ protected:
 
         cfg.stencil = StencilType::Standard7Point;
 
-        cfg.initial.seed_radius = 4.0;
+        cfg.initial.seed_radius = 1.6; // physical: 4 cells at dx = 0.4
 
         cfg.output.output_dir = test_dir_ / "out";
         cfg.output.frequency = 10000;
@@ -69,56 +69,76 @@ protected:
     std::filesystem::path test_dir_;
 };
 
-/// Verify phi at the center of the domain (inside the seed).
-/// Center is at (8,8,8) in a 16^3 grid with cx=cy=cz=8.
-/// r = 0, phi = -tanh((0-4)/(sqrt(2)*1)) = -tanh(-2.828) ≈ +0.9937
-TEST_F(InitialConditionTest, PhiAtCenter) {
+/// Analytic initial profile at physical distance r from the domain midpoint.
+static double expected_phi(const SimulationConfig& cfg, int x, int y, int z) {
+    const double cx = 0.5 * (cfg.grid.Nx - 1), cy = 0.5 * (cfg.grid.Ny - 1),
+                 cz = 0.5 * (cfg.grid.Nz - 1);
+    const double rx = (x - cx) * cfg.grid.dx, ry = (y - cy) * cfg.grid.dy,
+                 rz = (z - cz) * cfg.grid.dz;
+    const double r = std::sqrt(rx * rx + ry * ry + rz * rz);
+    return -std::tanh((r - cfg.initial.seed_radius) / (std::sqrt(2.0) * cfg.physics.W0));
+}
+
+/// Every interior cell holds the equilibrium profile -tanh((r - r0)/(sqrt(2) W0))
+/// with r measured in physical units (grid spacing 0.4, so 2.5 cells per W0).
+TEST_F(InitialConditionTest, PhiMatchesEquilibriumProfile) {
     auto cfg = make_config();
     SimulationEngine engine(cfg);
     engine.run(); // 0 steps, just initializes
 
     const auto& phi = engine.phi();
-    double r0 = cfg.initial.seed_radius;
-    double W0 = cfg.physics.W0;
-    double inv_sqrt2_W0 = 1.0 / (std::sqrt(2.0) * W0);
-    double expected = -std::tanh((0.0 - r0) * inv_sqrt2_W0);
-
-    EXPECT_NEAR(phi(8, 8, 8), expected, 1e-4) << "phi at center should be ≈ " << expected;
-    EXPECT_GT(phi(8, 8, 8), 0.99) << "phi at center should be close to +1 (solid)";
+    for (int x = 1; x < cfg.grid.Nx - 1; ++x)
+        for (int y = 1; y < cfg.grid.Ny - 1; ++y)
+            for (int z = 1; z < cfg.grid.Nz - 1; ++z)
+                ASSERT_DOUBLE_EQ(phi(x, y, z), expected_phi(cfg, x, y, z))
+                    << x << "," << y << "," << z;
 }
 
-/// Verify phi far from center (liquid region).
-/// At (0,0,0): r = sqrt(8^2+8^2+8^2) = 8*sqrt(3) ≈ 13.86
-/// phi = -tanh((13.86-4)/sqrt(2)) = -tanh(6.97) ≈ -1.0
-TEST_F(InitialConditionTest, PhiFarFromCenter) {
+/// The seed is centred at the domain midpoint 0.5*(N-1), so the field is
+/// exactly mirror-symmetric about all three mid-planes (including the
+/// Neumann boundary cells, which copy symmetric neighbours).
+TEST_F(InitialConditionTest, SeedIsMirrorSymmetric) {
     auto cfg = make_config();
     SimulationEngine engine(cfg);
     engine.run();
 
     const auto& phi = engine.phi();
-    int Nx = cfg.grid.Nx;
-    double cx = 0.5 * Nx;
-    double r_corner = std::sqrt(cx * cx + cx * cx + cx * cx);
-    double W0 = cfg.physics.W0;
-    double inv_sqrt2_W0 = 1.0 / (std::sqrt(2.0) * W0);
-    double r0 = cfg.initial.seed_radius;
-    double expected = -std::tanh((r_corner - r0) * inv_sqrt2_W0);
-
-    EXPECT_NEAR(phi(0, 0, 0), expected, 1e-4) << "phi at corner should be ≈ " << expected;
-    EXPECT_LT(phi(0, 0, 0), -0.999) << "phi at corner should be ≈ -1 (liquid)";
+    const int N = cfg.grid.Nx;
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z) {
+                ASSERT_EQ(phi(x, y, z), phi(N - 1 - x, y, z));
+                ASSERT_EQ(phi(x, y, z), phi(x, N - 1 - y, z));
+                ASSERT_EQ(phi(x, y, z), phi(x, y, N - 1 - z));
+            }
 }
 
-/// Verify phi at the interface (r ≈ r0): phi ≈ -tanh(0) = 0.
-/// Find a point at distance ~4 from center. For (8+4, 8, 8) = (12, 8, 8),
-/// r = 4, so phi = -tanh(0) = 0.
-TEST_F(InitialConditionTest, PhiAtInterface) {
+/// phi is positive (solid) strictly inside the seed radius and negative
+/// (liquid) strictly outside it, so the phi = 0 surface is the sphere r = r0.
+TEST_F(InitialConditionTest, InterfaceAtSeedRadius) {
     auto cfg = make_config();
     SimulationEngine engine(cfg);
     engine.run();
 
     const auto& phi = engine.phi();
-    // (12, 8, 8) is at distance 4 from center (8,8,8)
-    EXPECT_NEAR(phi(12, 8, 8), 0.0, 0.05) << "phi at r=r0 should be ≈ 0 (interface)";
+    const double c = 0.5 * (cfg.grid.Nx - 1);
+    int inside = 0, outside = 0;
+    for (int x = 1; x < cfg.grid.Nx - 1; ++x)
+        for (int y = 1; y < cfg.grid.Ny - 1; ++y)
+            for (int z = 1; z < cfg.grid.Nz - 1; ++z) {
+                const double h = cfg.grid.dx;
+                const double r =
+                    h * std::sqrt((x - c) * (x - c) + (y - c) * (y - c) + (z - c) * (z - c));
+                if (r < cfg.initial.seed_radius) {
+                    ASSERT_GT(phi(x, y, z), 0.0);
+                    ++inside;
+                } else if (r > cfg.initial.seed_radius) {
+                    ASSERT_LT(phi(x, y, z), 0.0);
+                    ++outside;
+                }
+            }
+    EXPECT_GT(inside, 0);
+    EXPECT_GT(outside, 0);
 }
 
 /// Verify that u = -delta everywhere.

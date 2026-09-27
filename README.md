@@ -460,7 +460,7 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
     "output":   { "frequency": 100, "output_dir": "./out", "format": "vts", "async_io": true },
     "checkpoint": { "frequency": 500, "checkpoint_dir": "./checkpoints", "keep_last": 3 },
     "gpu":      { "device_ids": [0], "block_size": 256, "multi_gpu": false },
-    "initial":  { "seed_radius": 6.0 },
+    "initial":  { "seed_radius": 2.4 },
     "boundary": {
         "phi": { "type": "dirichlet", "value": -1.0 },
         "u":   { "type": "dirichlet", "value": -0.8 }

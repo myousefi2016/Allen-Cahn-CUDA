@@ -80,40 +80,41 @@ TEST_F(SimulationEngineTest, Construction) {
     });
 }
 
+// The initial condition is the Karma-Rappel equilibrium profile
+// phi = -tanh((r - r0) / (sqrt(2) W0)) in physical distance r from the domain
+// midpoint, with u = -delta. run() with zero steps returns the fields after
+// the solver applied the BCs, so interior cells must equal the profile and
+// boundary cells must satisfy the configured Neumann/Dirichlet relations.
 TEST_F(SimulationEngineTest, InitializeFieldsPattern) {
-    auto cfg = make_config(8, 5);
-    SimulationEngine engine(cfg);
-
-    // run() initializes fields then runs the loop
-    // Instead, we run the engine and inspect the final state.
-    // But we need to check the IC. Since run() overwrites, we run 0 steps.
+    const int N = 12;
+    auto cfg = make_config(N, 5);
+    cfg.initial.seed_radius = 1.5;
     cfg.time.max_steps = 0;
-    SimulationEngine engine0(cfg);
-    engine0.run();
+    SimulationEngine engine(cfg);
+    engine.run();
 
-    const auto& phi = engine0.phi();
-    int N = 8;
-    double cx = N / 2.0, cy = N / 2.0, cz = N / 2.0;
-    double r0 = cfg.initial.seed_radius;
-
-    // Center should be inside seed -> phi = 1.0
-    double center_r = std::sqrt((N / 2 - cx) * (N / 2 - cx) + (N / 2 - cy) * (N / 2 - cy) +
-                                (N / 2 - cz) * (N / 2 - cz));
-    if (center_r < r0) {
-        EXPECT_DOUBLE_EQ(phi(N / 2, N / 2, N / 2), 1.0);
-    }
-
-    // Far corner (0,0,0) should be outside seed -> phi = -1.0
-    double corner_r = std::sqrt(cx * cx + cy * cy + cz * cz);
-    if (corner_r >= r0) {
-        EXPECT_DOUBLE_EQ(phi(0, 0, 0), -1.0);
-    }
-
-    // Verify u at the center is 0.0 (inside seed)
-    const auto& u = engine0.u();
-    if (center_r < r0) {
-        EXPECT_DOUBLE_EQ(u(N / 2, N / 2, N / 2), 0.0);
-    }
+    const auto& phi = engine.phi();
+    const auto& u = engine.u();
+    const double c = 0.5 * (N - 1);
+    const double h = cfg.grid.dx;
+    const double inv_sqrt2_W0 = 1.0 / (std::sqrt(2.0) * cfg.physics.W0);
+    for (int x = 1; x < N - 1; ++x)
+        for (int y = 1; y < N - 1; ++y)
+            for (int z = 1; z < N - 1; ++z) {
+                double rx = (x - c) * h, ry = (y - c) * h, rz = (z - c) * h;
+                double r = std::sqrt(rx * rx + ry * ry + rz * rz);
+                double expected = -std::tanh((r - cfg.initial.seed_radius) * inv_sqrt2_W0);
+                ASSERT_DOUBLE_EQ(phi(x, y, z), expected) << x << "," << y << "," << z;
+            }
+    // Zero-flux Neumann phi: every X-face cell copies its inner neighbour.
+    for (int y = 0; y < N; ++y)
+        for (int z = 0; z < N; ++z) {
+            ASSERT_DOUBLE_EQ(phi(0, y, z), phi(1, y, z));
+            ASSERT_DOUBLE_EQ(phi(N - 1, y, z), phi(N - 2, y, z));
+        }
+    // u = -delta everywhere, which also satisfies Dirichlet u = -0.8 = -delta.
+    for (std::size_t i = 0; i < u.size(); ++i)
+        ASSERT_DOUBLE_EQ(u.data()[i], -cfg.physics.delta);
 }
 
 TEST_F(SimulationEngineTest, RunShortSimulation) {

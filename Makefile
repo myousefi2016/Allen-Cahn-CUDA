@@ -267,7 +267,7 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 	    '  "stencil":  "27pt",' \
 	    '  "output":   { "frequency": 100, "output_dir": "./out", "format": "vts", "async_io": true },' \
 	    '  "checkpoint": { "frequency": 500, "checkpoint_dir": "./checkpoints", "keep_last": 3 },' \
-	    '  "initial":  { "seed_radius": 6.0 },' \
+	    '  "initial":  { "seed_radius": 2.4 },' \
 	    '  "boundary": {' \
 	    '    "phi": { "type": "neumann", "flux": 0.0 },' \
 	    '    "u":   { "type": "dirichlet", "value": -0.8 }' \

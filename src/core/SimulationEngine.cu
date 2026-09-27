@@ -75,17 +75,24 @@ void SimulationEngine::run() {
 }
 
 void SimulationEngine::initialize_fields() {
-    Real r0 = config_.initial.seed_radius;
-    Real delta = config_.physics.delta;
-    Real W0 = config_.physics.W0;
-    int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
-    Real cx = 0.5 * Nx, cy = 0.5 * Ny, cz = 0.5 * Nz;
-    Real inv_sqrt2_W0 = 1.0 / (std::sqrt(2.0) * W0);
+    const Real r0 = config_.initial.seed_radius; // physical length, same units as W0 and dx
+    const Real delta = config_.physics.delta;
+    const Real W0 = config_.physics.W0;
+    const int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
+    const Real dx = grid_.dx(), dy = grid_.dy(), dz = grid_.dz();
+    // Grid points sit at i*dx for i in [0, N-1], so the domain midpoint is
+    // 0.5*(N-1) in index units; centring the seed there keeps the problem
+    // mirror-symmetric about every axis.
+    const Real cx = 0.5 * (Nx - 1), cy = 0.5 * (Ny - 1), cz = 0.5 * (Nz - 1);
+    const Real inv_sqrt2_W0 = 1.0 / (std::sqrt(2.0) * W0);
 
     for (int x = 0; x < Nx; ++x) {
         for (int y = 0; y < Ny; ++y) {
             for (int z = 0; z < Nz; ++z) {
-                Real rx = x - cx, ry = y - cy, rz = z - cz;
+                // Distances in physical units: the PDE's lengths (W0, dx) are
+                // physical, and the equilibrium profile of
+                // W0^2 phi'' + phi - phi^3 = 0 is -tanh(s / (sqrt(2) W0)).
+                Real rx = (x - cx) * dx, ry = (y - cy) * dy, rz = (z - cz) * dz;
                 Real r = std::sqrt(rx * rx + ry * ry + rz * rz);
 
                 // Equilibrium tanh interface profile (Karma & Rappel 1998):
