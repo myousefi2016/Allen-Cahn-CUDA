@@ -2,6 +2,7 @@
 build/
 out/
 checkpoints/
+output/
 
 # CMake
 CMakeFiles/

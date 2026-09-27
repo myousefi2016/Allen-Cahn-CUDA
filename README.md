@@ -529,8 +529,10 @@ docker compose --profile dev up
 # Run the test suite
 docker compose --profile test up
 
-# Production simulation (provide config)
-docker compose --profile prod run prod config/default.json
+# Production simulation (provide config by absolute path inside the image);
+# results land in ./output/out and ./output/checkpoints
+make docker-run                                  # default.json, as the host user
+docker compose --profile prod run prod /app/config/default.json
 ```
 
 | File                          | Purpose                                                                                |

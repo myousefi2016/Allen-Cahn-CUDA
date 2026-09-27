@@ -501,9 +501,10 @@ docker-test: ## Run tests inside Docker container
 	@echo "==> Running tests in Docker..."
 	docker compose --profile test run --rm test
 
-docker-run: ## Run production simulation in Docker container
+docker-run: ## Run production simulation in Docker container (results in ./output)
 	@echo "==> Running simulation in Docker..."
-	docker compose --profile prod run --rm prod
+	@mkdir -p output
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile prod run --rm prod
 
 docker-shell: ## Open interactive shell in dev container
 	@echo "==> Launching dev shell..."

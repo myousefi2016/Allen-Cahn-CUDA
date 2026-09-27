@@ -6,7 +6,9 @@
 #
 # Usage:
 #   docker compose --profile prod up prod
-#   docker run --gpus all -v ./output:/output allencahn-prod config/default.json
+#   mkdir -p output && docker run --gpus all --user "$(id -u):$(id -g)" \
+#       -v "$PWD/output:/output" allencahn-prod /app/config/default.json
+#   -> results in ./output/out, checkpoints in ./output/checkpoints
 # ============================================================================
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────
@@ -96,13 +98,15 @@ RUN if [ "$(getent passwd 1000 | cut -d: -f1)" = "ubuntu" ]; then \
     mkdir -p /app/config /output && \
     chown -R simulator:simulator /app /output
 
-WORKDIR /app
-
 # Copy the compiled binary and default configuration files
 COPY --from=builder --chown=simulator:simulator /build/allen-cahn-cuda-bin /app/allen-cahn-cuda
 COPY --from=builder --chown=simulator:simulator /build/config/ /app/config/
 
-# Output directory for simulation results
+# Output directory for simulation results. It is also the working directory:
+# the binary resolves the configs' relative output_dir / checkpoint_dir
+# against the cwd, so running from /output puts results in the volume
+# instead of the container's discarded /app.
+WORKDIR /output
 VOLUME ["/output"]
 
 USER simulator
@@ -112,5 +116,6 @@ HEALTHCHECK --interval=60s --timeout=5s --start-period=10s --retries=3 \
     CMD test -x /app/allen-cahn-cuda || exit 1
 
 # Entry point runs the simulation; pass config file path as argument
+# (absolute, since the working directory is /output)
 ENTRYPOINT ["/app/allen-cahn-cuda"]
-CMD ["config/default.json"]
+CMD ["/app/config/default.json"]

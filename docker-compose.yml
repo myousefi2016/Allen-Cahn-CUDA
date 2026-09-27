@@ -9,7 +9,10 @@
 # Examples:
 #   docker compose --profile dev up dev
 #   docker compose --profile test run test
-#   docker compose --profile prod run prod config/default.json
+#   docker compose --profile prod run prod /app/config/default.json
+#
+# The prod image runs from /output (the volume), so results land in
+# ./output/out and ./output/checkpoints; configs must be absolute paths.
 # ============================================================================
 
 services:
@@ -71,6 +74,11 @@ services:
     container_name: allencahn-prod
     profiles:
       - prod
+    # Run as the invoking host user so the process can write the bind-mounted
+    # ./output (`make docker-run` exports HOST_UID/HOST_GID and creates the
+    # directory first; otherwise Docker creates it root-owned). Defaults to
+    # the image's simulator user, 1000:1000.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     volumes:
       # Bind-mount for simulation output on the host
       - ./output:/output
