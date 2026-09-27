@@ -292,8 +292,9 @@ cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, dt
 # After an interrupt (SIGINT, container kill, host suspend, ...), simply:
 #   make cuda-resume-dendrite
 # which scans $(CHECKPOINT_DIR) for the highest-numbered intact checkpoint,
-# rejects any truncated SIGKILL-mid-write files (size < 99% of expected),
-# generates config/run_dendrite_long_resume.json, and restarts the binary.
+# skipping any whose header, exact size or CRC32 does not match the config's
+# grid (truncated, foreign-grid or corrupted files), generates
+# config/run_dendrite_long_resume.json, and restarts the binary.
 cuda-run-dendrite-long: cuda-build ## (docker) Long ~5 hour 192^3 dendrite run with frequent checkpoints
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
 	@echo "==> LONG dendrite run on 192^3, ~5 hours wall-clock, ~11 GB VTK output."

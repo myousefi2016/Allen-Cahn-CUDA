@@ -294,9 +294,10 @@ Crash safety:
 - Checkpoints every 3000 steps (≈ 4 minutes of compute lost on `SIGKILL` / suspend).
 - `keep_last = 3` (≈ 324 MB on disk for 192³).
 - `cuda-resume-dendrite` finds the highest-numbered intact checkpoint
-  (rejecting any truncated mid-write file via size validation), injects it
-  into the config, and resumes the binary at the next step. If no usable
-  checkpoint exists it cold-starts.
+  (the 128-byte header must match the config's grid, the file size must be
+  exact and the stored CRC32 must match the data; truncated, foreign-grid
+  and corrupted files are skipped), injects it into the config, and resumes
+  the binary at the next step. If no usable checkpoint exists it cold-starts.
 
 Recommended workflow (mandatory backgrounding so it survives terminal close):
 
