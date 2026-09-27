@@ -90,5 +90,5 @@ COPY --from=test-builder --chown=tester:tester /build/config /build/config
 USER tester
 
 # Run all tests with verbose output
-ENTRYPOINT ["ctest", "--test-dir", "/build/build/debug", "--output-on-failure", "--parallel"]
+ENTRYPOINT ["ctest", "--test-dir", "/build/build/debug", "--output-on-failure", "--no-tests=error", "--parallel"]
 CMD ["4"]

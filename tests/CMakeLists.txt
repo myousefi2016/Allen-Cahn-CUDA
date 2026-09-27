@@ -36,11 +36,16 @@ target_link_libraries(unit_tests PRIVATE
     ac_logging
 )
 
+target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 set_target_properties(unit_tests PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
+# TEST_PREFIX makes the suite selectable with `ctest -R "^unit[.]"`; without it
+# ctest names are bare `Suite.Case` and a `-R unit_tests` filter selects nothing.
 gtest_discover_tests(unit_tests
+    TEST_PREFIX "unit."
     PROPERTIES TIMEOUT 120
 )
 
@@ -64,10 +69,13 @@ target_link_libraries(integration_tests PRIVATE
     ac_logging
 )
 
+target_include_directories(integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 set_target_properties(integration_tests PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
 gtest_discover_tests(integration_tests
+    TEST_PREFIX "integration."
     PROPERTIES TIMEOUT 300
 )

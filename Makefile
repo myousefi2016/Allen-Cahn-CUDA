@@ -144,17 +144,17 @@ clean: ## Remove all build artifacts
 
 test: build-debug ## Run all tests
 	@echo "==> Running all tests..."
-	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --parallel $(PARALLEL_JOBS)
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS)
 
 test-unit: build-debug ## Run unit tests only
 	@echo "==> Running unit tests..."
-	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --parallel $(PARALLEL_JOBS) \
-		-R "unit_tests"
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS) \
+		-R "^unit[.]"
 
 test-integration: build-debug ## Run integration tests only
 	@echo "==> Running integration tests..."
-	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --parallel $(PARALLEL_JOBS) \
-		-R "integration_tests"
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS) \
+		-R "^integration[.]"
 
 test-coverage: ## Build with coverage instrumentation and generate report
 	@echo "==> Configuring with coverage flags..."
@@ -165,7 +165,7 @@ test-coverage: ## Build with coverage instrumentation and generate report
 	@echo "==> Building..."
 	cmake --build $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --parallel $(PARALLEL_JOBS)
 	@echo "==> Running tests..."
-	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --parallel $(PARALLEL_JOBS)
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS)
 	@echo "==> Generating coverage report..."
 	@if command -v gcovr >/dev/null 2>&1; then \
 		gcovr --root . --filter src/ --print-summary --html-details $(BUILD_DIR)/coverage/index.html; \
@@ -233,15 +233,15 @@ cuda-build: cuda-image ## (docker) Configure + build binary and tests inside CUD
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test: cuda-build ## (docker) Build and run the full ctest suite
-	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc); \
+	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc); \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test-unit: cuda-build ## (docker) Run unit test binary only
-	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R unit_tests; \
+	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^unit[.]"; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test-integration: cuda-build ## (docker) Run integration test binary only
-	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure -j$$(nproc) -R integration_tests; \
+	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^integration[.]"; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-run: cuda-build ## (docker) Run simulation with CONFIG=<path> inside CUDA container
