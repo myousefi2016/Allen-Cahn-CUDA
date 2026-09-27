@@ -179,7 +179,8 @@ jobs:
   # ── Visualization toolkit (headless, no GPU) ────────────────────────────────
   # End-to-end check of scripts/visualize_dendrite.py on synthetic .vts data:
   # prescan, saturation detection, both layouts, --skip-saturated,
-  # --scan-json and MP4 stitching.
+  # --scan-json and MP4 stitching. Also runs the checkpoint-selection tests of
+  # scripts/resume_from_latest_checkpoint.py (stdlib only).
   viz-smoke:
     name: Visualization Smoke Test
     runs-on: ubuntu-latest
@@ -209,16 +210,52 @@ jobs:
       - name: Run visualizer smoke test
         run: python tests/visualize_smoke.py
 
+      - name: Run resume-checkpoint helper tests
+        run: python tests/test_resume_checkpoint.py
+
   # ── Docker Build ────────────────────────────────────────────────────────────
+  # Builds every docker/Dockerfile.<target>, loads it into the local daemon and
+  # checks (no GPU needed) that the image's runtime user exists with the
+  # expected UID and can write its working and output directories.
   docker-build:
     name: Docker Build (${{ matrix.target }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [dev, test, prod]
+        target: [dev, test, prod, cuda-dev]
+        include:
+          - target: dev
+            user: developer
+            uid: "1000"
+            workdir: /workspace
+            write_dirs: /workspace /workspace/build /workspace/.ccache
+          - target: test
+            user: tester
+            uid: "1000"
+            workdir: /build
+            write_dirs: /build /build/build/debug
+          - target: prod
+            user: simulator
+            uid: "1000"
+            workdir: /output
+            write_dirs: /output
+          # Root by design: the cuda-* make targets chown results back to the
+          # host user (CUDA_CHOWN), see docker/Dockerfile.cuda-dev.
+          - target: cuda-dev
+            user: root
+            uid: "0"
+            workdir: /work
+            write_dirs: /work
     steps:
       - uses: actions/checkout@v4
+
+      # The CUDA devel base image is several GB, and `load: true` stores the
+      # built image a second time in the Docker daemon.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -229,9 +266,33 @@ jobs:
           context: .
           file: docker/Dockerfile.${{ matrix.target }}
           push: false
+          load: true
           tags: allen-cahn-cuda:${{ matrix.target }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+
+      - name: Verify runtime user and writable directories (${{ matrix.target }})
+        env:
+          EXPECT_USER: ${{ matrix.user }}
+          EXPECT_UID: ${{ matrix.uid }}
+          EXPECT_WORKDIR: ${{ matrix.workdir }}
+          WRITE_DIRS: ${{ matrix.write_dirs }}
+        run: |
+          docker run --rm --entrypoint sh \
+            -e EXPECT_USER -e EXPECT_UID -e EXPECT_WORKDIR -e WRITE_DIRS \
+            allen-cahn-cuda:${{ matrix.target }} -c '
+              set -eu
+              fail() { echo "::error::$*"; exit 1; }
+              id
+              [ "$(id -un)" = "$EXPECT_USER" ] || fail "runs as $(id -un), expected $EXPECT_USER"
+              [ "$(id -u)" = "$EXPECT_UID" ] || fail "UID $(id -u), expected $EXPECT_UID"
+              [ "$(pwd)" = "$EXPECT_WORKDIR" ] || fail "workdir $(pwd), expected $EXPECT_WORKDIR"
+              for d in $WRITE_DIRS; do
+                touch "$d/.ci-write-probe" || fail "$EXPECT_USER cannot write $d"
+                rm "$d/.ci-write-probe"
+                echo "writable: $d"
+              done
+            '
 
   # ── Kubernetes Manifests Validation ─────────────────────────────────────────
   k8s-validate:
