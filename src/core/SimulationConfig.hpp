@@ -85,7 +85,7 @@ struct OutputParams {
 
 // ── Checkpoint parameters ──────────────────────────────────────────────────
 struct CheckpointParams {
-    int frequency = 500;
+    int frequency = 500; ///< Steps between checkpoints; 0 disables periodic checkpoints
     std::filesystem::path checkpoint_dir = "./checkpoints";
     int keep_last = 3; ///< Rolling checkpoint count
     std::optional<std::filesystem::path> restart_file;

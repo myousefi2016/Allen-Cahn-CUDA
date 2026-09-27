@@ -298,9 +298,10 @@ void SimulationConfig::validate() const {
         throw std::invalid_argument("output format must be 'vts' or 'raw', got: " + output.format);
     }
 
-    // Checkpoint
-    if (checkpoint.frequency < 1)
-        throw std::invalid_argument("checkpoint frequency must be >= 1");
+    // Checkpoint (frequency 0 disables periodic checkpoints; see
+    // CheckpointManager::should_checkpoint)
+    if (checkpoint.frequency < 0)
+        throw std::invalid_argument("checkpoint frequency must be >= 0 (0 disables checkpoints)");
     if (checkpoint.keep_last < 1)
         throw std::invalid_argument("checkpoint keep_last must be >= 1");
 

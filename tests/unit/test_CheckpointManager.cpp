@@ -174,7 +174,7 @@ TEST_F(CheckpointManagerTest, RestoreEmptyDirThrows) {
 
     CheckpointManager mgr(params, grid_);
 
-    EXPECT_THROW(mgr.restore(), std::runtime_error);
+    EXPECT_THROW((void)mgr.restore(), std::runtime_error);
 
     std::filesystem::remove_all(empty_dir);
 }
