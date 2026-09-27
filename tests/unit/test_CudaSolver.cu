@@ -178,6 +178,34 @@ TEST_F(CudaSolverTest, PerFaceBoundaryConditions) {
     EXPECT_NO_THROW(solver.apply_boundary_conditions());
 }
 
+// Equilibrium phi = -1, u = -0.8 with Dirichlet u = -0.8 is a fixed point of the
+// coupled system: the Allen-Cahn RHS vanishes, so the IMEX thermal solve is
+// (I - dt*D*Lap) u = u_old whose exact solution is u = -0.8 everywhere. A large
+// dt (dt*D/h^2 = 0.625) makes any corruption of the Jacobi iterate's boundary
+// cells visible in the cells next to every wall.
+TEST_F(CudaSolverTest, IMEXPreservesUniformEquilibrium) {
+    const int N = 12;
+    auto cfg = make_config(N, TimeScheme::IMEX);
+    CudaSolver solver(cfg);
+
+    Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    phi.fill(-1.0);
+    u.fill(-0.8);
+    solver.initialize(phi, u);
+    for (int s = 0; s < 3; ++s)
+        solver.step(0.05);
+    solver.copy_phi_to_host(phi);
+    solver.copy_u_to_host(u);
+
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z) {
+                ASSERT_NEAR(phi(x, y, z), -1.0, 1e-12) << x << "," << y << "," << z;
+                ASSERT_NEAR(u(x, y, z), -0.8, 1e-12) << x << "," << y << "," << z;
+            }
+}
+
 // Per-face BCs must be enforced by every time-integration stage, not only by
 // initialize(). The uniform phi_bc/u_bc are deliberately left at values that
 // differ from every face so that any stage falling back to them is detected.

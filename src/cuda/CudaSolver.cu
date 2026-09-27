@@ -423,18 +423,22 @@ void CudaSolver::step_imex(double dt) {
 
     // Implicit step for thermal diffusion
     // Solve: (I - dt*D*Laplacian) u_new = u_old + 0.5*(phi_new - phi_old)
-    // Compute RHS in phi_tmp_: first u_tmp_ = phi_new - phi_old, then phi_tmp_ = u_old + 0.5*u_tmp_
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(u_tmp_.data(), phi_new_.data(),
-                                                                   phi_old_.data(), -1.0, N);
-    CUDA_CHECK(cudaGetLastError());
-    axpy_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(phi_tmp_.data(), u_old_.data(),
-                                                                   u_tmp_.data(), 0.5, N);
+    // RHS is built directly in phi_tmp_ so that neither Jacobi buffer is used
+    // as scratch.
+    phi_tmp_.copy_from(u_old_, compute_stream_);
+    add_latent_heat_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
+        phi_tmp_.data(), phi_new_.data(), phi_old_.data(), N);
     CUDA_CHECK(cudaGetLastError());
 
     // Jacobi iterations to solve (I - dt*D*Lap) u_new = phi_tmp_.
-    // Adaptive iteration count: check residual every 10 iters, exit early when
-    // converged.  Max iterations raised to 200 to handle large dt*D/h^2 ratios.
+    // jacobi_step_kernel writes interior cells only, so both iterate buffers
+    // start from u_old and the BC is re-applied to every new iterate: boundary
+    // cells then always hold values consistent with the current interior
+    // (instead of leftover scratch data), and the residual below measures real
+    // convergence. Adaptive iteration count: check residual every 10 iters,
+    // exit early when converged; max 200 to handle large dt*D/h^2 ratios.
     u_new_.copy_from(u_old_, compute_stream_);
+    u_tmp_.copy_from(u_old_, compute_stream_);
     constexpr int JACOBI_MAX_ITERS = 200;
     constexpr int JACOBI_CHECK_FREQ = 10;
     constexpr double JACOBI_TOL = 1e-10;
@@ -442,6 +446,7 @@ void CudaSolver::step_imex(double dt) {
         jacobi_step_kernel<<<cfg.grid, cfg.block, 0, compute_stream_.get()>>>(
             u_new_.data(), u_tmp_.data(), phi_tmp_.data(), params_, dt);
         CUDA_CHECK(cudaGetLastError());
+        apply_u_bc(u_tmp_.data());
         swap(u_new_, u_tmp_);
 
         if ((iter + 1) % JACOBI_CHECK_FREQ == 0) {
