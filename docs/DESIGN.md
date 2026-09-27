@@ -269,8 +269,9 @@ The validator also rejects:
   (`SimulationConfig.cpp:312-315`).
 - `output.format` other than `"vts"` or `"raw"`
   (`SimulationConfig.cpp:297-299`).
-- `checkpoint.keep_last < 1`, `initial.seed_radius <= 0`,
-  `epsilon` outside `[0, 1/3)`, etc.
+- `checkpoint.keep_last < 1`, an empty `checkpoint.restart_file`,
+  `initial.seed_radius <= 0`, `epsilon` outside `[0, 1/3)`, etc.
+- more than 2^31 − 1 grid points (kernels index cells with 32-bit `int`).
 
 ---
 
@@ -480,19 +481,36 @@ concatenated field bytes; the table is generated once in
 
 ### 8.3 Read protocol
 
-`CheckpointIO::read` (`CheckpointIO.cpp:120-203`) validates magic,
-version, dimension sanity (`1 <= N <= 100000`), positive grid spacing,
-and the CRC32 if present. `SimulationEngine::initialize_from_checkpoint`
-additionally rejects a checkpoint whose grid dimensions do not match the
-current config (`SimulationEngine.cu:100-118`).
+`CheckpointIO::read` validates magic, version, dimension sanity, positive
+grid spacing, the exact file size and the CRC32 if present.
+`SimulationEngine::initialize_from_checkpoint` additionally rejects a
+checkpoint whose grid dimensions or spacing differ from the current
+config, and one holding a non-finite value. A restart is requested iff
+`checkpoint.restart_file` is set; if that file does not exist the run
+fails (`CheckpointManager::restore`) instead of cold-starting, which
+would otherwise overwrite and rotate away the real checkpoints.
 
 ### 8.4 Rolling retention
 
 `CheckpointManager` (`src/core/CheckpointManager.cpp`) writes
-`checkpoint_step_<NNNN>.bin` on every `frequency`-th step and prunes the
-oldest file when `keep_last` is exceeded. `restore()` walks the directory
-in descending step order, returning the first checkpoint that passes
-size and header validation; truncated mid-write files are skipped.
+`checkpoint_<step>.acbin` on every `frequency`-th step. After each write
+it lists the directory (the only source of truth) and, for the step *S*
+just written, keeps *S* plus the `keep_last - 1` highest steps below it and
+deletes the rest, including every step above *S*: those come from an
+earlier run past this run's restart point, and keeping them would let
+"resume from the latest checkpoint" jump back to that stale history. Only
+names of the exact form `checkpoint_<digits>.acbin` are managed.
+`restore()` without a `restart_file` walks the directory in descending
+step order and returns the first valid checkpoint.
+
+### 8.5 Failure and exit semantics
+
+| Condition | Detection | Result |
+|---|---|---|
+| NaN/Inf field | host scan before every output and checkpoint and after the last step; NaN-propagating `compute_max_dphi` (adaptive dt) and `compute_boundary_max_phi` (saturation guard) | `std::runtime_error`, exit 1, nothing of the diverged state written |
+| `SIGINT` / `SIGTERM` | lock-free atomics set by the handler, checked after every step | checkpoint + output of the current step, exit 128 + signal |
+| Solid reaches a wall | saturation guard every `saturation_check_freq` steps | checkpoint + output, exit 0 |
+| Grid above 2^31 − 1 points | `SimulationConfig::validate`, `CudaSolver` constructor | `std::invalid_argument` (kernels use 32-bit cell indices) |
 
 ---
 

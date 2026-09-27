@@ -2,6 +2,7 @@
 #include "logging/Logger.hpp"
 
 #include <cmath>
+#include <filesystem>
 #include <gtest/gtest.h>
 
 using namespace ac;
@@ -124,6 +125,27 @@ TEST_F(SimulationConfigTest, ValidationFailsNegativeDt) {
     cfg.grid.Nz = 10;
     cfg.time.dt = -0.01;
     EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+// Kernels index cells with 32-bit int: 3*3*238609294 = 2^31 - 2 points is the
+// largest grid of this shape that fits, one more Nz plane does not.
+TEST_F(SimulationConfigTest, ValidationBoundsTotalPointsTo32BitIndexing) {
+    SimulationConfig cfg;
+    cfg.grid.Nx = 3;
+    cfg.grid.Ny = 3;
+    cfg.grid.Nz = 238609294;
+    EXPECT_NO_THROW(cfg.validate());
+    cfg.grid.Nz = 238609295;
+    EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST_F(SimulationConfigTest, ValidationRejectsEmptyRestartFile) {
+    SimulationConfig cfg;
+    cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 10;
+    cfg.checkpoint.restart_file = std::filesystem::path{};
+    EXPECT_THROW(cfg.validate(), std::invalid_argument);
+    cfg.checkpoint.restart_file = "checkpoints/checkpoint_10.acbin";
+    EXPECT_NO_THROW(cfg.validate());
 }
 
 TEST_F(SimulationConfigTest, MakeGrid) {

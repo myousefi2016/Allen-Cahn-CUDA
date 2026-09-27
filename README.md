@@ -40,10 +40,11 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Per-face boundary conditions**: independent Dirichlet / Neumann / Periodic / Robin on each of the 6 faces (`x_lo`, `x_hi`, `y_lo`, `y_hi`, `z_lo`, `z_hi`).
 - **Adaptive time stepping**: CFL-bounded with target-tolerance control via parallel reduction.
 - **Async I/O**: dedicated VTK/raw writer thread with bounded job queue, `condition_variable` backpressure, atomic temp-then-rename writes, and an LRU-cached field-statistics map.
-- **Crash-safe binary checkpointing**: 128-byte fixed header with magic `ACCHKPT`, CRC32 over field data, atomic rename + parent-directory `fsync`, and rolling retention.
-- **Saturation guard**: O(N²) boundary-only reduction triggers clean shutdown when the dendrite reaches a wall, before the near-boundary force-divergence bias destabilises the integrator.
+- **Crash-safe binary checkpointing**: 128-byte fixed header with magic `ACCHKPT`, CRC32 over field data, atomic rename + parent-directory `fsync`, and rolling retention that keeps one consistent trajectory per directory.
+- **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
+- **Saturation guard**: an O(N²) boundary-only reduction stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 21 unit-test files and 7 integration-test files; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 22 unit-test files, 7 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -298,6 +299,21 @@ Crash safety:
   exact and the stored CRC32 must match the data; truncated, foreign-grid
   and corrupted files are skipped), injects it into the config, and resumes
   the binary at the next step. If no usable checkpoint exists it cold-starts.
+
+Exit status of `allen-cahn-cuda`:
+
+| Status | Meaning |
+|---|---|
+| 0 | Reached `max_steps`, or stopped by the saturation guard |
+| 1 | Error, including a diverged (NaN/Inf) field or a missing `restart_file`; no output or checkpoint of a diverged state is written |
+| 130 / 143 | Interrupted by `SIGINT` / `SIGTERM` after writing a checkpoint of the current step (resume with `cuda-resume-dendrite`) |
+
+Checkpoint retention treats `checkpoint_dir` as one trajectory: after
+writing step *S* it keeps *S* and the `keep_last - 1` newest older
+checkpoints, and deletes any checkpoint *above* *S* (left by an earlier
+run past the point this run restarted from), so "resume from the latest
+checkpoint" can never jump back to a stale history. Files not named
+`checkpoint_<step>.acbin` are never touched.
 
 Recommended workflow (mandatory backgrounding so it survives terminal close):
 
@@ -591,13 +607,23 @@ required) — see `.github/workflows/ci.yml`.
 
 ## Testing
 
-The suite is split into two `ctest` executables — `unit_tests` and
-`integration_tests` — and is verified on an NVIDIA T4 (compute 7.5)
-inside an `nvidia/cuda:12.6.0-devel-ubuntu24.04` container.
+The suite has three `ctest` groups, selectable with `-R "^unit[.]"`,
+`-R "^integration[.]"` and `-R "^e2e[.]"`: the `unit_tests` and
+`integration_tests` executables and an end-to-end test that drives the
+built binary (Python 3). It is verified on an NVIDIA RTX 4090
+(compute 8.9) with CUDA 13.2.
+
+Without a usable GPU the CUDA tests are reported as *Skipped*. Set
+`AC_REQUIRE_GPU=1` on a GPU machine to turn that into a failure, so a job
+meant to exercise the GPU cannot pass by skipping:
+
+```bash
+AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
+```
 
 | Suite             | Files | Status            |
 |-------------------|-------|-------------------|
-| Unit tests        | 21    | ✅ all passing     |
+| Unit tests        | 22    | ✅ all passing     |
 | Integration tests | 7     | ✅ all passing     |
 
 ```bash
@@ -609,7 +635,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   nvidia/cuda:12.6.0-devel-ubuntu24.04 bash -c '
     apt-get update && apt-get install -y --no-install-recommends \
       cmake ninja-build gcc-13 g++-13 git pkg-config \
-      libvtk9-dev libhdf5-dev ca-certificates &&
+      libvtk9-dev libhdf5-dev ca-certificates python3 &&
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 &&
     update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 &&
     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -619,7 +645,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   '
 ```
 
-### Unit tests (`tests/unit/`, 21 files)
+### Unit tests (`tests/unit/`, 22 files)
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
@@ -629,7 +655,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
 | `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32                        |
-| `test_CheckpointManager.cpp`  | Frequency, rolling retention, restart-from-latest                                |
+| `test_CheckpointManager.cpp`  | Frequency, retention (just-written file kept, one trajectory after a restart), restart-from-latest, missing restart file |
 | `test_LRUCache.cpp`           | LRU eviction order, capacity, hit/miss, concurrent access                        |
 | `test_SpatialHash.cpp`        | 3D bucket insert/query, FNV-1a hashing                                           |
 | `test_ConcurrentMap.cpp`      | Striped concurrent map operations under contention                               |
@@ -641,8 +667,9 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin, per-face mixed, interior unchanged          |
 | `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions                                |
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
-| `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end                     |
-| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt, short run, saturation detection, config-validation rejection |
+| `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
+| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split; engine run |
+| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt, short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks |
 | `test_VTKWriter.cpp`          | Async writer queue, raw / VTS output, flush completion, statistics cache         |
 
 ### Integration tests (`tests/integration/`, 7 files)
@@ -656,6 +683,12 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_CheckpointRestart.cu`   | Checkpoint at midpoint then restart matches uninterrupted run                    |
 | `test_StencilComparison.cu`   | 7-point vs 27-point: bounded fields, smoother 27-pt interface, same physics      |
 | `test_AnisotropyForce.cu`     | Anisotropic force divergence reproduces 4-fold symmetric tip behaviour           |
+
+### End-to-end test (`tests/e2e/`)
+
+| File              | What it covers                                                                  |
+|-------------------|----------------------------------------------------------------------------------|
+| `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at |
 
 ### Run a single test
 

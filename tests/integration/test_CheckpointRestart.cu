@@ -1,3 +1,4 @@
+#include "common/Gpu.hpp"
 #include "common/TempDir.hpp"
 #include "core/FieldData.hpp"
 #include "core/Grid.hpp"
@@ -19,10 +20,7 @@ using namespace ac::cuda;
 class CheckpointRestartTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        int device_count = 0;
-        cudaGetDeviceCount(&device_count);
-        if (device_count == 0)
-            GTEST_SKIP() << "No CUDA devices available";
+        AC_GPU_TEST_SETUP();
         Logger::init(spdlog::level::off);
 
         // Create a unique temporary directory for this test run

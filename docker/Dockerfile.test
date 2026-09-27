@@ -28,6 +28,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libvtk9-dev \
         libhdf5-dev \
         ca-certificates \
+        python3 \
     && \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
         --slave /usr/bin/g++ g++ /usr/bin/g++-13 && \
@@ -74,6 +75,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libvtk9-dev \
         libhdf5-dev \
         libgomp1 \
+        python3 \
     && \
     rm -rf /var/lib/apt/lists/*
 

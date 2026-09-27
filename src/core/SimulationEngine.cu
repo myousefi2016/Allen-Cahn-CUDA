@@ -14,6 +14,28 @@
 namespace ac {
 
 std::atomic<bool> g_shutdown_requested{false};
+std::atomic<int> g_shutdown_signal{0};
+// Both are written from a signal handler, which is only async-signal-safe
+// for lock-free atomics.
+static_assert(std::atomic<bool>::is_always_lock_free && std::atomic<int>::is_always_lock_free);
+
+namespace {
+
+/// Throws if `field` holds a NaN or Inf: a diverged run must stop with an
+/// error instead of writing output and checkpoints of garbage (a resume
+/// would otherwise pick the corrupted checkpoint as the latest).
+void ensure_finite(const FieldData& field, const char* name, int step) {
+    const Real* d = field.data();
+    for (std::size_t i = 0; i < field.size(); ++i) {
+        if (!std::isfinite(d[i])) {
+            throw std::runtime_error(std::string(name) + " is not finite at step " +
+                                     std::to_string(step) + " (first at linear index " +
+                                     std::to_string(i) + "): the simulation diverged");
+        }
+    }
+}
+
+} // namespace
 
 std::unique_ptr<cuda::ISolver> SimulationEngine::create_solver() {
     if (config_.gpu.multi_gpu && config_.gpu.device_ids.size() >= 2) {
@@ -47,7 +69,7 @@ SimulationEngine::~SimulationEngine() {
 void SimulationEngine::run() {
     auto wall_start = std::chrono::high_resolution_clock::now();
 
-    if (checkpoint_mgr_->has_restart_file()) {
+    if (checkpoint_mgr_->restart_requested()) {
         initialize_from_checkpoint();
     } else {
         initialize_fields();
@@ -62,10 +84,17 @@ void SimulationEngine::run() {
     }
 
     // Main time loop
-    time_loop();
+    const int last_step = time_loop();
 
     // Final synchronization
     solver_->synchronize();
+
+    // Leave the final state on the host (phi()/u()) and refuse to report a
+    // diverged run as finished even when no output step caught it.
+    copy_phi_if_needed(last_step);
+    copy_u_if_needed(last_step);
+    ensure_finite(phi_host_, "phi", last_step);
+    ensure_finite(u_host_, "u", last_step);
     if (vtk_writer_)
         vtk_writer_->flush();
 
@@ -119,6 +148,19 @@ void SimulationEngine::initialize_from_checkpoint() {
                                  std::to_string(grid_.Nx()) + "x" + std::to_string(grid_.Ny()) +
                                  "x" + std::to_string(grid_.Nz()) + ")");
     }
+    // The spacing is written from, and parsed into, the same double, so a
+    // checkpoint of this configuration matches exactly; any difference is a
+    // different physical problem.
+    if (data.grid.dx() != grid_.dx() || data.grid.dy() != grid_.dy() ||
+        data.grid.dz() != grid_.dz()) {
+        throw std::runtime_error("Checkpoint grid spacing (" + std::to_string(data.grid.dx()) +
+                                 ", " + std::to_string(data.grid.dy()) + ", " +
+                                 std::to_string(data.grid.dz()) + ") does not match config (" +
+                                 std::to_string(grid_.dx()) + ", " + std::to_string(grid_.dy()) +
+                                 ", " + std::to_string(grid_.dz()) + ")");
+    }
+    ensure_finite(data.phi, "phi", data.step);
+    ensure_finite(data.u, "u", data.step);
 
     phi_host_ = std::move(data.phi);
     u_host_ = std::move(data.u);
@@ -129,13 +171,14 @@ void SimulationEngine::initialize_from_checkpoint() {
     spdlog::info("Restarted from checkpoint: step={}, time={:.4f}", start_step_, start_time_);
 }
 
-void SimulationEngine::time_loop() {
+int SimulationEngine::time_loop() {
     double dt = config_.time.dt;
     double time = start_time_;
     int max_steps = config_.time.max_steps;
     const bool sat_guard = config_.time.exit_on_saturation;
     const int sat_freq = std::max(1, config_.time.saturation_check_freq);
 
+    int last_step = start_step_;
     for (int step = start_step_ + 1; step <= max_steps; ++step) {
         // Host clock around step() + synchronize(): a CUDA event can only be
         // recorded on a stream of the device it was created on, and a
@@ -144,12 +187,13 @@ void SimulationEngine::time_loop() {
 
         // Adaptive time stepping
         if (config_.time.adaptive && step > start_step_ + 1) {
-            dt = adapt_time_step(dt);
+            dt = adapt_time_step(dt, step);
         }
 
         // Perform one time step
         solver_->step(dt);
         time += dt;
+        last_step = step;
 
         solver_->synchronize();
         const double step_ms =
@@ -184,7 +228,7 @@ void SimulationEngine::time_loop() {
         }
 
         // Saturation guard
-        if (sat_guard && step % sat_freq == 0 && check_saturation()) {
+        if (sat_guard && step % sat_freq == 0 && check_saturation(step)) {
             spdlog::warn("Saturation detected at step {} (phi > {:.3f} on a boundary slab). "
                          "Writing final checkpoint and exiting cleanly.",
                          step, config_.time.saturation_threshold);
@@ -195,10 +239,14 @@ void SimulationEngine::time_loop() {
             break;
         }
     }
+    return last_step;
 }
 
-bool SimulationEngine::check_saturation() {
+bool SimulationEngine::check_saturation(int step) {
     double bmax = solver_->compute_boundary_max_phi();
+    if (std::isnan(bmax))
+        throw std::runtime_error("phi is NaN on the boundary at step " + std::to_string(step) +
+                                 ": the simulation diverged");
     return bmax > config_.time.saturation_threshold;
 }
 
@@ -219,17 +267,24 @@ void SimulationEngine::copy_u_if_needed(int step) {
 void SimulationEngine::output_step(int step, double time) {
     copy_phi_if_needed(step);
     copy_u_if_needed(step);
+    ensure_finite(phi_host_, "phi", step);
+    ensure_finite(u_host_, "u", step);
     vtk_writer_->write_async(step, time, phi_host_, u_host_);
 }
 
 void SimulationEngine::checkpoint_step(int step, double time, double dt) {
     copy_phi_if_needed(step);
     copy_u_if_needed(step);
+    ensure_finite(phi_host_, "phi", step);
+    ensure_finite(u_host_, "u", step);
     checkpoint_mgr_->save(step, time, dt, phi_host_, u_host_);
 }
 
-double SimulationEngine::adapt_time_step(double current_dt) {
+double SimulationEngine::adapt_time_step(double current_dt, int step) {
     double max_dphi = solver_->compute_max_dphi();
+    if (!std::isfinite(max_dphi))
+        throw std::runtime_error("max|dphi| is not finite after step " + std::to_string(step - 1) +
+                                 ": the simulation diverged");
     if (max_dphi < 1e-30)
         return current_dt;
 

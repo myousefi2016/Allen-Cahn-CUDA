@@ -12,7 +12,7 @@
 #include <string>
 
 static void signal_handler(int signum) {
-    (void)signum;
+    ac::g_shutdown_signal.store(signum, std::memory_order_relaxed);
     ac::g_shutdown_requested.store(true, std::memory_order_relaxed);
 }
 
@@ -68,6 +68,13 @@ int main(int argc, char* argv[]) {
         ac::SimulationEngine engine(std::move(config));
         engine.run();
 
+        // Interrupted runs wrote a final checkpoint but did not finish:
+        // report it like a signal-terminated process (130 SIGINT, 143 SIGTERM)
+        // so make, scripts and a Kubernetes Job do not count it as complete.
+        if (const int sig = ac::g_shutdown_signal.load(std::memory_order_relaxed); sig != 0) {
+            spdlog::warn("Exiting with status {} (interrupted by signal {})", 128 + sig, sig);
+            return 128 + sig;
+        }
         return EXIT_SUCCESS;
 
     } catch (const std::exception& e) {

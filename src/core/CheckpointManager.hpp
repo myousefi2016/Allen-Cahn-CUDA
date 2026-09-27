@@ -5,8 +5,9 @@
 #include "core/SimulationConfig.hpp"
 #include "io/CheckpointIO.hpp"
 
-#include <deque>
 #include <filesystem>
+#include <utility>
+#include <vector>
 
 namespace ac {
 
@@ -24,16 +25,22 @@ public:
     /// Restore from the latest or specified checkpoint.
     [[nodiscard]] CheckpointIO::RestoreData restore() const;
 
-    /// Check if a restart file is configured and exists.
-    [[nodiscard]] bool has_restart_file() const;
+    /// True when checkpoint.restart_file is configured. The file is not
+    /// checked here: restore() throws if it is missing, so a mistyped path
+    /// stops the run instead of silently cold-starting from step 0.
+    [[nodiscard]] bool restart_requested() const;
 
 private:
-    void scan_existing_checkpoints();
-    void enforce_retention();
+    /// Checkpoint files in checkpoint_dir (checkpoint_<step>.acbin), by step.
+    [[nodiscard]] std::vector<std::pair<int, std::filesystem::path>> list_checkpoints() const;
+
+    /// After writing `newest_step`: keep it and the keep_last - 1 highest
+    /// older steps; delete the rest, including any step above newest_step
+    /// (left by an earlier run past this run's restart point).
+    void enforce_retention(int newest_step);
 
     CheckpointParams params_;
     Grid grid_;
-    std::deque<std::filesystem::path> checkpoint_files_;
 };
 
 } // namespace ac

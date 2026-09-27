@@ -1,3 +1,4 @@
+#include "common/Gpu.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
@@ -12,10 +13,7 @@ using namespace ac::cuda;
 class SchemeComparisonTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        int device_count = 0;
-        cudaGetDeviceCount(&device_count);
-        if (device_count == 0)
-            GTEST_SKIP() << "No CUDA devices available";
+        AC_GPU_TEST_SETUP();
         Logger::init(spdlog::level::off);
     }
 

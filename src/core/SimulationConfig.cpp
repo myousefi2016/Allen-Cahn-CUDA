@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -243,6 +244,13 @@ void SimulationConfig::validate() const {
     if (grid.dx <= 0.0 || grid.dy <= 0.0 || grid.dz <= 0.0) {
         throw std::invalid_argument("Grid spacing must be positive");
     }
+    // Kernels index cells with 32-bit int (idx3d, linear_to_3d).
+    if (static_cast<long long>(grid.Nx) * grid.Ny * grid.Nz > std::numeric_limits<int>::max()) {
+        throw std::invalid_argument(
+            "Grid has " + std::to_string(static_cast<long long>(grid.Nx) * grid.Ny * grid.Nz) +
+            " points; at most " + std::to_string(std::numeric_limits<int>::max()) +
+            " are supported (32-bit cell indices)");
+    }
 
     // 27-point isotropic stencil requires cubic grid spacing
     if (stencil == StencilType::Isotropic27Point) {
@@ -304,6 +312,8 @@ void SimulationConfig::validate() const {
         throw std::invalid_argument("checkpoint frequency must be >= 0 (0 disables checkpoints)");
     if (checkpoint.keep_last < 1)
         throw std::invalid_argument("checkpoint keep_last must be >= 1");
+    if (checkpoint.restart_file.has_value() && checkpoint.restart_file->empty())
+        throw std::invalid_argument("checkpoint restart_file must not be empty (omit it instead)");
 
     // Initial condition
     if (initial.seed_radius <= 0.0)

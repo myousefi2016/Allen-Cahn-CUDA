@@ -80,3 +80,15 @@ gtest_discover_tests(integration_tests
     TEST_PREFIX "integration."
     PROPERTIES TIMEOUT 300
 )
+
+# ── End-to-end tests (the real binary) ──────────────────────────────────────
+# Exit code 77 = no GPU (reported as Skipped; signal_exit.py fails instead
+# when AC_REQUIRE_GPU=1).
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME e2e.SignalExitStatus
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/signal_exit.py
+            $<TARGET_FILE:allen-cahn-cuda> ${CMAKE_CURRENT_BINARY_DIR}/e2e_signal_exit)
+set_tests_properties(e2e.SignalExitStatus PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 600
+)

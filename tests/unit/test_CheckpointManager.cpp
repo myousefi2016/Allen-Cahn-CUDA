@@ -5,10 +5,14 @@
 #include "io/CheckpointIO.hpp"
 #include "logging/Logger.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <random>
+#include <string>
+#include <vector>
 
 using namespace ac;
 
@@ -177,4 +181,77 @@ TEST_F(CheckpointManagerTest, RestoreEmptyDirThrows) {
     EXPECT_THROW((void)mgr.restore(), std::runtime_error);
 
     std::filesystem::remove_all(empty_dir);
+}
+
+// A resumed run rewrites steps that already exist in checkpoint_dir. The old
+// retention kept a list seeded from the directory and appended every save,
+// so the rewritten path appeared twice and, with keep_last = 1, the
+// checkpoint that had just been written was deleted.
+TEST_F(CheckpointManagerTest, RetentionKeepsTheCheckpointJustWritten) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    CheckpointIO::write(test_dir_ / "checkpoint_20.acbin", 20, 0.2, 0.01, grid_, phi, u);
+
+    CheckpointManager mgr(make_params(10, 1), grid_);
+    mgr.save(20, 0.2, 0.01, phi, u);
+
+    EXPECT_TRUE(CheckpointIO::is_valid_checkpoint(test_dir_ / "checkpoint_20.acbin"));
+}
+
+// After a restart from step 20 of a directory holding steps 10..50, the
+// directory must hold one consistent trajectory: the checkpoint just written,
+// keep_last - 1 older ones, and nothing above it (steps 30..50 came from the
+// earlier run, and "resume from latest" would otherwise jump back to them).
+TEST_F(CheckpointManagerTest, RetentionAfterRestartKeepsOneTrajectory) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    for (int step = 10; step <= 50; step += 10)
+        CheckpointIO::write(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin"), step,
+                            step * 0.01, 0.01, grid_, phi, u);
+
+    CheckpointManager mgr(make_params(10, 2), grid_);
+    auto present = [&] {
+        std::vector<std::string> names;
+        for (const auto& e : std::filesystem::directory_iterator(test_dir_))
+            names.push_back(e.path().filename().string());
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+
+    mgr.save(20, 0.2, 0.01, phi, u);
+    EXPECT_EQ(present(), (std::vector<std::string>{"checkpoint_10.acbin", "checkpoint_20.acbin"}));
+    mgr.save(30, 0.3, 0.01, phi, u);
+    EXPECT_EQ(present(), (std::vector<std::string>{"checkpoint_20.acbin", "checkpoint_30.acbin"}));
+}
+
+// Only checkpoint_<digits>.acbin files are managed; anything else is left alone.
+TEST_F(CheckpointManagerTest, RetentionIgnoresUnrelatedFiles) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    for (const char* name : {"notes.txt", "checkpoint_x.acbin", "checkpoint_5.acbin.tmp"})
+        std::ofstream(test_dir_ / name) << "keep";
+
+    CheckpointManager mgr(make_params(10, 1), grid_);
+    mgr.save(10, 0.1, 0.01, phi, u);
+    mgr.save(20, 0.2, 0.01, phi, u);
+
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_10.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_20.acbin"));
+    for (const char* name : {"notes.txt", "checkpoint_x.acbin", "checkpoint_5.acbin.tmp"})
+        EXPECT_TRUE(std::filesystem::exists(test_dir_ / name)) << name;
+}
+
+// A configured restart_file that does not exist must stop the run: the old
+// has_restart_file() returned false, the engine cold-started from step 0 and
+// its retention then rotated the real checkpoints away.
+TEST_F(CheckpointManagerTest, MissingRestartFileIsAnError) {
+    auto params = make_params(10);
+    params.restart_file = test_dir_ / "checkpoint_999.acbin";
+    CheckpointManager mgr(params, grid_);
+
+    EXPECT_TRUE(mgr.restart_requested());
+    EXPECT_THROW((void)mgr.restore(), std::runtime_error);
 }

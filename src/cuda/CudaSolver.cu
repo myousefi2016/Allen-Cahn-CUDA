@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
@@ -117,6 +118,10 @@ __global__ void __launch_bounds__(256)
 int CudaSolver::activate_device(const SimulationConfig& config) {
     if (config.gpu.device_ids.empty())
         throw std::invalid_argument("CudaSolver requires at least one entry in gpu.device_ids");
+    // Kernels index cells with 32-bit int (idx3d, linear_to_3d).
+    if (static_cast<long long>(config.grid.Nx) * config.grid.Ny * config.grid.Nz >
+        std::numeric_limits<int>::max())
+        throw std::invalid_argument("CudaSolver: grid exceeds 2^31-1 points (32-bit indexing)");
     const int device = config.gpu.device_ids.front();
     CUDA_CHECK(cudaSetDevice(device));
     return device;

@@ -1,3 +1,4 @@
+#include "common/Gpu.hpp"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
 #include "logging/Logger.hpp"
@@ -11,10 +12,7 @@ using namespace ac::cuda;
 class DeviceFieldTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        int device_count = 0;
-        cudaGetDeviceCount(&device_count);
-        if (device_count == 0)
-            GTEST_SKIP() << "No CUDA devices available";
+        AC_GPU_TEST_SETUP();
         ac::Logger::init(spdlog::level::off);
     }
 };

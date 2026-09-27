@@ -45,6 +45,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ccache \
         curl \
         ca-certificates \
+        # ctest's e2e tests run Python scripts
+        python3 \
     && \
     # Set gcc-13/g++-13 as the default compiler
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \

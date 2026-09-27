@@ -53,7 +53,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             cmake ninja-build gcc-13 g++-13 clang-tidy-18 \
             libvtk9-dev libhdf5-dev \
-            git ca-certificates
+            git ca-certificates python3
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
           update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
@@ -91,6 +91,8 @@ jobs:
       options: --gpus all
     env:
       DEBIAN_FRONTEND: noninteractive
+      # CUDA tests fail instead of skipping if the GPU is not usable here.
+      AC_REQUIRE_GPU: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +103,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             cmake ninja-build gcc-13 g++-13 \
             libvtk9-dev libhdf5-dev \
-            git ca-certificates
+            git ca-certificates python3
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
 
@@ -126,6 +128,11 @@ jobs:
           cd build
           ctest --output-on-failure --no-tests=error --parallel $(nproc) -R "^integration[.]" --timeout 600
 
+      - name: Run End-to-End Tests
+        run: |
+          cd build
+          ctest --output-on-failure --no-tests=error -R "^e2e[.]" --timeout 600
+
   # ── Build & Test (CPU-only, no GPU) ─────────────────────────────────────────
   # Runs every discovered test. CPU suites execute for real; CUDA suites
   # GTEST_SKIP because the hosted runner has no GPU (reported as Skipped).
@@ -147,7 +154,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             cmake ninja-build gcc-13 g++-13 \
             libvtk9-dev libhdf5-dev \
-            git ca-certificates
+            git ca-certificates python3
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
 

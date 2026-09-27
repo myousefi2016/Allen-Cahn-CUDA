@@ -1,3 +1,4 @@
+#include "common/Gpu.hpp"
 #include "common/TempDir.hpp"
 #include "core/SimulationEngine.hpp"
 #include "cuda/CudaSolver.cuh"
@@ -203,10 +204,7 @@ std::vector<int> shared_device(int domains) {
 class MultiGPUEquivalence : public ::testing::TestWithParam<Case> {
 protected:
     void SetUp() override {
-        int device_count = 0;
-        cudaGetDeviceCount(&device_count);
-        if (device_count == 0)
-            GTEST_SKIP() << "No CUDA devices available";
+        AC_GPU_TEST_SETUP();
         Logger::init(spdlog::level::off);
     }
 };
@@ -313,10 +311,7 @@ INSTANTIATE_TEST_SUITE_P(Schemes, MultiGPUEquivalence, ::testing::ValuesIn(all_c
 class MultiGPUSolverTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        int device_count = 0;
-        cudaGetDeviceCount(&device_count);
-        if (device_count == 0)
-            GTEST_SKIP() << "No CUDA devices available";
+        AC_GPU_TEST_SETUP();
         Logger::init(spdlog::level::off);
     }
 };
@@ -340,10 +335,7 @@ TEST_F(MultiGPUSolverTest, RejectsDomainsThinnerThanTheHalo) {
 class MultiGPUEngineTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        int device_count = 0;
-        cudaGetDeviceCount(&device_count);
-        if (device_count == 0)
-            GTEST_SKIP() << "No CUDA devices available";
+        AC_GPU_TEST_SETUP();
         Logger::init(spdlog::level::off);
         test_dir_ = ac::test::unique_temp_dir("test_multi_gpu_engine");
         std::filesystem::create_directories(test_dir_);

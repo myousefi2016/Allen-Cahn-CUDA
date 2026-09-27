@@ -97,10 +97,10 @@ CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
 
 .PHONY: help \
         build build-debug clean \
-        test test-unit test-integration test-coverage \
+        test test-unit test-integration test-e2e test-coverage \
         run run-small run-default run-vtk \
         cuda-image cuda-image-rebuild \
-        cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration \
+        cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration cuda-test-e2e \
         cuda-run cuda-run-small cuda-run-default cuda-run-vtk cuda-run-dendrite \
         cuda-run-dendrite-long cuda-run-dendrite-large \
         cuda-resume-dendrite cuda-resume-dendrite-large \
@@ -155,6 +155,11 @@ test-integration: build-debug ## Run integration tests only
 	@echo "==> Running integration tests..."
 	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS) \
 		-R "^integration[.]"
+
+test-e2e: build-debug ## Run the end-to-end tests (the real binary) only
+	@echo "==> Running end-to-end tests..."
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error \
+		-R "^e2e[.]"
 
 test-coverage: ## Build with coverage instrumentation and generate report
 	@echo "==> Configuring with coverage flags..."
@@ -233,15 +238,19 @@ cuda-build: cuda-image ## (docker) Configure + build binary and tests inside CUD
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test: cuda-build ## (docker) Build and run the full ctest suite
-	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc); \
+	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc); \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test-unit: cuda-build ## (docker) Run unit test binary only
-	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^unit[.]"; \
+	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^unit[.]"; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-test-integration: cuda-build ## (docker) Run integration test binary only
-	$(CUDA_DOCKER_RUN) bash -c 'ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^integration[.]"; \
+	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^integration[.]"; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-test-e2e: cuda-build ## (docker) Run the end-to-end tests (the real binary) only
+	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -R "^e2e[.]"; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
 cuda-run: cuda-build ## (docker) Run simulation with CONFIG=<path> inside CUDA container
