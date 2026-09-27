@@ -112,31 +112,37 @@ void VTKWriter::writer_loop() {
 
 void VTKWriter::write_vtk_file(const WriteJob& job) {
 #ifdef AC_HAS_VTK
-    int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
+    const int Nx = grid_.Nx(), Ny = grid_.Ny(), Nz = grid_.Nz();
+    const Index n = grid_.total_points();
 
-    // Create VTK arrays
+    // vtkStructuredGrid numbers point (i, j, k) as i + Nx*(j + Ny*k), i.e.
+    // x fastest, while FieldData stores (x, y, z) at (x*Ny + y)*Nz + z, i.e.
+    // z fastest. Points and both arrays are written in VTK order so that the
+    // structured topology matches the geometry (otherwise cubic grids get
+    // axis-permuted, inside-out cells and non-cubic grids a scrambled mesh).
+    vtkNew<vtkPoints> points;
+    points->SetNumberOfPoints(n);
     vtkNew<vtkDoubleArray> phi_arr;
     phi_arr->SetNumberOfComponents(1);
-    phi_arr->SetNumberOfTuples(grid_.total_points());
+    phi_arr->SetNumberOfTuples(n);
     phi_arr->SetName("phi");
-    for (Index i = 0; i < grid_.total_points(); ++i) {
-        phi_arr->SetValue(i, job.phi_data[static_cast<std::size_t>(i)]);
-    }
-
     vtkNew<vtkDoubleArray> u_arr;
     u_arr->SetNumberOfComponents(1);
-    u_arr->SetNumberOfTuples(grid_.total_points());
+    u_arr->SetNumberOfTuples(n);
     u_arr->SetName("u");
-    for (Index i = 0; i < grid_.total_points(); ++i) {
-        u_arr->SetValue(i, job.u_data[static_cast<std::size_t>(i)]);
-    }
 
-    // Create structured grid
-    vtkNew<vtkPoints> points;
-    for (int x = 0; x < Nx; ++x) {
+    vtkIdType vtk_id = 0;
+    for (int z = 0; z < Nz; ++z) {
         for (int y = 0; y < Ny; ++y) {
-            for (int z = 0; z < Nz; ++z) {
-                points->InsertNextPoint(x * grid_.dx(), y * grid_.dy(), z * grid_.dz());
+            for (int x = 0; x < Nx; ++x, ++vtk_id) {
+                const std::size_t src =
+                    (static_cast<std::size_t>(x) * static_cast<std::size_t>(Ny) +
+                     static_cast<std::size_t>(y)) *
+                        static_cast<std::size_t>(Nz) +
+                    static_cast<std::size_t>(z);
+                points->SetPoint(vtk_id, x * grid_.dx(), y * grid_.dy(), z * grid_.dz());
+                phi_arr->SetValue(vtk_id, job.phi_data[src]);
+                u_arr->SetValue(vtk_id, job.u_data[src]);
             }
         }
     }
