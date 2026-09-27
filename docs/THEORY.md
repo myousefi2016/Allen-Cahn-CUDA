@@ -181,7 +181,7 @@ during the phase transition.
 
 ```mermaid
 graph TD
-    A["Phase Field φ"] -->|"Anisotropy A(n̂)"| B["Allen-Cahn<br/>τ₀A²∂φ/∂t = W₀²∇·(A²∇φ) + ..."]]
+    A["Phase Field φ"] -->|"Anisotropy A(n̂)"| B["Allen-Cahn<br/>τ₀A²∂φ/∂t = W₀²∇·(A²∇φ) + ..."]
     B -->|"∂φ/∂t → latent heat"| C["Thermal Field u"]
     C -->|"u couples back<br/>via λu(1-φ²)²"| B
     C -->|"Diffusion"| D["∂u/∂t = D∇²u + ½∂φ/∂t"]
