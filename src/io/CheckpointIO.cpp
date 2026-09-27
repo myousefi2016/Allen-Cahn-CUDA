@@ -13,7 +13,7 @@
 
 namespace ac {
 
-uint32_t CheckpointIO::compute_crc32(const void* data, std::size_t len) {
+uint32_t CheckpointIO::compute_crc32(const void* data, std::size_t len, uint32_t crc) {
     static const auto table = [] {
         std::array<uint32_t, 256> t{};
         for (uint32_t i = 0; i < 256; ++i) {
@@ -24,8 +24,10 @@ uint32_t CheckpointIO::compute_crc32(const void* data, std::size_t len) {
         }
         return t;
     }();
+    // zlib-compatible chaining: the pre/post inversions cancel between calls,
+    // so compute_crc32(b, lb, compute_crc32(a, la)) == CRC32(a || b).
     auto* p = static_cast<const uint8_t*>(data);
-    uint32_t crc = 0xFFFFFFFFu;
+    crc ^= 0xFFFFFFFFu;
     for (std::size_t i = 0; i < len; ++i)
         crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
     return crc ^ 0xFFFFFFFFu;
@@ -55,13 +57,11 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
     hdr.step = step;
     hdr.num_fields = 2;
 
-    // Compute CRC32 over combined field data
+    // CRC32 over phi || u, hashed in place (a combined copy would double peak
+    // host memory: +3.46 GB per checkpoint at 600^3).
     std::size_t phi_bytes = phi.size() * sizeof(Real);
     std::size_t u_bytes = u.size() * sizeof(Real);
-    std::vector<uint8_t> combined(phi_bytes + u_bytes);
-    std::memcpy(combined.data(), phi.data(), phi_bytes);
-    std::memcpy(combined.data() + phi_bytes, u.data(), u_bytes);
-    hdr.data_crc32 = compute_crc32(combined.data(), combined.size());
+    hdr.data_crc32 = compute_crc32(u.data(), u_bytes, compute_crc32(phi.data(), phi_bytes));
 
     auto write_all = [&](const void* buf, std::size_t len) {
         auto* p = static_cast<const char*>(buf);
@@ -153,10 +153,7 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) 
     if (hdr.data_crc32 != 0) {
         std::size_t phi_sz = phi.size() * sizeof(Real);
         std::size_t u_sz = u.size() * sizeof(Real);
-        std::vector<uint8_t> combined(phi_sz + u_sz);
-        std::memcpy(combined.data(), phi.data(), phi_sz);
-        std::memcpy(combined.data() + phi_sz, u.data(), u_sz);
-        uint32_t crc = compute_crc32(combined.data(), combined.size());
+        uint32_t crc = compute_crc32(u.data(), u_sz, compute_crc32(phi.data(), phi_sz));
         if (crc != hdr.data_crc32) {
             throw std::runtime_error("Checkpoint CRC32 mismatch (data corrupted): " +
                                      path.string());

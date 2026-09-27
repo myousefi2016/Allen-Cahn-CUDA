@@ -32,7 +32,9 @@ public:
     static_assert(sizeof(Header) == 128,
                   "Header must be exactly 128 bytes for binary compatibility");
 
-    static uint32_t compute_crc32(const void* data, std::size_t len);
+    /// Standard CRC-32 (IEEE 802.3, reflected, poly 0xEDB88320). Pass a previous
+    /// result as `crc` to continue a running checksum over consecutive buffers.
+    static uint32_t compute_crc32(const void* data, std::size_t len, uint32_t crc = 0);
 
     /// Write a checkpoint to disk.
     static void write(const std::filesystem::path& path, int step, double time, double dt,
