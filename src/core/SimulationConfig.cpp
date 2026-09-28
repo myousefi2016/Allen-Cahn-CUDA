@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace ac {
 
@@ -397,6 +398,35 @@ void SimulationConfig::validate() const {
     for (std::size_t i = 0; i < 6; ++i) {
         validate_bc(boundary.phi_faces.faces[i], "phi face " + std::to_string(i));
         validate_bc(boundary.u_faces.faces[i], "u face " + std::to_string(i));
+    }
+
+    // A periodic BC identifies the two faces of an axis: the ghost plane at
+    // one face copies the interior plane next to the other face. It is
+    // therefore a property of the axis, not of one face. With only one face of
+    // an axis periodic, one side copies the far interior while the other does
+    // not, so the discrete operators are no longer symmetric and the boundary
+    // no longer conserves the field (docs/DESIGN.md, section 5.2). A uniform
+    // BC is periodic on every face or on none, so only per-face BCs can pair
+    // them wrongly.
+    if (boundary.per_face) {
+        static constexpr const char* axis_names[] = {"x", "y", "z"};
+        const std::pair<const PerFaceBoundary*, const char*> fields[] = {
+            {&boundary.phi_faces, "phi"}, {&boundary.u_faces, "u"}};
+        for (const auto& [faces, field] : fields) {
+            for (int axis = 0; axis < 3; ++axis) {
+                const bool lo = faces->get(axis, 0).type == BCType::Periodic;
+                const bool hi = faces->get(axis, 1).type == BCType::Periodic;
+                if (lo == hi)
+                    continue;
+                const std::string axis_name = axis_names[axis];
+                const std::string periodic = axis_name + (lo ? "_lo" : "_hi");
+                const std::string other = axis_name + (lo ? "_hi" : "_lo");
+                throw std::invalid_argument("boundary." + std::string(field) + ": " + periodic +
+                                            " is periodic but " + other +
+                                            " is not; a periodic BC must be set on both faces "
+                                            "of an axis");
+            }
+        }
     }
 
     // GPU

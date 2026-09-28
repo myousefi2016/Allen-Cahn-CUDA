@@ -37,7 +37,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Multi-GPU support**: X-axis domain decomposition with `cudaMemcpyPeerAsync` halo exchange (one-plane halos, the reach of every stencil), bit-identical to a single-GPU run.
 - **Anisotropic solidification**: cubic anisotropy A(n) with 4-fold crystal symmetry, including the corrected isotropic spherical-average fallback `1 − 3ε/5` when the gradient vanishes.
 - **Two Laplacian stencils**: standard 7-point and isotropic 27-point (Patra–Karttunen weights `14·face + 3·edge + 1·corner − 128·center`, divisor `30·h²`).
-- **Per-face boundary conditions**: independent Dirichlet / Neumann / Periodic / Robin on each of the 6 faces (`x_lo`, `x_hi`, `y_lo`, `y_hi`, `z_lo`, `z_hi`).
+- **Per-face boundary conditions**: independent Dirichlet / Neumann / Periodic / Robin on each of the 6 faces (`x_lo`, `x_hi`, `y_lo`, `y_hi`, `z_lo`, `z_hi`); periodic identifies the two faces of an axis, so it must be set on both (`docs/DESIGN.md` §5.2).
 - **Adaptive time stepping**: CFL-bounded with target-tolerance control via parallel reduction.
 - **Async I/O**: dedicated VTK/raw writer thread with bounded job queue, `condition_variable` backpressure, atomic temp-then-rename writes, and an LRU-cached field-statistics map.
 - **Crash-safe binary checkpointing**: 128-byte fixed header with magic `ACCHKPT`, CRC32 over field data, atomic rename + parent-directory `fsync`, and rolling retention that keeps one consistent trajectory per directory.
@@ -491,7 +491,7 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
 |-----------------------|-----------------|
 | `time.scheme`         | `"euler"`, `"heun"`, `"rk4"`, `"imex"` |
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
-| `boundary.*.type`     | `"dirichlet"`, `"neumann"`, `"periodic"`, `"robin"` |
+| `boundary.*.type`     | `"dirichlet"`, `"neumann"`, `"periodic"` (on both faces of an axis), `"robin"` |
 | `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary) |
 | `output.async_io`     | `true`: write snapshots in the background; `false`: each output step waits until its file is on disk |
 

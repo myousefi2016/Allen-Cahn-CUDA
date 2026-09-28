@@ -341,7 +341,32 @@ graph LR
 
 Robin BC enforces `alpha*u + beta*du/dn = gamma`. The validator forbids
 `alpha == 0 && beta == 0` for any Robin face
-(`SimulationConfig.cpp:317-330`).
+(`SimulationConfig::validate`).
+
+### 5.2 Periodic faces come in pairs
+
+A periodic BC fills the ghost plane at one face from the interior plane next
+to the opposite face (`x = 0` from `x = Nx-2`, `x = Nx-1` from `x = 1`), so
+it identifies the two faces of an axis. `SimulationConfig::validate` rejects
+per-face BCs that make only one face of an axis periodic, for `phi` and `u`
+alike.
+
+With only one face periodic, the ghost cells couple the first interior plane
+to the far one in one direction only. The 7-point Laplacian with that ghost
+fill is then neither symmetric nor conservative (its flux no longer
+telescopes to the boundary), which matches no boundary condition of the
+continuous problem. Measured on a 24³ grid with `h = 0.4`, periodic `x_lo`
+and zero-flux `x_hi`:
+
+| Faces on X | `|y·Lx − x·Ly| / (|y| |Lx|)` | change of `Σu` after 200 steps of pure diffusion, per unit of initial bump content |
+|---|---|---|
+| both zero-flux | 9e-19 | ≤ 7e-13 |
+| both periodic | 8e-19 | ≤ 7e-13 |
+| periodic `x_lo`, zero-flux `x_hi` | 3.6e-4 | −0.49 |
+
+The diffusion runs start from `phi = −1` everywhere (no latent heat) and a
+heat bump next to `x_lo`; the loss is the same with Euler, Heun, RK4 and
+IMEX.
 
 ---
 

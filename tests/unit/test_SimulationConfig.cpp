@@ -1,6 +1,7 @@
 #include "core/SimulationConfig.hpp"
 #include "logging/Logger.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <gtest/gtest.h>
@@ -304,6 +305,40 @@ TEST_F(SimulationConfigTest, PerFaceParsesEveryFace) {
     for (const auto& face : cfg.boundary.u_faces.faces) {
         EXPECT_EQ(face.type, BCType::Dirichlet);
         EXPECT_DOUBLE_EQ(face.value, -0.7);
+    }
+}
+
+// A periodic BC identifies the two faces of an axis. With only one of them
+// periodic, the ghost plane on that side copies the far interior while the
+// other side does not: the discrete operators become non-symmetric and the
+// boundary stops conserving the field. Every face of either field, periodic
+// alone, must be rejected; the same axis periodic on both faces is valid.
+TEST_F(SimulationConfigTest, PeriodicFaceRequiresPeriodicOppositeFace) {
+    static constexpr const char* face_names[] = {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"};
+    auto faces_with_periodic = [](std::initializer_list<int> periodic) {
+        std::string s = "{";
+        for (int i = 0; i < 6; ++i) {
+            const bool p = std::find(periodic.begin(), periodic.end(), i) != periodic.end();
+            s += std::string(i ? "," : "") + "\"" + face_names[i] + "\": {\"type\": \"" +
+                 (p ? "periodic" : "neumann") + "\"}";
+        }
+        return s + "}";
+    };
+    for (const std::string field : {"phi", "u"}) {
+        for (int i = 0; i < 6; ++i) {
+            const int opposite = i ^ 1;
+            expect_rejected(R"({"boundary": {")" + field + "\": " + faces_with_periodic({i}) + "}}",
+                            {"boundary." + field, std::string(face_names[i]) + " is periodic",
+                             std::string(face_names[opposite]) + " is not"});
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            const auto cfg = SimulationConfig::from_json_string(
+                R"({"boundary": {")" + field +
+                "\": " + faces_with_periodic({2 * axis, 2 * axis + 1}) + "}}");
+            const auto& faces = field == "phi" ? cfg.boundary.phi_faces : cfg.boundary.u_faces;
+            EXPECT_EQ(faces.get(axis, 0).type, BCType::Periodic);
+            EXPECT_EQ(faces.get(axis, 1).type, BCType::Periodic);
+        }
     }
 }
 

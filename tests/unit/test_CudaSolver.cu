@@ -162,7 +162,7 @@ TEST_F(CudaSolverTest, PerFaceBoundaryConditions) {
     cfg.boundary.phi_faces = PerFaceBoundary::uniform(cfg.boundary.phi_bc);
     cfg.boundary.u_faces = PerFaceBoundary::uniform(cfg.boundary.u_bc);
 
-    // Override X_lo face to periodic
+    // Set X_lo explicitly through the per-face table (zero-flux Neumann)
     cfg.boundary.phi_faces[Face::XLo].type = BCType::Neumann;
     cfg.boundary.phi_faces[Face::XLo].flux = 0.0;
 
