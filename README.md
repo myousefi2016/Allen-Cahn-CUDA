@@ -643,7 +643,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   nvidia/cuda:12.6.0-devel-ubuntu24.04 bash -c '
     apt-get update && apt-get install -y --no-install-recommends \
       cmake ninja-build gcc-13 g++-13 git pkg-config \
-      libvtk9-dev libhdf5-dev ca-certificates python3 &&
+      libvtk9-dev libhdf5-dev ca-certificates python3 python3-yaml &&
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 &&
     update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 &&
     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -727,7 +727,7 @@ Allen-Cahn-CUDA/
 │   ├── main.cpp               # Entry point + signal handler
 │   └── CMakeLists.txt
 ├── tests/
-│   ├── unit/                  # 21 unit-test files
+│   ├── unit/                  # 22 unit-test files
 │   ├── integration/           # 7 integration-test files
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   └── CMakeLists.txt
