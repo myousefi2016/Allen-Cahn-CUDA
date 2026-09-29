@@ -5,7 +5,8 @@
         "W0": 1.0,
         "beta0": 0.0,
         "D": 2.0,
-        "d0": 0.5
+        "d0": 0.5,
+        "willmore_beta": 0.0149
     },
     "grid": {
         "Nx": 600,
@@ -16,23 +17,23 @@
         "dz": 0.4
     },
     "time": {
-        "dt": 0.01,
+        "dt": 0.0025,
         "dt_min": 1e-6,
         "dt_max": 0.1,
-        "max_steps": 6000,
+        "max_steps": 24000,
         "scheme": "euler",
         "adaptive": false,
         "cfl_safety": 0.9
     },
     "stencil": "7pt",
     "output": {
-        "frequency": 100,
+        "frequency": 400,
         "output_dir": "./out",
         "format": "vts",
         "async_io": true
     },
     "checkpoint": {
-        "frequency": 500,
+        "frequency": 2000,
         "checkpoint_dir": "./checkpoints",
         "keep_last": 3
     },

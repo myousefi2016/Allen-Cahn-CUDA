@@ -1,14 +1,15 @@
 {
-    "_comment_physics": "Long-run dendrite config — moderate undercooling (delta=0.7) for slower growth allowing arm development before saturation. ε=0.15 is strong cubic anisotropy with 4.1x stability margin against Heun CFL on 27pt stencil at dt=0.005.",
+    "_comment_physics": "Long-run dendrite config: moderate undercooling (delta = 0.7) and strong cubic anisotropy (epsilon = 0.15 > 1/15, where the unregularised equation is ill-posed, so willmore_beta > 0 is required). willmore_beta = 0.401 = |S| l*^2 with S = (1 + eps)(1 - 15 eps) = -1.4375 and the corner length l* = 0.528 W0 (docs/THEORY.md section 4.3).",
     "physics": {
         "delta": 0.7,
         "epsilon": 0.15,
         "W0": 1.0,
         "beta0": 0.0,
         "D": 2.0,
-        "d0": 0.5
+        "d0": 0.5,
+        "willmore_beta": 0.401
     },
-    "_comment_grid": "192^3 ≈ 7M points, ~108 MB checkpoint, ~280 MB per .vts. Largest grid that fits 5-hour T4 budget at acceptable disk usage.",
+    "_comment_grid": "192^3 = 7.08M points, box 76.4 W0. Measured on an RTX 4090: 0.71 GiB of GPU memory (108.1 bytes per cell with willmore_beta > 0), 113 MB per checkpoint, up to 88 MB per .vts.",
     "grid": {
         "Nx": 192,
         "Ny": 192,
@@ -17,30 +18,30 @@
         "dy": 0.4,
         "dz": 0.4
     },
-    "_comment_time": "max_steps=60000 is the upper bound; the engine will auto-exit cleanly when the dendrite reaches the boundary (typically step 4000-7000 on 192^3) — see exit_on_saturation. AllenCahnKernels.cu:52 returns 0 force at boundary cells, so once phi > saturation_threshold on a wall slab the integrator destabilises within ~100 steps. The guard catches this and writes a final checkpoint + VTK frame.",
+    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.0003125 is the largest dt whose time error does not exceed the spatial error at h = 0.4 (docs/THEORY.md section 4.3); the explicit thermal update is stable below 0.0261. max_steps = 960000 (t = 300) is an upper bound: exit_on_saturation stops the run cleanly, with a final checkpoint and VTK frame, once phi > saturation_threshold on a boundary slab (measured: step 113600, t = 35.5, when the six <100> tips reach the walls). 14.4 ms per step on an RTX 4090: 27 minutes to saturation.",
     "time": {
-        "dt": 0.005,
+        "dt": 0.0003125,
         "dt_min": 1e-6,
         "dt_max": 0.05,
-        "max_steps": 60000,
-        "scheme": "heun",
+        "max_steps": 960000,
+        "scheme": "euler",
         "adaptive": false,
         "cfl_safety": 0.9,
         "exit_on_saturation": true,
         "saturation_threshold": -0.5,
-        "saturation_check_freq": 100
+        "saturation_check_freq": 1600
     },
     "stencil": "27pt",
-    "_comment_output": "VTK every 500 steps. With auto-exit at saturation around step 4000-7000, that gives 8-15 frames at ~280 MB each = ~2-4 GB on disk — enough for a smooth 1 fps -> 12 fps stitched animation.",
+    "_comment_output": "VTK every 8000 steps (2.5 time units): 16 frames up to saturation, 1.0 GB.",
     "output": {
-        "frequency": 500,
+        "frequency": 8000,
         "output_dir": "./out",
         "format": "vts",
         "async_io": true
     },
-    "_comment_checkpoint": "Checkpoint every 3000 steps (= ~4 minutes of compute lost on crash), keep_last=3 (= ~324 MB on disk). The resume target picks the latest automatically.",
+    "_comment_checkpoint": "Checkpoint every 48000 steps (15 time units, 11.6 minutes of compute on an RTX 4090), keep_last = 3 (340 MB). The resume target picks the latest intact checkpoint.",
     "checkpoint": {
-        "frequency": 3000,
+        "frequency": 48000,
         "checkpoint_dir": "./checkpoints",
         "keep_last": 3
     },

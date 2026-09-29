@@ -1,14 +1,15 @@
 {
-    "_comment_physics": "Large-box dendrite with corrected anisotropy force. epsilon=0.10 gives A_max/A_min=1.10/0.833=1.32, sufficient for cubic arm development. delta=0.65 moderate undercooling for structured growth. Seed uses equilibrium tanh profile with uniform u=-delta (Karma & Rappel 1998).",
+    "_comment_physics": "Large-box dendrite. epsilon = 0.10 gives A_max/A_min = 1.10/0.833 = 1.32; it is above 1/15, where the unregularised equation is ill-posed, so willmore_beta > 0 is required: willmore_beta = 0.153 = |S| l*^2 with S = (1 + eps)(1 - 15 eps) = -0.55 and the corner length l* = 0.528 W0 (docs/THEORY.md section 4.3). delta = 0.65. Seed uses equilibrium tanh profile with uniform u = -delta (Karma & Rappel 1998).",
     "physics": {
         "delta": 0.65,
         "epsilon": 0.10,
         "W0": 1.0,
         "beta0": 0.0,
         "D": 2.0,
-        "d0": 0.5
+        "d0": 0.5,
+        "willmore_beta": 0.153
     },
-    "_comment_grid": "384^3 = 56.6M cells. Memory: ~6 arrays x 452 MB = 2.7 GB, fits T4 (16 GB). dx=0.4 resolves the tanh interface over ~10 grid points (|phi|<0.9 band spans ~4.2 W0/dx = 10.4 cells).",
+    "_comment_grid": "384^3 = 56.6M cells, box 153.2 W0. dx = 0.4 resolves the tanh interface over ~10 grid points (|phi| < 0.9 band spans ~4.2 W0/dx = 10.4 cells). Measured on an RTX 4090: 5.70 GiB of GPU memory (108.1 bytes per cell with willmore_beta > 0), 906 MB per checkpoint, up to 630 MB per .vts.",
     "grid": {
         "Nx": 384,
         "Ny": 384,
@@ -17,30 +18,30 @@
         "dy": 0.4,
         "dz": 0.4
     },
-    "_comment_time": "Heun CFL margin: dt=0.005 vs dt_max=0.9*0.4^2/(6*D_eff)=0.01064 -> Heun limit ~0.0213 -> 4.3x margin. max_steps=40000 = 200 time units. Saturation guard exits cleanly when dendrite reaches boundary (typically step 6000-15000 on 384^3).",
+    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.00125 is the largest dt whose time error does not exceed the spatial error at h = 0.4 (docs/THEORY.md section 4.3); the explicit thermal update is stable below 0.0261. max_steps = 160000 (t = 200) is an upper bound: the saturation guard stops the run cleanly when the crystal reaches the walls (measured: step 91200, t = 114; six <100> arms with concave faces between them by then). 118 ms per step on an RTX 4090: 179 minutes to saturation.",
     "time": {
-        "dt": 0.005,
+        "dt": 0.00125,
         "dt_min": 1e-6,
         "dt_max": 0.05,
-        "max_steps": 40000,
-        "scheme": "heun",
+        "max_steps": 160000,
+        "scheme": "euler",
         "adaptive": false,
         "cfl_safety": 0.9,
         "exit_on_saturation": true,
         "saturation_threshold": -0.5,
-        "saturation_check_freq": 200
+        "saturation_check_freq": 800
     },
     "stencil": "27pt",
-    "_comment_output": "VTK every 500 steps. 384^3 VTS = ~880 MB each. With saturation at ~step 6000-15000, expect 12-30 frames = 10-26 GB disk.",
+    "_comment_output": "VTK every 2000 steps (2.5 time units): 47 frames up to saturation, up to 630 MB each, 21.5 GB in total.",
     "output": {
-        "frequency": 500,
+        "frequency": 2000,
         "output_dir": "./out",
         "format": "vts",
         "async_io": true
     },
-    "_comment_checkpoint": "Checkpoint every 2000 steps (~48s wall-clock on T4). 384^3 checkpoint = ~864 MB, keep_last=3 = ~2.6 GB disk.",
+    "_comment_checkpoint": "Checkpoint every 8000 steps (10 time units, 15.7 minutes of compute on an RTX 4090). 906 MB per checkpoint, keep_last = 3: 2.7 GB.",
     "checkpoint": {
-        "frequency": 2000,
+        "frequency": 8000,
         "checkpoint_dir": "./checkpoints",
         "keep_last": 3
     },

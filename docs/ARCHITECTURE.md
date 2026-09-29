@@ -28,12 +28,14 @@ graph TB
         IS["ISolver (interface)"]
         CS["CudaSolver"]
         MG["MultiGPUSolver"]
+        WS["WillmoreSolve<br/>(implicit step, flexible CG)"]
     end
     subgraph Kernels["CUDA kernels"]
         ACK["AllenCahnKernels"]
         TK["ThermalKernels"]
         BK["BoundaryKernels"]
         RK["ReductionKernels"]
+        WK["WillmoreKernels<br/>(FP64 operator, FP32 Chebyshev)"]
     end
     subgraph Infra["GPU infrastructure"]
         DF["DeviceField (RAII)"]
@@ -62,6 +64,10 @@ graph TB
     CS --> TK
     CS --> BK
     CS --> RK
+    CS --> WS
+    MG --> WS
+    WS --> WK
+    CS --> WK
     CS --> DF
     CS --> CU
     SE --> VW
@@ -85,7 +91,7 @@ two test executables (`src/CMakeLists.txt`).
 graph LR
     aclog["ac_logging<br/>(spdlog wrapper)"]
     accore["ac_core<br/>SimulationConfig.cpp,<br/>Grid.cpp, FieldData.cpp"]
-    accuda["ac_cuda<br/>(SEPARABLE_COMPILATION)<br/>kernels + DeviceField +<br/>CudaSolver + MultiGPUSolver"]
+    accuda["ac_cuda<br/>(SEPARABLE_COMPILATION)<br/>kernels + DeviceField +<br/>CudaSolver + MultiGPUSolver +<br/>WillmoreSolve"]
     acio["ac_io<br/>VTKWriter.cpp,<br/>CheckpointIO.cpp,<br/>core/CheckpointManager.cpp"]
     acengine["ac_engine<br/>(SEPARABLE_COMPILATION)<br/>SimulationEngine.cu"]
     exe["allen-cahn-cuda<br/>(executable)"]
@@ -285,6 +291,10 @@ graph TB
         subgraph RK4Only["RK4 only"]
             ks["k1_phi_..k4_phi_, k1_u_..k4_u_"]
         end
+        subgraph Willmore["willmore_beta > 0 (Euler, IMEX)"]
+            wd["double: w_tau_, cg_x_, cg_r_, cg_z_, cg_p_, cg_Ap_, cg_t_,<br/>plane_dot_scratch_ (one per X plane)"]
+            ws["float: pc_tdt_, pc_f_, pc_x_[2], pc_t_; pc_tau_range_ (2 x u64)"]
+        end
     end
     subgraph Swap["Pointer swap (O(1))"]
         sw["swap(phi_old_, phi_new_)<br/>swap(u_old_, u_new_)<br/>std::swap of DeviceField handles"]
@@ -293,9 +303,10 @@ graph TB
 
 Each `DeviceField<double>` is a flat allocation of
 `Nx * Ny * Nz * sizeof(double)` bytes via `cudaMalloc`, with row-major
-indexing `idx = x*Ny*Nz + y*Nz + z`. Allocations are sized in
-`CudaSolver`'s constructor based on the active time scheme
-(`CudaSolver.cu:116-156`).
+indexing `idx = x*Ny*Nz + y*Nz + z` (`DeviceField<float>` likewise with 4
+bytes). Allocations are made in `CudaSolver`'s constructor from the active
+time scheme and `willmore_beta`; the measured bytes per cell of each
+combination are in the README (GPU memory budget).
 
 ---
 

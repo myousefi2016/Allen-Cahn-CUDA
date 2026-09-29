@@ -235,6 +235,48 @@ graph LR
     end
 ```
 
+### 3.5 Willmore-regularised phase-field step (Euler / IMEX, β > 0)
+
+With `physics.willmore_beta > 0` the phase-field part of an Euler or IMEX
+step (`CudaSolver::advance_phi`) is the linearly implicit Willmore step of
+`docs/THEORY.md` §4.3; the thermal part is unchanged. `solve_willmore_step`
+(`src/cuda/WillmoreSolve.cu`) drives one solve over all domains from
+`CudaSolver` building blocks, so `MultiGPUSolver` reuses it with its halo
+exchanges:
+
+1. `willmore_omega`: ω = W₀²∇²φ + φ − φ³, homogeneous BCs on ω.
+2. `willmore_rhs_init`: τ and the right-hand side; x = z = p = 0; τ/dt in
+   single precision and the exact τ range (`launch_precond_tau_scan`).
+3. Host: spectral bounds `[a, b]`, `κ_A` and the Chebyshev plan
+   (`willmore_spectrum`, `chebyshev_plan`, `docs/THEORY.md` §4.4).
+4. Flexible CG in double precision; each iteration: homogeneous BCs on p,
+   t = ∇²p, Ap, four per-plane dot products, x/r update, z = M r, and
+   p = z + β p. z = M r is the Chebyshev iteration in single precision: one
+   first step, then per step the iterate's Laplacian and one update kernel.
+5. `willmore_finish`: φ_new = φ_old + x, φ's BCs.
+
+| Constant | Value | Where |
+|---|---|---|
+| `kWillmoreCgTolerance` | 1e-10 (relative residual) | `WillmoreSolve.cuh` |
+| `kWillmoreCgMaxIterations` | 1000 outer iterations, then throw | `WillmoreSolve.cuh` |
+| Chebyshev degree | lowest that guarantees 2 outer iterations in exact arithmetic (11 for run_dendrite: β = 0.25, dt = 0.000625) | `chebyshev_plan` |
+
+The single-precision kernels (`WillmoreKernels.cu`) cover the interior with a
+(z, y) thread grid and a loop over X planes, and every kernel that produces
+the iterate or its Laplacian also writes the face ghost cells that depend on
+it (homogeneous rule of the face, or the periodic image), so no boundary
+launch is needed between steps. The double-precision Willmore stencils
+multiply by 1/h² and 1/dt precomputed on the host (they are bound by
+double-precision throughput on GeForce-class GPUs).
+
+```mermaid
+graph LR
+    O["omega + BCs"] --> R["rhs, tau, tau/dt (f32), tau range"] --> P["bounds, degree"]
+    P --> Z0["z = M r"] --> L["p: BCs, lap, Ap"] --> D["dots, x/r update"]
+    D -->|"not converged"| Z["z = M r"] --> B["p = z + beta p"] --> L
+    D -->|"converged"| F["phi_new = phi_old + x, BCs"]
+```
+
 ---
 
 ## 4. Adaptive Time Stepping & CFL
@@ -429,6 +471,7 @@ stencil reads is current:
 | Heun | predictor (`phi_tmp_`/`u_tmp_`) between the stages, then the new state |
 | RK4 | stage state (`phi_tmp_`/`u_tmp_`) before stages 2, 3 and 4, then the new state |
 | IMEX | the Jacobi iterate (`u_new_`) after every sweep, then the new state |
+| Euler / IMEX with β > 0 | additionally, in the Willmore solve: ω once; per CG iteration the direction and its Laplacian; per Chebyshev step the single-precision iterate and its Laplacian |
 
 The IMEX solver checks the global residual (max over domains) every 10
 sweeps, like the single-GPU solver, so both run the same number of Jacobi
@@ -448,7 +491,8 @@ current.
 bit for bit after `initialize()` and after every one of 8 steps. It covers
 Euler, Heun, RK4 and IMEX × {uniform, per-face with Robin, fluxes, Z
 periodic and the 27-point stencil, periodic X}, including an `Nx = 6`
-split where every domain owns exactly two planes. It also compares
+split where every domain owns exactly two planes, and the same layouts for
+Euler and IMEX with the Willmore term (β > 0, 14 cases). It also compares
 `compute_max_dphi` and `compute_boundary_max_phi`, and a full adaptive-`dt`
 `SimulationEngine` run.
 

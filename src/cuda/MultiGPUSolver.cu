@@ -157,6 +157,7 @@ void MultiGPUSolver::build_domains() {
         sub_config.boundary.per_face = true;
 
         domain.solver = std::make_unique<CudaSolver>(sub_config);
+        domain.solver->in_decomposition_ = true;
         domains_.push_back(std::move(domain));
     }
 }
@@ -195,37 +196,62 @@ void MultiGPUSolver::initialize(const FieldData& phi0, const FieldData& u0) {
     spdlog::debug("MultiGPUSolver: initial conditions distributed to all domains");
 }
 
-void MultiGPUSolver::copy_planes(double* dst, int dst_device, int x_dst, const double* src,
+void MultiGPUSolver::copy_planes(void* dst, int dst_device, int x_dst, const void* src,
                                  int src_device, int x_src, int count, int Ny, int Nz,
-                                 cudaStream_t stream) {
+                                 std::size_t elem_size, cudaStream_t stream) {
     // x-major layout: `count` consecutive YZ planes are one contiguous block.
-    const std::size_t plane = static_cast<std::size_t>(Ny) * static_cast<std::size_t>(Nz);
-    CUDA_CHECK(cudaMemcpyPeerAsync(dst + static_cast<std::size_t>(x_dst) * plane, dst_device,
-                                   src + static_cast<std::size_t>(x_src) * plane, src_device,
-                                   static_cast<std::size_t>(count) * plane * sizeof(double),
-                                   stream));
+    const std::size_t plane_bytes =
+        static_cast<std::size_t>(Ny) * static_cast<std::size_t>(Nz) * elem_size;
+    CUDA_CHECK(cudaMemcpyPeerAsync(
+        static_cast<char*>(dst) + static_cast<std::size_t>(x_dst) * plane_bytes, dst_device,
+        static_cast<const char*>(src) + static_cast<std::size_t>(x_src) * plane_bytes, src_device,
+        static_cast<std::size_t>(count) * plane_bytes, stream));
 }
 
 void MultiGPUSolver::exchange(Buffers which) {
     struct Field {
-        double* (*ptr)(CudaSolver&);
+        void* (*ptr)(CudaSolver&);
+        std::size_t elem_size;
         bool wrap_lo;
         bool wrap_hi;
     };
+    constexpr std::size_t kF64 = sizeof(double), kF32 = sizeof(float);
     std::vector<Field> fields;
     switch (which) {
     case Buffers::Current:
+        fields.push_back({[](CudaSolver& s) -> void* { return s.phi_old_.data(); }, kF64,
+                          wrap_phi_lo_, wrap_phi_hi_});
         fields.push_back(
-            {[](CudaSolver& s) { return s.phi_old_.data(); }, wrap_phi_lo_, wrap_phi_hi_});
-        fields.push_back({[](CudaSolver& s) { return s.u_old_.data(); }, wrap_u_lo_, wrap_u_hi_});
+            {[](CudaSolver& s) -> void* { return s.u_old_.data(); }, kF64, wrap_u_lo_, wrap_u_hi_});
         break;
     case Buffers::Stage:
+        fields.push_back({[](CudaSolver& s) -> void* { return s.phi_tmp_.data(); }, kF64,
+                          wrap_phi_lo_, wrap_phi_hi_});
         fields.push_back(
-            {[](CudaSolver& s) { return s.phi_tmp_.data(); }, wrap_phi_lo_, wrap_phi_hi_});
-        fields.push_back({[](CudaSolver& s) { return s.u_tmp_.data(); }, wrap_u_lo_, wrap_u_hi_});
+            {[](CudaSolver& s) -> void* { return s.u_tmp_.data(); }, kF64, wrap_u_lo_, wrap_u_hi_});
         break;
     case Buffers::JacobiIterate:
-        fields.push_back({[](CudaSolver& s) { return s.u_new_.data(); }, wrap_u_lo_, wrap_u_hi_});
+        fields.push_back(
+            {[](CudaSolver& s) -> void* { return s.u_new_.data(); }, kF64, wrap_u_lo_, wrap_u_hi_});
+        break;
+    // The Willmore fields obey the homogeneous form of phi's BCs, so they wrap
+    // exactly where phi does.
+    case Buffers::WillmoreOmega:
+    case Buffers::WillmoreDirectionLaplacian:
+        fields.push_back({[](CudaSolver& s) -> void* { return s.cg_t_.data(); }, kF64, wrap_phi_lo_,
+                          wrap_phi_hi_});
+        break;
+    case Buffers::WillmoreDirection:
+        fields.push_back({[](CudaSolver& s) -> void* { return s.cg_p_.data(); }, kF64, wrap_phi_lo_,
+                          wrap_phi_hi_});
+        break;
+    case Buffers::WillmorePreconditionerIterate:
+        fields.push_back({[](CudaSolver& s) -> void* { return s.pc_x_[s.pc_current_].data(); },
+                          kF32, wrap_phi_lo_, wrap_phi_hi_});
+        break;
+    case Buffers::WillmorePreconditionerLaplacian:
+        fields.push_back({[](CudaSolver& s) -> void* { return s.pc_t_.data(); }, kF32, wrap_phi_lo_,
+                          wrap_phi_hi_});
         break;
     }
 
@@ -265,13 +291,13 @@ void MultiGPUSolver::exchange(Buffers which) {
             CUDA_CHECK(cudaSetDevice(first.device_id));
             copy_planes(f.ptr(*first.solver), first.device_id, 0, f.ptr(*last.solver),
                         last.device_id, (Nx - 2) - last.x_start + last.left_halo, 1, Ny, Nz,
-                        first.halo_stream.get());
+                        f.elem_size, first.halo_stream.get());
         }
         if (f.wrap_hi) {
             CUDA_CHECK(cudaSetDevice(last.device_id));
             copy_planes(f.ptr(*last.solver), last.device_id, last.local_Nx - 1,
                         f.ptr(*first.solver), first.device_id, 1 - first.x_start + first.left_halo,
-                        1, Ny, Nz, last.halo_stream.get());
+                        1, Ny, Nz, f.elem_size, last.halo_stream.get());
         }
     }
     sync_halo_streams();
@@ -285,10 +311,10 @@ void MultiGPUSolver::exchange(Buffers which) {
             // left's last halo_width_ owned planes -> right's low halo
             copy_planes(f.ptr(*right.solver), right.device_id, 0, f.ptr(*left.solver),
                         left.device_id, left.owned_end() - halo_width_, halo_width_, Ny, Nz,
-                        left.halo_stream.get());
+                        f.elem_size, left.halo_stream.get());
             // right's first halo_width_ owned planes -> left's high halo
             copy_planes(f.ptr(*left.solver), left.device_id, left.owned_end(), f.ptr(*right.solver),
-                        right.device_id, right.owned_begin(), halo_width_, Ny, Nz,
+                        right.device_id, right.owned_begin(), halo_width_, Ny, Nz, f.elem_size,
                         left.halo_stream.get());
         }
     }
@@ -300,9 +326,10 @@ void MultiGPUSolver::step(double dt) {
     // are current (established by initialize() and by the previous step()).
     switch (config_.time.scheme) {
     case TimeScheme::Euler:
+        advance_phi(dt);
         for (auto& domain : domains_) {
             CUDA_CHECK(cudaSetDevice(domain.device_id));
-            domain.solver->step_euler(dt);
+            domain.solver->euler_thermal_and_swap();
         }
         break;
     case TimeScheme::Heun:
@@ -327,9 +354,10 @@ void MultiGPUSolver::step(double dt) {
         }
         break;
     case TimeScheme::IMEX:
+        advance_phi(dt);
         for (auto& domain : domains_) {
             CUDA_CHECK(cudaSetDevice(domain.device_id));
-            domain.solver->imex_begin(dt);
+            domain.solver->imex_begin_thermal();
         }
         for (int iter = 0; iter < CudaSolver::kJacobiMaxIters; ++iter) {
             for (auto& domain : domains_) {
@@ -358,6 +386,50 @@ void MultiGPUSolver::step(double dt) {
         break;
     }
     exchange(Buffers::Current);
+}
+
+void MultiGPUSolver::advance_phi(double dt) {
+    for (auto& domain : domains_) {
+        CUDA_CHECK(cudaSetDevice(domain.device_id));
+        domain.solver->mutable_params().dt = dt;
+    }
+    if (config_.physics.willmore_beta <= 0.0) {
+        for (auto& domain : domains_) {
+            CUDA_CHECK(cudaSetDevice(domain.device_id));
+            domain.solver->advance_phi();
+        }
+        return;
+    }
+    // One CG solve over all domains. Each domain contributes its owned planes
+    // that are interior planes of the global grid (global 1 .. Nx-2).
+    const int Nx = config_.grid.Nx;
+    std::vector<WillmoreDomain> parts;
+    for (auto& domain : domains_) {
+        const int g_begin = std::max(domain.x_start, 1);
+        const int g_end = std::min(domain.x_end, Nx - 1);
+        const int local = domain.owned_begin() - domain.x_start;
+        parts.push_back(WillmoreDomain{domain.solver.get(), domain.device_id, g_begin + local,
+                                       g_end + local, g_begin});
+    }
+    solve_willmore_step(parts, config_, [this](WillmoreBuffer b) {
+        switch (b) {
+        case WillmoreBuffer::Omega:
+            exchange(Buffers::WillmoreOmega);
+            break;
+        case WillmoreBuffer::Direction:
+            exchange(Buffers::WillmoreDirection);
+            break;
+        case WillmoreBuffer::DirectionLaplacian:
+            exchange(Buffers::WillmoreDirectionLaplacian);
+            break;
+        case WillmoreBuffer::PreconditionerIterate:
+            exchange(Buffers::WillmorePreconditionerIterate);
+            break;
+        case WillmoreBuffer::PreconditionerLaplacian:
+            exchange(Buffers::WillmorePreconditionerLaplacian);
+            break;
+        }
+    });
 }
 
 double MultiGPUSolver::compute_max_dphi() const {

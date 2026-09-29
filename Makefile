@@ -59,12 +59,12 @@ VIZ_PHI_CMAP       ?= coolwarm
 VIZ_U_CMAP         ?= plasma
 VIZ_EXTRA_ARGS     ?=
 
-# Long-run dendrite simulation (resumable, ~5 hours on T4)
+# Long-run dendrite simulation (resumable; 27 minutes of compute on an RTX 4090)
 LONG_CONFIG        ?= config/run_dendrite_long.json
 LONG_LOG           ?= run_long.log
 RESUME_HELPER      ?= scripts/resume_from_latest_checkpoint.py
 
-# Large-box dendrite simulation (384^3, ~16 min on T4)
+# Large-box dendrite simulation (384^3; 179 minutes of compute on an RTX 4090)
 LARGE_CONFIG       ?= config/run_dendrite_large.json
 LARGE_LOG          ?= run_large.log
 
@@ -270,12 +270,12 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 	@echo "==> Writing config/run_vtk.json"
 	@printf '%s\n' \
 	    '{' \
-	    '  "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "D": 2.0, "d0": 0.5 },' \
+	    '  "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "D": 2.0, "d0": 0.5, "willmore_beta": 0.0149 },' \
 	    '  "grid":     { "Nx": 128, "Ny": 128, "Nz": 128, "dx": 0.4, "dy": 0.4, "dz": 0.4 },' \
-	    '  "time":     { "dt": 0.008, "max_steps": 2000, "scheme": "heun", "adaptive": false },' \
+	    '  "time":     { "dt": 0.005, "max_steps": 3200, "scheme": "euler", "adaptive": false },' \
 	    '  "stencil":  "27pt",' \
-	    '  "output":   { "frequency": 100, "output_dir": "./out", "format": "vts", "async_io": true },' \
-	    '  "checkpoint": { "frequency": 500, "checkpoint_dir": "./checkpoints", "keep_last": 3 },' \
+	    '  "output":   { "frequency": 160, "output_dir": "./out", "format": "vts", "async_io": true },' \
+	    '  "checkpoint": { "frequency": 800, "checkpoint_dir": "./checkpoints", "keep_last": 3 },' \
 	    '  "initial":  { "seed_radius": 2.4 },' \
 	    '  "boundary": {' \
 	    '    "phi": { "type": "neumann", "flux": 0.0 },' \
@@ -285,13 +285,13 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 	$(MAKE) cuda-run CONFIG=config/run_vtk.json
 
 cuda-run-dendrite: CONFIG=config/run_dendrite.json
-cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, dt=0.005, t/tau0=40, stable) -> VTS
+cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, beta=0.25, euler, dt=0.000625, t/tau0=31) -> VTS
 
-# ── Long resumable dendrite run (~5 hours, with crash-safe checkpointing) ──
-# This is the "Option A" overnight workflow: a 192^3 simulation that runs
-# for ~530 tau0 (well past the Plapp 2003 arm-onset threshold). Checkpoints
-# every 3000 steps (≈ 4 minutes wall-clock), keep_last=3, so any interrupt
-# loses at most ~4 minutes of compute.
+# ── Long resumable dendrite run (with crash-safe checkpointing) ──────────
+# A 192^3 run at eps = 0.15 until the saturation guard stops it (measured on
+# an RTX 4090: step 113600, t = 35.5, 27 minutes of compute). Checkpoints
+# every 48000 steps (11.6 minutes of compute), keep_last=3, so an interrupt
+# loses at most that much.
 #
 # Backgrounding (mandatory for runs longer than your terminal session):
 #   tmux new -s dendrite 'make cuda-run-dendrite-long'
@@ -304,9 +304,9 @@ cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, dt
 # skipping any whose header, exact size or CRC32 does not match the config's
 # grid (truncated, foreign-grid or corrupted files), generates
 # config/run_dendrite_long_resume.json, and restarts the binary.
-cuda-run-dendrite-long: cuda-build ## (docker) Long ~5 hour 192^3 dendrite run with frequent checkpoints
+cuda-run-dendrite-long: cuda-build ## (docker) Long 192^3 dendrite run (eps=0.15) until saturation, with checkpoints
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
-	@echo "==> LONG dendrite run on 192^3, ~5 hours wall-clock, ~11 GB VTK output."
+	@echo "==> LONG dendrite run on 192^3 until saturation (RTX 4090: 27 min of compute, 1.0 GB VTK output)."
 	@echo "    Background it so it survives terminal disconnect:"
 	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-long'"
 	@echo "       # OR"
@@ -339,16 +339,17 @@ cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest int
 	  exit 1; \
 	fi
 
-# ── Large-box dendrite run (384^3, ~16 min wall-clock on T4) ──────────────
-# Uses corrected anisotropy force and tanh initial condition.
-# 384^3 ≈ 56.6M cells, ~2.7 GB GPU memory, fits T4 comfortably.
+# ── Large-box dendrite run (384^3, until saturation) ──────────────────────
+# Tanh initial condition, eps = 0.10 with willmore_beta. Measured on an RTX
+# 4090: 5.70 GiB of GPU memory; the saturation guard stops it at step 91200
+# (t = 114) after 179 minutes of compute.
 # Backgrounding:
 #   tmux new -s dendrite 'make cuda-run-dendrite-large'
 #   nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &
 # Resume after interrupt:  make cuda-resume-dendrite-large
-cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run (~16 min on T4, corrected anisotropy)
+cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run until saturation (179 min on an RTX 4090)
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
-	@echo "==> LARGE dendrite run on 384^3, ~16 min wall-clock, corrected anisotropy force."
+	@echo "==> LARGE dendrite run on 384^3 until saturation (RTX 4090: 179 min of compute, 22 GB VTK output)."
 	@echo "    Background it:"
 	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-large'"
 	@echo "       nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &"

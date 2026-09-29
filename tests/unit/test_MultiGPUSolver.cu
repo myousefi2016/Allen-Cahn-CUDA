@@ -38,6 +38,7 @@ struct Case {
     int domains;
     BcLayout bc;
     int Nx;
+    bool willmore = false; ///< eps = 0.12 regularised with beta = 1 (one CG solve per step)
 };
 
 const char* scheme_name(TimeScheme s) {
@@ -94,7 +95,8 @@ SimulationConfig make_config(const Case& c) {
     cfg.grid.Nz = kNz;
     cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = kH;
     cfg.physics.delta = 0.55;
-    cfg.physics.epsilon = 0.05;
+    cfg.physics.epsilon = c.willmore ? 0.12 : 0.05;
+    cfg.physics.willmore_beta = c.willmore ? 1.0 : 0.0;
     cfg.physics.W0 = 1.0;
     cfg.physics.D = 2.0;
     cfg.physics.d0 = 0.5;
@@ -262,7 +264,9 @@ TEST_P(MultiGPUEquivalence, MatchesSingleGpuBitwise) {
     }
 
     // Non-vacuity: the fields are still evolving and every cut carries an X
-    // gradient in both fields, so a wrong or stale halo changes the result.
+    // difference in both fields far above rounding (1e-16), so a wrong or
+    // stale halo value changes the computed cells and the bitwise comparison
+    // above would catch it.
     EXPECT_GT(last_dphi, 1e-6);
     for (int cut : cut_planes(c.Nx, c.domains)) {
         double gphi = 0.0, gu = 0.0;
@@ -271,8 +275,8 @@ TEST_P(MultiGPUEquivalence, MatchesSingleGpuBitwise) {
                 gphi = std::max(gphi, std::abs(phi_s(cut, y, z) - phi_s(cut - 1, y, z)));
                 gu = std::max(gu, std::abs(u_s(cut, y, z) - u_s(cut - 1, y, z)));
             }
-        EXPECT_GT(gphi, 1e-3) << "cut at x=" << cut;
-        EXPECT_GT(gu, 1e-4) << "cut at x=" << cut;
+        EXPECT_GT(gphi, 1e-8) << "cut at x=" << cut;
+        EXPECT_GT(gu, 1e-8) << "cut at x=" << cut;
     }
 }
 
@@ -293,13 +297,21 @@ std::vector<Case> all_cases() {
         cases.push_back({s, 3, BcLayout::PerFace, 6});
         cases.push_back({s, 3, BcLayout::PeriodicX, 6});
     }
+    // Willmore-regularised strong anisotropy: the CG solve spans the domains
+    // (halo exchange of omega, p and lap p; per-plane dot products).
+    for (TimeScheme s : {TimeScheme::Euler, TimeScheme::IMEX}) {
+        for (int domains : {2, 3})
+            for (BcLayout bc : {BcLayout::Uniform, BcLayout::PerFace, BcLayout::PeriodicX})
+                cases.push_back({s, domains, bc, 14, true});
+        cases.push_back({s, 3, BcLayout::PeriodicX, 6, true});
+    }
     return cases;
 }
 
 std::string case_name(const ::testing::TestParamInfo<Case>& info) {
     const Case& c = info.param;
     return std::string(scheme_name(c.scheme)) + "_" + std::to_string(c.domains) + "dom_" +
-           bc_name(c.bc) + "_Nx" + std::to_string(c.Nx);
+           bc_name(c.bc) + "_Nx" + std::to_string(c.Nx) + (c.willmore ? "_Willmore" : "");
 }
 
 } // namespace

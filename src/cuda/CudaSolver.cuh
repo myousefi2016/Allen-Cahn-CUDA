@@ -6,8 +6,12 @@
 #include "cuda/DeviceField.cuh"
 #include "cuda/ISolver.cuh"
 #include "cuda/Kernels.cuh"
+#include "cuda/WillmoreKernels.cuh"
+#include "cuda/WillmoreSolve.cuh"
 
 #include <memory>
+#include <utility>
+#include <vector>
 
 namespace ac::cuda {
 
@@ -80,6 +84,51 @@ public:
     [[nodiscard]] double compute_boundary_max_phi(int x_begin, int x_end, bool x_lo_face,
                                                   bool x_hi_face) const;
 
+    /// Phase-field part of an Euler / IMEX step: phi_new from phi_old, u_old
+    /// (explicit, or the linearly implicit Willmore solve when
+    /// physics.willmore_beta > 0), with phi's BCs applied. Requires params().dt.
+    void advance_phi();
+    /// Rest of an Euler step after advance_phi(): explicit thermal update,
+    /// u's BCs, and the old/new swaps.
+    void euler_thermal_and_swap();
+    /// Thermal part of imex_begin() after advance_phi().
+    void imex_begin_thermal();
+
+    // ── Willmore step building blocks (driven by solve_willmore_step) ──────
+    /// Double-precision vectors of the Willmore solve: residual, preconditioned
+    /// residual, direction, A times direction, increment (dphi), and tau.
+    enum class CgVector { R, Z, P, AP, X, Tau };
+    void willmore_omega();               ///< omega from phi_old + homogeneous BCs
+    void willmore_rhs_init();            ///< tau, rhs; x = z = p = 0, r = rhs; tau/dt (single)
+    void willmore_direction_bc();        ///< homogeneous BCs on p
+    void willmore_direction_laplacian(); ///< t = lap p + homogeneous BCs on t
+    void willmore_apply();               ///< Ap
+    void willmore_update_xr(double alpha);
+    void willmore_update_direction(double beta); ///< p = z + beta p
+    void willmore_finish();                      ///< phi_new = phi_old + x, phi's BCs
+    /// Exact min and max of tau over the interior cells (from willmore_rhs_init).
+    [[nodiscard]] std::pair<double, double> willmore_tau_range() const;
+    /// Chebyshev preconditioner z = M r (see apply_willmore_preconditioner):
+    /// first step from r scaled by `scale` (it also sets the single-precision
+    /// operator constants for the plan); the last step (or the first, with
+    /// `last`) writes z = x * inv_scale. Steps k = 1 .. degree - 1 each need
+    /// the current iterate's Laplacian first (willmore_precondition_laplacian).
+    void willmore_precondition_first(const ChebyshevPlan& plan, double scale, double inv_scale,
+                                     bool last);
+    void willmore_precondition_laplacian();
+    void willmore_precondition_step(const ChebyshevPlan& plan, int k, double inv_scale, bool last);
+    /// Per-plane interior sums of a*b for local X planes [x_begin, x_end).
+    [[nodiscard]] std::vector<double> cg_plane_dot(CgVector a, CgVector b, int x_begin,
+                                                   int x_end) const;
+    /// A CG vector on every cell, to and from the host (for testing).
+    void willmore_upload(CgVector v, const std::vector<double>& host);
+    [[nodiscard]] std::vector<double> willmore_download(CgVector v) const;
+    /// CG statistics of the last Willmore solve run by this solver's own
+    /// advance_phi() (single-domain runs).
+    [[nodiscard]] const WillmoreSolveStats& last_willmore_stats() const {
+        return last_willmore_stats_;
+    }
+
     /// Mutable access to kernel params (for multi-GPU dt updates).
     KernelParams& mutable_params() { return params_; }
 
@@ -102,6 +151,15 @@ private:
 
     /// Apply per-face BCs to a single field.
     void apply_bc_per_face(double* field, const PerFaceBoundary& face_bcs);
+
+    /// Apply the homogeneous form of phi's BCs (Dirichlet 0, zero flux,
+    /// periodic, Robin with gamma = 0): the boundary rule of the Willmore
+    /// operator's fields (omega, CG direction and its Laplacian).
+    void apply_homogeneous_phi_bc(double* field);
+    [[nodiscard]] const double* cg_vector(CgVector v) const;
+    [[nodiscard]] double* cg_vector(CgVector v);
+    /// Shared body of both cg_vector overloads (const-ness follows `self`).
+    template <typename Solver> static auto cg_vector_of(Solver& self, CgVector v);
 
     int device_id_; // first data member: initialised (device selected) before the streams
     SimulationConfig config_;
@@ -126,6 +184,22 @@ private:
 
     TimeScheme scheme_;
     std::size_t total_points_;
+
+    // Willmore regularisation (allocated only when physics.willmore_beta > 0).
+    PerFaceBoundary hom_phi_faces_;
+    DeviceField<double> w_tau_;                     // tau0 A^2
+    DeviceField<double> cg_x_, cg_r_, cg_z_, cg_p_; // increment, residual, z, direction
+    DeviceField<double> cg_Ap_, cg_t_;              // A p; lap p (also omega)
+    mutable DeviceField<double> plane_dot_scratch_; // one double per X plane
+    // Single-precision Chebyshev preconditioner: tau/dt, the scaled residual,
+    // two iterates (current and previous/next) and the current one's Laplacian.
+    GhostRules32 pc_ghosts_{};
+    Operator32 pc_op_{}; // operator constants of the plan being applied
+    DeviceField<float> pc_tdt_, pc_f_, pc_x_[2], pc_t_;
+    int pc_current_ = 0;                                   // index of the current iterate in pc_x_
+    mutable DeviceField<unsigned long long> pc_tau_range_; // min/max tau as double bits
+    WillmoreSolveStats last_willmore_stats_;
+    bool in_decomposition_ = false; // set by MultiGPUSolver: the solve spans domains
 };
 
 } // namespace ac::cuda

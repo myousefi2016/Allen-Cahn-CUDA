@@ -13,7 +13,8 @@ struct KernelParams {
     int Nx, Ny, Nz;
     double dx, dy, dz, dt;
     double epsilon, W0, tau0, lambda, delta, D;
-    int stencil_type; // 0 = 7pt, 1 = 27pt
+    double willmore_beta; // 0 = unregularised
+    int stencil_type;     // 0 = 7pt, 1 = 27pt
 
     static KernelParams from_config(const SimulationConfig& cfg) {
         KernelParams p{};
@@ -30,6 +31,7 @@ struct KernelParams {
         p.lambda = cfg.physics.lambda();
         p.delta = cfg.physics.delta;
         p.D = cfg.physics.D;
+        p.willmore_beta = cfg.physics.willmore_beta;
         p.stencil_type = (cfg.stencil == StencilType::Isotropic27Point) ? 1 : 0;
         return p;
     }
@@ -250,18 +252,31 @@ __device__ __forceinline__ double anisotropic_divergence(const double* __restric
            (flux_z(z) - flux_z(z - 1)) / p.dz;
 }
 
-/// dphi/dt of the Allen-Cahn equation at interior cell (x, y, z):
-///   tau0 A(n)^2 dphi/dt = div F(grad phi) - dF/dphi(phi, u),
-/// with n from the central-difference gradient at the cell.
-__device__ __forceinline__ double allen_cahn_rate(const double* __restrict__ phi,
-                                                  const double* __restrict__ u, int x, int y, int z,
-                                                  const KernelParams& p) {
+/// Relaxation time tau0 A(n)^2 at interior cell (x, y, z), with n from the
+/// central-difference gradient at the cell.
+__device__ __forceinline__ double allen_cahn_tau(const double* __restrict__ phi, int x, int y,
+                                                 int z, const KernelParams& p) {
     const double an = compute_An(gradient_x(phi, x, y, z, p.Ny, p.Nz, p.dx),
                                  gradient_y(phi, x, y, z, p.Ny, p.Nz, p.dy),
                                  gradient_z(phi, x, y, z, p.Ny, p.Nz, p.dz), p.epsilon);
+    return p.tau0 * an * an;
+}
+
+/// Right-hand side of tau dphi/dt = div F(grad phi) - dF/dphi(phi, u) at
+/// interior cell (x, y, z).
+__device__ __forceinline__ double allen_cahn_force(const double* __restrict__ phi,
+                                                   const double* __restrict__ u, int x, int y,
+                                                   int z, const KernelParams& p) {
     const int c = idx3d(x, y, z, p.Ny, p.Nz);
-    return (anisotropic_divergence(phi, x, y, z, p) - dF_dphi(phi[c], u[c], p.lambda)) /
-           (p.tau0 * an * an);
+    return anisotropic_divergence(phi, x, y, z, p) - dF_dphi(phi[c], u[c], p.lambda);
+}
+
+/// dphi/dt of the (unregularised) Allen-Cahn equation at interior cell (x, y, z):
+///   tau0 A(n)^2 dphi/dt = div F(grad phi) - dF/dphi(phi, u).
+__device__ __forceinline__ double allen_cahn_rate(const double* __restrict__ phi,
+                                                  const double* __restrict__ u, int x, int y, int z,
+                                                  const KernelParams& p) {
+    return allen_cahn_force(phi, u, x, y, z, p) / allen_cahn_tau(phi, x, y, z, p);
 }
 
 // ── Kernel declarations ────────────────────────────────────────────────────

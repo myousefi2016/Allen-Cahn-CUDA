@@ -140,8 +140,9 @@ static SimulationConfig parse_config(const json& j) {
     // Physics
     if (j.contains("physics")) {
         const auto& p = j["physics"];
-        require_known_keys(p, "physics",
-                           {"delta", "epsilon", "W0", "beta0", "D", "d0", "a1", "a2"});
+        require_known_keys(
+            p, "physics",
+            {"delta", "epsilon", "W0", "beta0", "D", "d0", "a1", "a2", "willmore_beta"});
         if (p.contains("delta"))
             cfg.physics.delta = p["delta"].get<Real>();
         if (p.contains("epsilon"))
@@ -158,6 +159,8 @@ static SimulationConfig parse_config(const json& j) {
             cfg.physics.a1 = p["a1"].get<Real>();
         if (p.contains("a2"))
             cfg.physics.a2 = p["a2"].get<Real>();
+        if (p.contains("willmore_beta"))
+            cfg.physics.willmore_beta = p["willmore_beta"].get<Real>();
     }
 
     // Grid
@@ -328,6 +331,28 @@ void SimulationConfig::validate() const {
         throw std::invalid_argument("d0 must be positive");
     if (physics.epsilon < 0.0 || physics.epsilon >= 1.0 / 3.0) {
         throw std::invalid_argument("epsilon must be in [0, 1/3)");
+    }
+    if (!(physics.willmore_beta >= 0.0))
+        throw std::invalid_argument("physics.willmore_beta must be >= 0");
+    // Above 1/15 the Hessian of the gradient energy 1/2 W0^2 A(p)^2 |p|^2 is
+    // indefinite (first along <100>): the Allen-Cahn equation has negative
+    // diffusion there and its discrete solutions do not converge under grid
+    // refinement. The Willmore term restores well-posedness.
+    if (physics.epsilon > 1.0 / 15.0 && physics.willmore_beta <= 0.0) {
+        throw std::invalid_argument(
+            "epsilon = " + std::to_string(physics.epsilon) +
+            " exceeds 1/15, where the anisotropic gradient energy is not convex and the "
+            "phase-field equation is ill-posed; set physics.willmore_beta > 0 to regularise it "
+            "(docs/THEORY.md, Willmore regularisation)");
+    }
+    // The Willmore term is stiff (fourth order) and is integrated linearly
+    // implicitly; only the Euler and IMEX schemes have that phi update.
+    if (physics.willmore_beta > 0.0 && time.scheme != TimeScheme::Euler &&
+        time.scheme != TimeScheme::IMEX) {
+        throw std::invalid_argument(
+            "physics.willmore_beta > 0 requires time.scheme \"euler\" or \"imex\" (the "
+            "fourth-order Willmore term is treated linearly implicitly in their phase-field "
+            "update; heun and rk4 are fully explicit)");
     }
 
     // Time validation

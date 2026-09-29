@@ -4,7 +4,8 @@
         "epsilon": 0.07,
         "W0": 1.0,
         "D": 2.0,
-        "d0": 0.5
+        "d0": 0.5,
+        "willmore_beta": 0.0149
     },
     "grid": {
         "Nx": 128,
@@ -15,14 +16,14 @@
         "dz": 0.4
     },
     "time": {
-        "dt": 0.01,
-        "max_steps": 500,
-        "scheme": "euler",
+        "dt": 0.005,
+        "max_steps": 1000,
+        "scheme": "imex",
         "adaptive": false
     },
     "stencil": "7pt",
     "output": {
-        "frequency": 50,
+        "frequency": 100,
         "output_dir": "./out",
         "format": "raw",
         "async_io": true

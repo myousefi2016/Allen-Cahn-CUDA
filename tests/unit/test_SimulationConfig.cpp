@@ -18,7 +18,8 @@ protected:
 TEST_F(SimulationConfigTest, DefaultValues) {
     SimulationConfig cfg;
     EXPECT_DOUBLE_EQ(cfg.physics.delta, 0.8);
-    EXPECT_DOUBLE_EQ(cfg.physics.epsilon, 0.07);
+    EXPECT_DOUBLE_EQ(cfg.physics.epsilon, 0.05);
+    EXPECT_DOUBLE_EQ(cfg.physics.willmore_beta, 0.0);
     EXPECT_DOUBLE_EQ(cfg.physics.W0, 1.0);
     EXPECT_DOUBLE_EQ(cfg.physics.D, 2.0);
     EXPECT_EQ(cfg.grid.Nx, 600);
@@ -344,4 +345,11 @@ TEST_F(SimulationConfigTest, PeriodicFaceRequiresPeriodicOppositeFace) {
 
 TEST_F(SimulationConfigTest, BoundaryAcceptsOnlyPhiAndU) {
     expect_rejected(R"({"boundary": {"psi": {"type": "neumann"}}})", {"psi", "boundary"});
+}
+
+TEST_F(SimulationConfigTest, ParsesWillmoreBeta) {
+    auto cfg = SimulationConfig::from_json_string(
+        R"({"physics": {"epsilon": 0.12, "willmore_beta": 1.5}, "time": {"scheme": "euler"}})");
+    EXPECT_DOUBLE_EQ(cfg.physics.willmore_beta, 1.5);
+    EXPECT_DOUBLE_EQ(cfg.physics.epsilon, 0.12);
 }

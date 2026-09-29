@@ -1,6 +1,8 @@
 #include "cuda/CudaSolver.cuh"
+#include "cuda/WillmoreKernels.cuh"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <spdlog/spdlog.h>
@@ -163,6 +165,32 @@ CudaSolver::CudaSolver(const SimulationConfig& config)
         k4_u_ = DeviceField<double>(total_points_);
     }
 
+    if (params_.willmore_beta > 0.0) {
+        if (scheme_ != TimeScheme::Euler && scheme_ != TimeScheme::IMEX)
+            throw std::invalid_argument(
+                "CudaSolver: physics.willmore_beta > 0 requires the euler or imex scheme");
+        // Homogeneous form of phi's BCs for the Willmore operator's fields.
+        hom_phi_faces_ = config_.boundary.per_face
+                             ? config_.boundary.phi_faces
+                             : PerFaceBoundary::uniform(config_.boundary.phi_bc);
+        for (auto& f : hom_phi_faces_.faces) {
+            f.value = 0.0;
+            f.flux = 0.0;
+            f.gamma = 0.0;
+        }
+        for (auto* f : {&w_tau_, &cg_x_, &cg_r_, &cg_z_, &cg_p_, &cg_Ap_, &cg_t_})
+            *f = DeviceField<double>(total_points_);
+        plane_dot_scratch_ = DeviceField<double>(static_cast<std::size_t>(config.grid.Nx));
+        // Preconditioner fields. Zeroed once: their edge and corner ghost cells
+        // are never written (no stencil reads them), so they stay defined.
+        pc_ghosts_ = make_ghost_rules32(hom_phi_faces_, params_);
+        for (auto* f : {&pc_tdt_, &pc_f_, &pc_x_[0], &pc_x_[1], &pc_t_}) {
+            *f = DeviceField<float>(total_points_);
+            f->zero_async(compute_stream_);
+        }
+        pc_tau_range_ = DeviceField<unsigned long long>(2);
+    }
+
     spdlog::info("CudaSolver initialized: {} total points, scheme={}", total_points_,
                  scheme_ == TimeScheme::Euler  ? "Euler"
                  : scheme_ == TimeScheme::Heun ? "Heun"
@@ -203,14 +231,26 @@ void CudaSolver::step(double dt) {
 
 void CudaSolver::step_euler(double dt) {
     params_.dt = dt;
+    advance_phi();
+    euler_thermal_and_swap();
+}
 
-    // Phase field update (fused kernel)
+void CudaSolver::advance_phi() {
+    if (params_.willmore_beta > 0.0) {
+        if (in_decomposition_)
+            throw std::logic_error("CudaSolver::advance_phi: a Willmore step of a domain-"
+                                   "decomposed run must be driven by MultiGPUSolver");
+        last_willmore_stats_ =
+            solve_willmore_step({WillmoreDomain{this, device_id_, 1, params_.Nx - 1, 1}}, config_,
+                                [](WillmoreBuffer) {});
+        return;
+    }
     launch_allen_cahn_fused(phi_old_.data(), phi_new_.data(), u_old_.data(), params_,
                             compute_stream_);
-
-    // Apply BCs to phi
     apply_phi_bc(phi_new_.data());
+}
 
+void CudaSolver::euler_thermal_and_swap() {
     // Thermal update
     launch_thermal_equation(u_old_.data(), u_new_.data(), phi_new_.data(), phi_old_.data(), params_,
                             compute_stream_);
@@ -366,13 +406,15 @@ void CudaSolver::step_imex(double dt) {
 
 void CudaSolver::imex_begin(double dt) {
     params_.dt = dt;
+
+    // Phase field (explicit, or linearly implicit with the Willmore term)
+    advance_phi();
+    imex_begin_thermal();
+}
+
+void CudaSolver::imex_begin_thermal() {
     int N = static_cast<int>(total_points_);
     auto cfg = LaunchConfig::for_1d(total_points_, 256);
-
-    // Explicit step for Allen-Cahn (reaction + anisotropy are explicit)
-    launch_allen_cahn_fused(phi_old_.data(), phi_new_.data(), u_old_.data(), params_,
-                            compute_stream_);
-    apply_phi_bc(phi_new_.data());
 
     // Implicit step for thermal diffusion
     // Solve: (I - dt*D*Laplacian) u_new = u_old + 0.5*(phi_new - phi_old)
@@ -452,6 +494,142 @@ void CudaSolver::apply_u_bc(double* field) {
         apply_bc_per_face(field, config_.boundary.u_faces);
     else
         apply_bc(field, config_.boundary.u_bc);
+}
+
+void CudaSolver::apply_homogeneous_phi_bc(double* field) {
+    apply_bc_per_face(field, hom_phi_faces_);
+}
+
+template <typename Solver> auto CudaSolver::cg_vector_of(Solver& self, CgVector v) {
+    switch (v) {
+    case CgVector::R:
+        return self.cg_r_.data();
+    case CgVector::Z:
+        return self.cg_z_.data();
+    case CgVector::P:
+        return self.cg_p_.data();
+    case CgVector::AP:
+        return self.cg_Ap_.data();
+    case CgVector::X:
+        return self.cg_x_.data();
+    case CgVector::Tau:
+        return self.w_tau_.data();
+    }
+    throw std::logic_error("unknown CgVector");
+}
+
+const double* CudaSolver::cg_vector(CgVector v) const {
+    return cg_vector_of(*this, v);
+}
+
+double* CudaSolver::cg_vector(CgVector v) {
+    return cg_vector_of(*this, v);
+}
+
+// ── Willmore step building blocks ──────────────────────────────────────────
+
+void CudaSolver::willmore_omega() {
+    launch_willmore_omega(phi_old_.data(), cg_t_.data(), params_, compute_stream_);
+    apply_homogeneous_phi_bc(cg_t_.data());
+}
+
+void CudaSolver::willmore_rhs_init() {
+    launch_willmore_rhs_init(phi_old_.data(), u_old_.data(), cg_t_.data(), w_tau_.data(),
+                             cg_x_.data(), cg_r_.data(), cg_z_.data(), cg_p_.data(), params_,
+                             compute_stream_);
+    launch_precond_tau_scan(w_tau_.data(), pc_tdt_.data(), 1.0 / params_.dt, pc_tau_range_.data(),
+                            params_, compute_stream_);
+}
+
+std::pair<double, double> CudaSolver::willmore_tau_range() const {
+    unsigned long long bits[2];
+    CUDA_CHECK(cudaMemcpyAsync(bits, pc_tau_range_.data(), sizeof(bits), cudaMemcpyDeviceToHost,
+                               compute_stream_));
+    compute_stream_.synchronize();
+    return {std::bit_cast<double>(bits[0]), std::bit_cast<double>(bits[1])};
+}
+
+void CudaSolver::willmore_precondition_first(const ChebyshevPlan& plan, double scale,
+                                             double inv_scale, bool last) {
+    pc_current_ = 0;
+    pc_op_ = make_operator32(params_, plan.d_L);
+    launch_precond_first(cg_r_.data(), scale, pc_f_.data(), pc_x_[0].data(), pc_tdt_.data(), pc_op_,
+                         static_cast<float>(plan.s0), pc_ghosts_, last ? cg_z_.data() : nullptr,
+                         inv_scale, params_, compute_stream_);
+}
+
+void CudaSolver::willmore_precondition_laplacian() {
+    launch_precond_laplacian(pc_x_[pc_current_].data(), pc_t_.data(), pc_op_, pc_ghosts_, params_,
+                             compute_stream_);
+}
+
+void CudaSolver::willmore_precondition_step(const ChebyshevPlan& plan, int k, double inv_scale,
+                                            bool last) {
+    const auto i = static_cast<std::size_t>(k - 1);
+    const int next = 1 - pc_current_;
+    launch_precond_step(pc_t_.data(), pc_x_[pc_current_].data(), pc_x_[next].data(), k == 1,
+                        pc_f_.data(), pc_tdt_.data(), pc_op_, static_cast<float>(plan.step_a[i]),
+                        static_cast<float>(plan.step_b[i]), pc_ghosts_,
+                        last ? cg_z_.data() : nullptr, inv_scale, params_, compute_stream_);
+    if (!last)
+        pc_current_ = next;
+}
+
+void CudaSolver::willmore_direction_bc() {
+    apply_homogeneous_phi_bc(cg_p_.data());
+}
+
+void CudaSolver::willmore_direction_laplacian() {
+    launch_laplacian_interior(cg_p_.data(), cg_t_.data(), params_, compute_stream_);
+    apply_homogeneous_phi_bc(cg_t_.data());
+}
+
+void CudaSolver::willmore_apply() {
+    launch_willmore_apply(cg_p_.data(), cg_t_.data(), w_tau_.data(), cg_Ap_.data(), params_,
+                          compute_stream_);
+}
+
+void CudaSolver::willmore_update_xr(double alpha) {
+    launch_cg_update_xr(cg_x_.data(), cg_r_.data(), cg_p_.data(), cg_Ap_.data(), alpha, params_,
+                        compute_stream_);
+}
+
+void CudaSolver::willmore_update_direction(double beta) {
+    launch_cg_direction(cg_z_.data(), cg_p_.data(), beta, params_, compute_stream_);
+}
+
+void CudaSolver::willmore_finish() {
+    launch_willmore_finish(phi_old_.data(), cg_x_.data(), phi_new_.data(), params_,
+                           compute_stream_);
+    apply_phi_bc(phi_new_.data());
+}
+
+std::vector<double> CudaSolver::cg_plane_dot(CgVector a, CgVector b, int x_begin, int x_end) const {
+    std::vector<double> out(static_cast<std::size_t>(std::max(0, x_end - x_begin)));
+    if (out.empty())
+        return out;
+    launch_plane_dot(cg_vector(a), cg_vector(b), plane_dot_scratch_.data(), x_begin, x_end, params_,
+                     compute_stream_);
+    CUDA_CHECK(cudaMemcpyAsync(out.data(), plane_dot_scratch_.data(), out.size() * sizeof(double),
+                               cudaMemcpyDeviceToHost, compute_stream_));
+    compute_stream_.synchronize();
+    return out;
+}
+
+void CudaSolver::willmore_upload(CgVector v, const std::vector<double>& host) {
+    if (host.size() != total_points_)
+        throw std::invalid_argument("willmore_upload: size mismatch");
+    CUDA_CHECK(cudaMemcpyAsync(cg_vector(v), host.data(), total_points_ * sizeof(double),
+                               cudaMemcpyHostToDevice, compute_stream_));
+    compute_stream_.synchronize();
+}
+
+std::vector<double> CudaSolver::willmore_download(CgVector v) const {
+    std::vector<double> host(total_points_);
+    CUDA_CHECK(cudaMemcpyAsync(host.data(), cg_vector(v), total_points_ * sizeof(double),
+                               cudaMemcpyDeviceToHost, compute_stream_));
+    compute_stream_.synchronize();
+    return host;
 }
 
 void CudaSolver::apply_boundary_conditions() {

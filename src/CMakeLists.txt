@@ -23,6 +23,8 @@ add_library(ac_cuda STATIC
     cuda/CudaUtils.cu
     cuda/DeviceField.cu
     cuda/AllenCahnKernels.cu
+    cuda/WillmoreKernels.cu
+    cuda/WillmoreSolve.cu
     cuda/ThermalKernels.cu
     cuda/BoundaryKernels.cu
     cuda/ReductionKernels.cu

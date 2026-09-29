@@ -41,7 +41,7 @@ protected:
     }
 
     /// Build a SimulationConfig for the anisotropy force tests.
-    SimulationConfig make_config(double epsilon) {
+    SimulationConfig make_config(double epsilon, double willmore_beta = 0.0) {
         SimulationConfig cfg;
         cfg.grid.Nx = 16;
         cfg.grid.Ny = 16;
@@ -53,6 +53,7 @@ protected:
         cfg.time.scheme = TimeScheme::Euler;
         cfg.physics.delta = 0.8;
         cfg.physics.epsilon = epsilon;
+        cfg.physics.willmore_beta = willmore_beta;
         cfg.physics.W0 = 1.0;
         cfg.stencil = StencilType::Standard7Point;
         cfg.boundary.phi_bc = {BCType::Dirichlet, -1.0, 0.0, 0.0, 0.0, 0.0};
@@ -81,11 +82,11 @@ protected:
     }
 };
 
-/// Verify that the anisotropy force is active: ε=0.10 produces different
+/// Verify that the anisotropy force is active: ε=0.05 produces different
 /// evolution than ε=0.
 TEST_F(AnisotropyForceTest, AnisotropyIsActive) {
-    // Run one Euler step with epsilon = 0.10
-    auto cfg_aniso = make_config(0.10);
+    // Run one Euler step with epsilon = 0.05
+    auto cfg_aniso = make_config(0.05);
     Grid grid_aniso = cfg_aniso.make_grid();
     FieldData phi_aniso(grid_aniso, "phi"), u_aniso(grid_aniso, "u");
     init_tanh_sphere(phi_aniso, u_aniso, cfg_aniso);
@@ -117,7 +118,7 @@ TEST_F(AnisotropyForceTest, AnisotropyIsActive) {
                     max_diff = diff;
             }
 
-    EXPECT_GT(max_diff, 1e-10) << "Anisotropy (epsilon=0.10) had no effect on phi evolution";
+    EXPECT_GT(max_diff, 1e-10) << "Anisotropy (epsilon=0.05) had no effect on phi evolution";
 }
 
 namespace {
@@ -251,16 +252,18 @@ TEST_F(AnisotropyForceTest, GridAnisotropyVanishesUnderRefinement) {
     EXPECT_LT(dev_fine, dev_coarse / 3.0);
 }
 
-/// Verify that all fields remain finite after a step with anisotropy.
+/// Verify that all fields remain finite over 50 steps with strong,
+/// regularised anisotropy (eps = 0.12 > 1/15, Willmore beta = 1).
 TEST_F(AnisotropyForceTest, FieldsRemainFinite) {
-    auto cfg = make_config(0.10);
+    auto cfg = make_config(0.12, 1.0);
     Grid grid = cfg.make_grid();
     FieldData phi(grid, "phi"), u(grid, "u");
     init_tanh_sphere(phi, u, cfg);
 
     CudaSolver solver(cfg);
     solver.initialize(phi, u);
-    solver.step(cfg.time.dt);
+    for (int s = 0; s < 50; ++s)
+        solver.step(cfg.time.dt);
     solver.copy_phi_to_host(phi);
     solver.copy_u_to_host(u);
 

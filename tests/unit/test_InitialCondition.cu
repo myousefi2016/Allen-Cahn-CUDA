@@ -29,7 +29,7 @@ protected:
         cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = 0.4;
 
         cfg.physics.delta = 0.8;
-        cfg.physics.epsilon = 0.07;
+        cfg.physics.epsilon = 0.05; // <= 1/15: well-posed without regularisation
         cfg.physics.W0 = 1.0;
         cfg.physics.D = 2.0;
         cfg.physics.d0 = 0.5;

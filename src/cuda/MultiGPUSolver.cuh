@@ -6,6 +6,7 @@
 #include "cuda/DeviceField.cuh"
 #include "cuda/ISolver.cuh"
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -55,10 +56,19 @@ private:
 
     /// Which device buffers an exchange refreshes.
     enum class Buffers {
-        Current,       ///< phi_old_ and u_old_
-        Stage,         ///< phi_tmp_ and u_tmp_ (Heun / RK4 intermediate state)
-        JacobiIterate, ///< u_new_ (IMEX iterate)
+        Current,                         ///< phi_old_ and u_old_
+        Stage,                           ///< phi_tmp_ and u_tmp_ (Heun / RK4 intermediate state)
+        JacobiIterate,                   ///< u_new_ (IMEX iterate)
+        WillmoreOmega,                   ///< omega (cg_t_) of a Willmore step
+        WillmoreDirection,               ///< CG direction (cg_p_)
+        WillmoreDirectionLaplacian,      ///< lap of the CG direction (cg_t_)
+        WillmorePreconditionerIterate,   ///< current Chebyshev iterate (single precision)
+        WillmorePreconditionerLaplacian, ///< its Laplacian (pc_t_, single precision)
     };
+
+    /// Phase-field part of an Euler / IMEX step in every domain (see
+    /// CudaSolver::advance_phi); the Willmore solve spans all domains.
+    void advance_phi(double dt);
 
     /// Build every domain (device, slab, sub-solver); called by the constructor.
     void build_domains();
@@ -76,9 +86,10 @@ private:
     /// Refresh periodic X ghost planes, then inter-domain halos, for `which`.
     void exchange(Buffers which);
 
-    /// Copy `count` YZ planes between (possibly different) devices.
-    static void copy_planes(double* dst, int dst_device, int x_dst, const double* src,
-                            int src_device, int x_src, int count, int Ny, int Nz,
+    /// Copy `count` YZ planes of `elem_size`-byte values between (possibly
+    /// different) devices.
+    static void copy_planes(void* dst, int dst_device, int x_dst, const void* src, int src_device,
+                            int x_src, int count, int Ny, int Nz, std::size_t elem_size,
                             cudaStream_t stream);
 
     SimulationConfig config_;

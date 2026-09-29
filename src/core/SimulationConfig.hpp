@@ -27,13 +27,20 @@ struct BoundaryConfig {
 // ── Physics parameters ─────────────────────────────────────────────────────
 struct PhysicsParams {
     Real delta = 0.8;    ///< Dimensionless undercooling
-    Real epsilon = 0.07; ///< Anisotropy strength
+    Real epsilon = 0.05; ///< Anisotropy strength (> 1/15 requires willmore_beta > 0)
     Real W0 = 1.0;       ///< Interface width parameter
     Real beta0 = 0.0;    ///< Kinetic coefficient
     Real D = 2.0;        ///< Thermal diffusivity
     Real d0 = 0.5;       ///< Capillary length
     Real a1 = 1.25 / std::sqrt(2.0);
     Real a2 = 0.64;
+    /// Willmore regularisation strength beta >= 0 (dimensionless): adds
+    /// (beta/2) * int omega^2, omega = W0^2 lap(phi) + phi - phi^3, to the free
+    /// energy. omega vanishes on the planar equilibrium profile, so only curved
+    /// interfaces and corners are affected (radius ~ W0 sqrt(beta / |stiffness|)).
+    /// Required (> 0) when epsilon > 1/15, where the gradient energy is not
+    /// convex and the unregularised equation is ill-posed.
+    Real willmore_beta = 0.0;
 
     [[nodiscard]] Real lambda() const { return W0 * a1 / d0; }
     [[nodiscard]] Real tau0() const {

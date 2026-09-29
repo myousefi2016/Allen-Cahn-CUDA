@@ -225,7 +225,10 @@ A(∇φ) = (1 - 3ε)·[1 + (4ε/(1-3ε))·(φx⁴ + φy⁴ + φz⁴)/(φx² + φ
 
 **Special cases:**
 - `ε = 0` → `A = 1` (isotropic growth)
-- `ε → 1/3` → maximum anisotropy (faceted growth)
+- `ε > 1/15` → the gradient energy is no longer convex and the equation is
+  ill-posed without regularisation (Section 4.3). `ε < 1/3` is required
+  because `A` is evaluated as `(1−3ε)·[1 + (4ε/(1−3ε))·…]`; `A` itself spans
+  `[1 − 5ε/3, 1 + ε]` since `Σ n̂ᵢ⁴ ∈ [1/3, 1]`
 - `|∇φ|² < 10⁻³⁰` → `A = 1 - 3ε/5` (spherical-average isotropic limit; see below)
 
 **Spherical-average derivation of the regularized fallback.** When
@@ -281,6 +284,348 @@ graph TD
     style D3 fill:#99f,stroke:#333,stroke-width:1px
     style D4 fill:#9f9,stroke:#333,stroke-width:1px
 ```
+
+### 4.3 Well-posedness and Willmore regularisation (ε > 1/15)
+
+**The threshold.** The flux is `F = ∂f/∂p` of `f(p) = ½W₀²A(p)²|p|²`, so
+the Allen–Cahn operator `∇·F(∇φ)` is elliptic exactly when the Hessian
+`∂²f/∂p²` is positive definite for every direction `p` (Legendre–Hadamard).
+Scanning 20 000 directions (plus the exact ⟨100⟩, ⟨110⟩, ⟨111⟩) with the
+code's `A`, its smallest eigenvalue is +0.2625 at ε = 0.05, +0.00107 at
+ε = 0.0666, −0.00053 at ε = 0.0667 and −0.896 at ε = 0.12, always first along
+⟨100⟩; bisection puts the sign change at ε = 0.066667 = 1/15. In the {100}
+plane `A = 1 + ε cos 4θ` and the sharp-interface stiffness `A + A'' =
+1 − 15ε cos 4θ` gives the same bound. Above 1/15 the equation has negative
+diffusion along ⟨100⟩: this is a property of the model, not of the code.
+Physically it corresponds to missing orientations (corners), which a
+continuum model can only describe with an additional length scale.
+
+**Evidence in the solver.** The same seed (radius 4, in a box of side 50.4,
+Δ = 0.55 with u = −Δ initially and on the walls, zero-flux φ, 27-point
+stencil, W₀ = 1, D = 2, d₀ = 0.5, Euler) grown to t = 15 at h = 0.8, 0.4 and
+0.2 (64³, 127³, 253³; dt = 0.03, 0.0075, 0.001875 ∝ h²). Both differences
+between successive resolutions are taken on the interior nodes of the
+h = 0.8 grid, which are nodes of all three grids; their ratio is 4 for
+second-order convergence and below 1 when refinement moves φ further than
+the previous refinement did. The last column is the largest difference
+between h = 0.4 and h = 0.2 over every interior node of the h = 0.4 grid.
+
+| ε | ‖φ₀.₈ − φ₀.₄‖∞ | ‖φ₀.₄ − φ₀.₂‖∞ | ratio | ratio of the mean \|·\| | ‖φ₀.₄ − φ₀.₂‖∞, all h = 0.4 nodes |
+|---|---|---|---|---|---|
+| 0 | 1.00e-1 | 2.19e-2 | 4.57 | 4.22 | 2.30e-2 |
+| 0.05 | 9.95e-2 | 2.21e-2 | 4.51 | 4.43 | 2.21e-2 |
+| 0.12 (β = 0) | 1.83e-1 | 7.04e-2 | 2.61 | **0.87** | **2.87e-1** |
+
+At ε = 0.12 without regularisation the mean difference grows under
+refinement, and the largest change of the second refinement, 0.287, lies
+between the h = 0.8 nodes, 4.1 times the largest change on them and larger
+than any change of the first refinement: halving h creates structure at the
+scale of the new grid. In the converging cases the two maxima agree within
+5 %.
+
+`SimulationConfig::validate()` therefore rejects ε > 1/15 unless
+`physics.willmore_beta > 0`.
+
+**Regularised model.** With `h(φ) = φ − φ³` and
+`ω = W₀²∇²φ + h(φ)` (ω ≡ 0 on the planar equilibrium profile, so flat
+interfaces and the calibrated kinetics are unchanged), the free energy gains
+`(β/2)∫ω²` (Wheeler 2006 [10]; Torabi et al. 2009 [11]) and the equation becomes
+
+```
+τ(n̂) ∂φ/∂t = ∇·F(∇φ) + h(φ) − λu(1−φ²)² − β M(φ),
+M = W₀²∇²ω + h'(φ) ω,     h'(φ) = 1 − 3φ².
+```
+
+Linearised about a flat front, the fourth-order term bounds the growth
+rate of the backward-diffusing modes, which restores well-posedness: a
+perturbation of wavenumber k along a ⟨100⟩ front grows at a rate
+∝ |S|W₀²k² − βW₀⁴k⁴, so only k < 1/ℓ grow, and corners are rounded on the
+length `ℓ = W₀√(β/|S|)`. S is the most negative eigenvalue of the Hessian
+above, always along ⟨100⟩, where it equals `(1 + ε)(1 − 15ε)` (the scan
+gives −0.0535, −0.55, −0.896 and −1.4375 at ε = 0.07, 0.10, 0.12 and 0.15).
+
+**Refinement with the regularisation** (same setup as the table above,
+ε = 0.12):
+
+| β | ℓ/W₀ | ‖φ₀.₈ − φ₀.₄‖∞ | ‖φ₀.₄ − φ₀.₂‖∞ | ratio | ratio of the mean \|·\| | ‖φ₀.₄ − φ₀.₂‖∞, all h = 0.4 nodes | Chebyshev degree (h = 0.8, 0.4, 0.2) |
+|---|---|---|---|---|---|---|---|
+| 0.25 | 0.53 | 2.60e-1 | 6.67e-2 | 3.90 | 3.76 | 6.67e-2 | 19, 36, 71 |
+| 1 | 1.06 | 6.78e-1 | 2.02e-1 | 3.36 | 3.16 | 2.04e-1 | 33, 70, 145 |
+| 4 | 2.11 | 1.25 | 5.54e-1 | 2.25 | 2.05 | 5.54e-1 | 51, 129, 287 |
+
+Every regularised ladder converges, and convergence is best for the smallest
+β. These ladders refine dt with h², so they also carry the time error of the
+linearly implicit step, whose constant grows with β (see the time stepping
+paragraph below): at β = 1 the time error of dt = 0.0075 at h = 0.4 alone is
+about 0.25 in the max norm (first-order Richardson estimate from a time
+ladder at h = 0.4), the size of ‖φ₀.₄ − φ₀.₂‖∞ = 0.20. The regularisation
+also changes the solution where none is needed: at ε = 0.05 (convex) and
+h = 0.4, dt = 0.0075, φ moves by 0.19, 0.50 and 1.03 in the max norm
+(1.4e-3, 5.8e-3 and 2.0e-2 in the mean) for β = 0.25, 1 and 4 (at the same
+dt, so this includes the part of the time error that grows with β), against
+a spatial error of 0.028 (4.3e-4) of the unregularised solution there; the
+solid fraction at t = 15 drops from 4.25 % to 4.16, 3.93 and 3.26 %.
+
+**Choice of β.** The rule, fixed before the β = 0.25 and β = 4 ladders were
+run: the smallest tested ℓ at ε = 0.12 whose ladder has a ratio above 2 in
+both norms (each halving of h removes more than half of the difference,
+closer to the formal order 2 than to stagnation). That is β = 0.25,
+ℓ* = 0.528 W₀, which is also the one that converges best and changes the
+solution least. The shipped configurations keep this corner length at every
+ε, `β(ε) = |S(ε)| ℓ*²/W₀²`, so the band of growing modes (k < 1/ℓ*) is
+resolved by the same margin at every ε:
+
+| ε | S(ε) | β (3 significant digits) |
+|---|---|---|
+| 0.07 | −0.0535 | 0.0149 |
+| 0.10 | −0.55 | 0.153 |
+| 0.12 | −0.896 | 0.25 |
+| 0.15 | −1.4375 | 0.401 |
+
+Each shipped configuration's own refinement ladder (time error removed; see
+the choice of dt below) validates its β: the ratios are 4.7–6.0 in both
+norms. Values of β below 0.25 at ε = 0.12 were not tested.
+
+**Time stepping (linearly implicit Euler).** `M` is split into its bulk
+linearisation `L = W₀⁴∇⁴ − 4W₀²∇² + 4` (exact about φ = ±1) and a remainder,
+and the increment `δφ = φⁿ⁺¹ − φⁿ` solves
+
+```
+(τ/dt + βL) δφ = ∇·F(∇φⁿ) − ∂F/∂φ(φⁿ, uⁿ) − β M(φⁿ)
+```
+
+on the interior cells. Every ∇² is the 7-point Laplacian with the
+homogeneous form of φ's boundary condition (Dirichlet 0, zero flux, periodic,
+Robin with γ = 0), which is symmetric for every accepted boundary condition;
+`L` is its square and τ > 0, so the matrix is symmetric positive definite. It
+is solved to a relative residual of 1e-10 by conjugate gradients with a
+Chebyshev polynomial preconditioner (§4.4). β = 0 recovers explicit Euler.
+The scheme requires `time.scheme` euler or imex (heun and rk4 are fully
+explicit and are rejected).
+
+**Evidence.**
+
+| Test | Result |
+|---|---|
+| `LinearisedAmplificationMatchesAnalyticSymbol` — one step of a Fourier mode on φ = −1 vs `g = 1 + dt(−W₀²s − 2 − βL_k)/(τ₀ + dt βL_k)` | agreement to ~5e-9 relative for modes (1,0,0), (3,2,1), (8,8,7); the last is −0.0104 where explicit Euler gives −326.8; the solve takes 2 outer iterations |
+| `VanishingBetaReducesToExplicitEuler` (β = 1e-13) | equal to the unregularised solver within 1e-12 |
+| `FirstOrderConvergenceInTime` | observed order 0.68, 0.82, 0.91, 0.95, 0.97 as dt halves from 0.02; explicit Euler at the same ε = 0.05, β = 0 blows up at dt = 0.02 and has order 0.999 below it |
+| `MultiGPUEquivalence/*_Willmore` | multi-GPU (2, 3 domains; uniform, per-face, periodic X) bit-identical to single GPU for Euler and IMEX |
+| `RegularisedConvergesUnregularisedDoesNot` (integration; the refinement ladder above in a box of 18.4, 24³/47³/93³, t = 7.5, both differences on the 24³ nodes) | ratios 0.889 (max) and 0.406 (mean) without the Willmore term, 3.56 and 3.90 with β = 0.25; red when the solver ignores β |
+
+The linearly implicit step has a larger first-order error constant than
+explicit Euler (at dt = 0.00125: 4.0e-3 vs 6.1e-5 in max norm at t = 0.4),
+the splitting error of freezing `L`; `dt` must be chosen with that in mind.
+
+**Choice of dt for the shipped configurations.** The rule, fixed before any
+spatial error was measured: dt is the largest of 0.02, 0.01, 0.005, 0.0025,
+0.00125, … (these divide the end time of every configuration, so the output,
+checkpoint and saturation-check intervals keep their times) whose time
+error does not exceed the spatial error of h = 0.4, in the max norm and in
+the mean, and which is stable. Both errors are measured per configuration,
+with its ε, β, Δ, stencil, boundary-condition types and seed radius, in the
+box and to the time of the refinement study above (side 50.4, t = 15):
+
+- time error at h = 0.4: `e_t(dt) = 2‖φ_dt − φ_dt/2‖` (first-order
+  Richardson; the ratio of successive differences is measured to be 2);
+- spatial error of h = 0.4: at each of h = 0.8, 0.4, 0.2 the first-order time
+  error is removed, `φ₀ = 2φ(dt = 0.000625) − φ(dt = 0.00125)`; then
+  `e_s = ‖φ₀(0.4) − φ₀(0.2)‖ / (1 − 1/R)` with R the ratio of the two
+  successive differences on the h = 0.8 nodes, the norm over every interior
+  node of the h = 0.4 grid (the nodes of e_t). R also validates β for that
+  configuration (above 2 in both norms).
+
+Stability. With the Willmore term implicit, the explicit thermal update of
+Euler limits dt: `Δt ≤ h²/(6D)` = 0.01333 (7-point) and `60h²/(184D)` =
+0.02609 (27-point) at h = 0.4, D = 2 (§10.1). Runs bracket both: 7-point
+stable at 0.0125 and blown up at 0.014 (step 163); 27-point stable at 0.025
+to t = 81 and blown up at 0.027 (step 646) and 0.03 (step 58). IMEX solves u
+implicitly and stayed stable at dt = 0.04 in every configuration.
+
+Results (e in the max norm / the mean; e_t at the chosen dt):
+
+| Configuration | ε, β | Stencil, φ walls | R | e_s(0.4) | Euler: dt, e_t | IMEX: dt, e_t |
+|---|---|---|---|---|---|---|
+| `default.json`, k8s base, README example (600³); `benchmark_small.json`, k8s dev (128³) | 0.07, 0.0149 | 7-point, Dirichlet | 5.23 / 5.99 | 0.057 / 1.0e-3 | 0.0025: 0.011 / 6.5e-4 | 0.005: 0.012 / 6.6e-4 |
+| Makefile `cuda-run-vtk` (128³) | 0.07, 0.0149 | 27-point, zero flux | 4.69 / 5.32 | 0.071 / 1.6e-3 | 0.005: 0.021 / 1.3e-3 | 0.01: 0.024 / 1.3e-3 |
+| `run_dendrite.json` (160³) | 0.12, 0.25 | 27-point, zero flux | 5.34 / 5.58 | 0.061 / 1.8e-3 | 0.000625: 0.023 / 1.6e-3 | 0.000625: 0.021 / 1.5e-3 |
+| `run_dendrite_large.json` (384³) | 0.10, 0.153 | 27-point, zero flux | 5.07 / 5.23 | 0.031 / 5.9e-4 | 0.00125: 0.012 / 5.4e-4 | 0.00125: 0.011 / 4.8e-4 |
+| `run_dendrite_long.json` (192³) | 0.15, 0.401 | 27-point, zero flux | 5.50 / 5.56 | 0.031 / 8.5e-4 | 0.0003125: 0.0131 / 6.2e-4 | 0.0003125: 0.0125 / 5.9e-4 |
+
+Every configuration's R is above 2 in both norms, so the corner length ℓ* is
+resolved at every shipped ε. In every configuration the next larger dt
+meets the max norm and fails the mean: the time error is spread more evenly
+over the front (its maximum is 14–23 times its mean) than the spatial error
+(35–56 times). IMEX, which differs from Euler only in treating u
+implicitly, has 0.57 of Euler's time error at ε = 0.07 and about 0.9 at
+ε ≥ 0.10, where the error of the φ step, common to both, dominates.
+
+**Choice of scheme.** Between Euler and IMEX, each at its own dt, the one
+with the lower measured cost per unit of simulated time (RTX 4090, median
+over 200 steps, no other process on the GPU):
+
+| Configuration | Euler: ms/step, ms per unit time | IMEX: ms/step, ms per unit time | Shipped |
+|---|---|---|---|
+| `benchmark_small.json` (128³) | 3.49–3.51, 1394–1406 | 6.24–6.29, 1249–1257 | IMEX, dt = 0.005 |
+| Makefile `cuda-run-vtk` (128³) | 3.54–3.57, 707–713 | 7.12–7.16, 712–716 | Euler, dt = 0.005 |
+| `run_dendrite.json` (160³) | 7.79, 12 456 | 11.05, 17 678 | Euler, dt = 0.000625 |
+| `run_dendrite_large.json` (384³) | 118.1, 94 453 | 164.2, 131 366 | Euler, dt = 0.00125 |
+| `run_dendrite_long.json` (192³) | 14.4, 46 198 | 20.3, 64 862 | Euler, dt = 0.0003125 |
+
+(ranges: four interleaved repetitions). For `cuda-run-vtk` Euler was
+cheaper in all four repetitions, by 0.4–0.7 %, and also needs 13 % less
+memory. The 600³ configurations (`default.json`, the k8s base and the README
+example) use Euler, dt = 0.0025: with β > 0 IMEX needs 24.9 GiB there, more
+than a 24 GB GPU has (Appendix C). The k8s dev overlay is by its own
+description the base with a smaller grid and fewer steps, so it keeps the
+base's scheme and dt. Two outer iterations in every step of every run above.
+
+### 4.4 Solving the implicit step
+
+The increment solves `A δφ = b` on the interior cells, with
+
+```
+A = T/dt + βL,   L = B²,   B = W₀²∇²ₕ − 2,   T = diag(τ),
+```
+
+∇²ₕ the 7-point Laplacian with the homogeneous boundary fill of §4.3.
+`src/cuda/WillmoreSolve.cu` solves it by conjugate gradients in double
+precision, preconditioned by a Chebyshev polynomial in `D⁻¹A`,
+`D = T/dt + β d_L` (`d_L` the interior diagonal of `L`), applied in single
+precision.
+
+**Spectral bounds.** ∇²ₕ is the Kronecker sum of one 1-D second-difference
+matrix per axis. Every accepted boundary condition keeps these symmetric: a
+Robin face (ghost = c · adjacent value) only changes an end diagonal by c, and
+a periodic axis couples its two ends in both directions (a periodic face
+without a periodic opposite face is rejected, `docs/DESIGN.md` §5.2). Their
+Gershgorin intervals therefore bound their spectra, and spec(∇²ₕ) lies in
+[ℓ, υ], the sums over the axes: [−4 Σ_d h_d⁻², 0] for zero-flux, Dirichlet
+and periodic faces, wider for a Robin face with c outside [0, 1] (α < 0).
+Then spec(B) lies in [W₀²ℓ − 2, W₀²υ − 2] and spec(L) in [L_min, L_max], the
+range of the square over that interval. For a vector v let
+`t = vᵀTv / (dt vᵀv)` and `l = vᵀLv / vᵀv`; the Rayleigh quotient of `D⁻¹A`
+is `g(t, l) = (t + βl) / (t + β d_L)`, monotone in t and in l, so
+spec(D⁻¹A) lies in [a, b], the extremes of g over t ∈ {τ_min/dt, τ_max/dt}
+and l ∈ {L_min, L_max}. τ_min and τ_max are the exact minimum and maximum of
+τ over the interior cells, reduced on the GPU at every step, so the bounds
+hold for the operator that is actually solved. For run_dendrite (β = 1,
+h = 0.4, dt = 0.005, ε = 0.12): [a, b] = [0.0409, 3.214], b/a = 78.5.
+
+**Preconditioner.** `M = p_k(D⁻¹A) D⁻¹`, p_k the Chebyshev polynomial of
+degree k on [a, b]: the spectrum of `MA` lies in [1 − e_k, 1 + e_k],
+`e_k = 1/T_k(σ)`, `σ = (b + a)/(b − a)`. `M` is symmetric positive definite:
+1 − λ p_k(λ) is the scaled Chebyshev polynomial, whose modulus stays below 1
+for 0 < λ < a + b, so p_k > 0 up to a + b. That margin above b (a relative
+a/b, 1/78.5 above) is far larger than any rounding of the bounds or of the
+single-precision operator. `M r` is computed from zero by the Chebyshev
+iteration in the single-update form
+`x_{j+1} = x_j + ρ_jρ_{j−1}(x_j − x_{j−1}) + (2ρ_j/δ) D⁻¹(r − A x_j)`
+(Saad [12], Algorithm 12.1 and the update after it), k − 1 applications of
+`A`. The residual `r − A x_j` is computed explicitly at every step, so there
+is no gap between a recursive and the true residual, and for a real spectrum
+the recurrence does not amplify earlier rounding errors (Gutknecht & Röllin
+[15], Algorithm 2 and Theorem 2).
+
+**Degree.** For conjugate gradients with an SPD preconditioner,
+`‖e_j‖_A ≤ 2 q^j ‖e₀‖_A` with `q = (√κ − 1)/(√κ + 1) = e_k/(1 + √(1 − e_k²))`
+for κ = (1 + e_k)/(1 − e_k). From x₀ = 0 this bounds the stopping quantity:
+`‖r_j‖/‖b‖ ≤ 2 q^j √κ_A`, `κ_A = (τ_max/dt + βL_max)/(τ_min/dt + βL_min)`.
+One outer iteration would need e_k ≈ tol/√κ_A, about 10⁻¹¹, far below the
+single-precision unit roundoff (6·10⁻⁸) in which the polynomial is applied.
+For j ≥ 2 iterations the degree needed is k_j ≈ ln(2√κ_A/tol)/(j acosh σ)
+plus a constant, so the inner work j·k_j hardly depends on j, while every
+outer iteration adds one double-precision operator application and four
+reductions: two is the cheapest possible count. The solver takes the lowest
+degree with `2 q² √κ_A ≤ tol` (closed form, then checked exactly at k and
+k − 1): 58 for run_dendrite. The same bound predicts three iterations at
+degree 48 and two from 57 on; a prototype sweep of the same polynomial
+measured three at 48 and two at 56 and 64. Rounding in the single-precision
+polynomial can only add outer iterations; it cannot loosen the result,
+because the stopping test is in double precision.
+
+It does add them when κ_A is large. Measured (β = 1, ε = 0.12): at h = 0.8
+and 0.4 two outer iterations in every solve of every refinement and
+time-step run above; at h = 0.2 (dt = 0.001875, κ_A ≈ 465, degree 145) a
+third one in 11 of the 4000 steps of a 93³ run and in 48 % of the 8000 steps
+of the 253³ run; at β = 4 and h = 0.2 (degree 287) in every step. The first
+three-iteration step of the 93³ run, replayed: the same flexible CG with the
+same plan, polynomial and operator in double precision takes two iterations
+(relative residual 2.2e-6, then 2.7e-12); with the GPU's single-precision
+polynomial it reaches 2.1e-5, then 9.95e-11, at the 1e-10 tolerance. z = M b
+in single precision differs from the double-precision one by 3.0e-7
+relative, but A(z₃₂ − z₆₄) differs from A z₆₄ by 2.1e-5: the rounding error
+lies in high modes, which A amplifies relative to the smooth solution, so
+each outer iteration reduces the residual by about that much at best. At
+h = 0.4, where every shipped configuration runs, two iterations were reached
+in every one of the 1.2 million steps of the 106 runs at h = 0.4 in this
+section and §4.3 (every shipped configuration's ε, β and dt ladder), and at
+h = 0.2 in all 180 000 steps of the shipped-β space ladders (dt ≤ 0.00125).
+For the κ_A of h = 0.2 and β ≥ 1, a
+lower degree aiming at three iterations would do less work; the degree rule
+stays with the exact-arithmetic guarantee because no rigorous a priori bound
+of the single-precision error is available to choose between the two.
+
+**Outer iteration.** The single-precision polynomial is symmetric only up to
+rounding (it matches the exact polynomial to about 1e-7 relative,
+`SinglePrecisionMatchesExactPolynomial`), so the outer loop is flexible
+conjugate gradients: `β_j = −α_j z_{j+1}·Ap_j / (z_j·r_j)`, the
+Polak–Ribière form, which keeps the convergence of CG when the preconditioner
+varies slightly between iterations (Notay [13]; Golub & Ye [14]). The
+stopping test is unchanged (‖r‖ ≤ 10⁻¹⁰ ‖b‖ in double precision); the true
+residual recomputed after a solve is 3–10 · 10⁻¹² (`TrueResidualMeetsTheTolerance`).
+After 100 run_dendrite steps the phase field differs from the one computed
+with the Jacobi-preconditioned CG it replaces by at most 1.3 · 10⁻¹².
+
+**Range.** Before the polynomial, r is scaled by 2⁻ᵉ, e = ⌊log₂‖r‖⌋, so
+‖2⁻ᵉ r‖ lies in [1, 2): no component overflows or underflows in single
+precision, and the scaling is exact both ways. A step whose right-hand side
+is of order 10⁻⁴⁵, below the smallest single-precision subnormal, gives the
+same bits as one of order 10⁻¹², scaled by 2¹¹⁰
+(`TinyRightHandSideGivesTheScaledIncrementBitwise`).
+
+**Double-precision stencils.** The double-precision Willmore stencils multiply
+by 1/h² and 1/dt computed once on the host instead of dividing. On GPUs with
+a reduced double-precision rate these stencils are bound by double-precision
+throughput (RTX 4090: their time equals their instruction count at the
+measured rate within 1.4 %, and grows linearly with the number of divisions
+at fixed memory traffic), and each division compiles to a reciprocal estimate
+refined by eight double-precision instructions. A regularised run_dendrite
+step drops from 17.33 to 15.9 ms.
+
+**Multi-GPU.** The single-precision iterate and its Laplacian are exchanged
+between domains like the double-precision fields (their boundary cells
+follow φ's homogeneous boundary condition and wrap where φ wraps), τ_min and
+τ_max are exact, and dot products are summed per X plane in global order, so
+a decomposed run gives the same bits as one GPU (`MultiGPUEquivalence/*_Willmore`).
+
+**Cost** (RTX 4090, CUDA 13.2, β = 1, Euler, ms per step over the first
+steps of a run from the seed; the Jacobi column is the Jacobi-preconditioned
+CG this section replaces):
+
+| Case | Jacobi CG | Chebyshev | Degree | Outer iterations |
+|---|---|---|---|---|
+| 64³, h = 0.8, dt = 0.03, ε = 0.12 | 8.20 | 1.14 | 33 | 2 |
+| 127³, h = 0.4, dt = 0.0075, ε = 0.12 | 60.7 | 6.92 | 70 | 2 |
+| 160³, h = 0.4, dt = 0.005, ε = 0.12 (run_dendrite grid) | 106.9 | 15.9 | 58 | 2 |
+| 192³, h = 0.4, dt = 0.005, ε = 0.15 (run_dendrite_long grid) | 222.8 | 37.3 | 61 | 2 |
+| 253³, h = 0.2, dt = 0.001875, ε = 0.12 | 1102.9 | 184.9 | 145 | 2 (2.48 on average over 8000 steps) |
+| 384³, h = 0.4, dt = 0.005, ε = 0.10 (run_dendrite_large grid) | 2010.9 | 288.2 | 55 | 2 |
+
+For comparison, an unregularised Heun step of run_dendrite takes 8.7 ms.
+
+**Evidence** (`tests/unit/test_WillmorePreconditioner.cu`):
+
+| Test | Checks |
+|---|---|
+| `SecondDifferenceBoundsContainTheExactSpectrum` | the per-axis bounds contain the exact eigenvalues of the 1-D matrices, n = 1…6, every pair of ghost rules including Robin with c > 1 and c < 0 |
+| `LowestDegreeMeetingTheBoundAndExactPolynomial` | the degree is the lowest meeting the bound; the recurrence coefficients reproduce T_k((θ − λ)/δ)/T_k(σ) |
+| `SpectrumBoundsContainEveryEigenvalue` | the eigenvalues of the assembled production operator, scaled by D, lie in [a, b] for seven grids and boundary layouts (anisotropic spacing, axes of one and two cells) |
+| `SinglePrecisionMatchesExactPolynomial` | the device preconditioner equals the exact polynomial to 1e-7 relative (bound k(b/a) u₃₂) |
+| `TinyRightHandSideGivesTheScaledIncrementBitwise` | the power-of-two scaling: bitwise scale equivariance down to 10⁻⁴⁵ |
+| `TrueResidualMeetsTheTolerance` | true residual ≤ 10⁻¹⁰ after a solve, including a right-hand side with ‖b‖ < 1 |
+| `EveryStepUsesThePlanOfItsOwnTimeStep` | with dt changing between steps (adaptive stepping), every solve uses the bounds and degree of its own dt |
+| `NonFiniteStateThrows` | a NaN or infinite phase field makes the step throw instead of looping |
 
 ---
 
@@ -492,6 +837,9 @@ The simplest explicit method:
 u^{n+1} = u^n + 0.5·(φ^{n+1} - φ^n) + Δt·D·∇²u^n
 ```
 
+With `physics.willmore_beta > 0` the φ update is the linearly implicit
+Willmore step of §4.3 instead; the u update is unchanged.
+
 **Butcher Tableau:**
 ```
 0 |
@@ -614,43 +962,49 @@ intermediate points where precomputed forces are needed for efficiency.
 ### 8.4 IMEX (Implicit-Explicit)
 
 The IMEX scheme treats different terms with different methods:
-- **Explicit**: Allen-Cahn equation (nonlinear reaction + anisotropy)
+- **Explicit**: Allen-Cahn equation (nonlinear reaction + anisotropy); with
+  `physics.willmore_beta > 0` the linearly implicit Willmore step of §4.3
 - **Implicit**: Thermal diffusion (linear, stiff at small grid spacings)
 
 ```
-Explicit step:
-  φ^{n+1} = φ^n + Δt·f_AC(φ^n, u^n)    [fused Allen-Cahn kernel]
+Phase-field step:
+  φ^{n+1} = φ^n + Δt·f_AC(φ^n, u^n)    [fused Allen-Cahn kernel; β > 0: §4.3]
 
 Implicit step:
   Solve: (I - Δt·D·∇²)·u^{n+1} = u^n + 0.5·(φ^{n+1} - φ^n)
 ```
 
-The implicit system is solved via **Jacobi iteration** (50 iterations):
+The implicit system is solved by **Jacobi sweeps** until the largest change
+between two iterates is below 1e-10, checked every 10 sweeps, for at most
+200 sweeps (§10.2). One 7-point sweep:
 
 ```
-For iter = 1 to 50:
-    u_new[c] = (rhs[c] + Δt·D·Σ_neighbors(u_old)) / (1 + 2·Δt·D·Σ(1/h²))
-    swap(u_old, u_new)
+u_new[c] = (rhs[c] + Δt·D·Σ_d (u_old[c+e_d] + u_old[c−e_d]) / h_d²) / (1 + 2·Δt·D·Σ_d 1/h_d²)
+swap(u_old, u_new)
 ```
+
+(the 27-point sweep uses the stencil's weights 14, 3, 1 and centre 128,
+divided by 30 h²).
 
 ```mermaid
 flowchart TD
-    A["Start: φ^n, u^n"] --> EX["EXPLICIT STEP<br/>φ^{n+1} = φ^n + Δt·f_AC(φ^n, u^n)<br/>(Fused Allen-Cahn kernel)"]
+    A["Start: φ^n, u^n"] --> EX["PHASE-FIELD STEP<br/>φ^{n+1} = φ^n + Δt·f_AC(φ^n, u^n)<br/>(fused Allen-Cahn kernel; β > 0: Willmore step)"]
     EX --> BC1["Apply BCs to φ^{n+1}"]
     BC1 --> RHS["Compute RHS:<br/>rhs = u^n + 0.5·(φ^{n+1} - φ^n)"]
     RHS --> INIT["Initialize: u_guess = u^n"]
-    INIT --> LOOP{"Jacobi iteration<br/>iter = 1..50"}
-    LOOP -->|"each iter"| JAC["u_new = (rhs + Δt·D·Σ neighbors) / diag<br/>swap(u_new, u_tmp)"]
+    INIT --> LOOP{"Jacobi sweeps<br/>(at most 200)"}
+    LOOP -->|"each sweep"| JAC["u_new = (rhs + Δt·D·Σ neighbors) / diag<br/>BCs, swap(u_new, u_tmp)"]
     JAC --> LOOP
-    LOOP -->|"50 iters done"| BC2["Apply BCs to u^{n+1}"]
+    LOOP -->|"every 10 sweeps: max change < 1e-10, or 200 sweeps"| BC2["Apply BCs to u^{n+1}"]
     BC2 --> SWAP["Swap old ↔ new"]
     style EX fill:#ff9,stroke:#333
     style JAC fill:#9ff,stroke:#333
     style LOOP fill:#f9f,stroke:#333
 ```
 
-**Why IMEX?** The thermal diffusion term has a stability limit
-`Δt ≤ h²/(2D·d)` which can be very restrictive for fine grids. Making it
+**Why IMEX?** The explicit thermal update has a stability limit
+(`Δt ≤ h²/(6D)` for the 7-point and `≈ 0.326 h²/D` for the 27-point
+stencil, §10.1) which can be very restrictive for fine grids. Making it
 implicit removes this constraint, allowing larger time steps while keeping
 the nonlinear Allen-Cahn term explicit (where implicit treatment would
 require a nonlinear solver).
@@ -734,38 +1088,43 @@ This enables complex simulation setups, e.g.:
 
 ### 10.1 CFL Condition for Explicit Diffusion
 
-The explicit treatment of diffusion imposes a stability limit:
+The explicit thermal update `u ← u + Δt·D·∇²ₕu` (Euler, and every stage of
+Heun and RK4) is stable when `Δt·D·ρ ≤ 2` for Euler and Heun (their real
+stability interval is [−2, 0]; RK4's is [−2.785, 0]), where ρ is the largest
+eigenvalue of `−∇²ₕ`. Both Laplacian stencils are multilinear in
+`cᵢ = cos θᵢ`, so the maximum of their symbol over [−1, 1]³ is at a vertex:
+the checkerboard mode (−1, −1, −1).
 
 ```
-Δt ≤ C_safety · h² / (2·D·d)
+7-point:   ρ = 4 Σ_d 1/h_d²   (= 12/h²)   →  Δt ≤ h²/(6D)
+27-point:  ρ = 184/(30 h²)                →  Δt ≤ 60 h²/(184 D) ≈ 0.326 h²/D
 ```
 
-where:
-- `h = min(dx, dy, dz)` — minimum grid spacing
-- `D` — thermal diffusivity  
-- `d = 3` — number of spatial dimensions
-- `C_safety` — safety factor (typically 0.8–0.9)
-
-For the 7-point Laplacian with equal spacing, the exact stability limit is:
-```
-Δt_max = h² / (2·D·3) = h² / (6D)
-```
+At h = 0.4 and D = 2 these are 0.013333 (7-point) and 0.026087 (27-point).
+`validate()` warns (it does not reject) when dt exceeds `cfl_safety` times the
+smaller of the 7-point bound and the same bound for the phase field's
+explicit diffusion, `W₀²(1+ε)²/τ₀` in place of D, unless adaptive stepping
+is on. The Willmore step (§4.3) treats the stiff part of the φ equation
+implicitly; its measured stability limits are in §4.3.
 
 ### 10.2 Jacobi Iteration Convergence
 
-The Jacobi method for `(I - Δt·D·∇²)u = rhs` converges when the spectral
-radius `ρ(M) < 1`, where `M` is the iteration matrix. For the standard
-7-point Laplacian:
+IMEX solves `(I − Δt·D·∇²ₕ)u = rhs` by Jacobi sweeps. The matrix is strictly
+diagonally dominant for every Δt > 0 (the off-diagonal weights of both
+stencils are positive and sum to the magnitude of the centre weight), so the
+iteration converges for every Δt, with spectral radius
 
 ```
-ρ(M) = max_k |Δt·D·λ_k / (1 + Δt·D·λ_max)|
+ρ_J ≤ s/(1 + s),   s = Δt·D·c/h²,   c = 6 (7-point), 128/30 (27-point)
 ```
 
-where `λ_k` are the eigenvalues of the discrete Laplacian.
-
-Convergence is guaranteed when `Δt·D/h²` is bounded. The code uses 50
-iterations, which provides reliable convergence for typical simulation
-parameters (convergence rate ~0.9 per iteration for moderately stiff problems).
+(the neighbour sum divided by the centre weight has a symbol in [−1, 1] for
+the 7-point and [−0.4375, 1] for the 27-point stencil, so the bound is the
+smoothest mode's; walls keep the discrete spectrum strictly inside), which
+approaches 1 as Δt·D/h² grows. The code sweeps until the largest change
+between two iterates is below 1e-10, checked every 10 sweeps, and stops
+after at most 200 sweeps (`kJacobiTol`, `kJacobiCheckFreq`,
+`kJacobiMaxIters` in `CudaSolver.cuh`).
 
 ### 10.3 Adaptive Time Stepping
 
@@ -940,19 +1299,42 @@ graph TD
    27-point Laplacian weights `(14·face + 3·edge + 1·corner − 128·center)/(30·h²)`
    used in `src/cuda/Kernels.cuh::laplacian_27pt`.
 
-6. **Plapp, M. and Karma, A.** (2003). "Multiscale finite-difference–
+6. **Plapp, M. and Karma, A.** (2000). "Multiscale finite-difference–
    diffusion–Monte-Carlo method for simulating dendritic solidification."
    *Journal of Computational Physics*, 165(2), 592–619.
 
-6. **Kobayashi, R.** (1993). "Modeling and numerical simulations of dendritic
+7. **Kobayashi, R.** (1993). "Modeling and numerical simulations of dendritic
    crystal growth." *Physica D: Nonlinear Phenomena*, 63(3-4), 410–423.
 
-7. **Boettinger, W.J., Warren, J.A., Beckermann, C., and Karma, A.** (2002).
+8. **Boettinger, W.J., Warren, J.A., Beckermann, C., and Karma, A.** (2002).
    "Phase-field simulation of solidification." *Annual Review of Materials
    Research*, 32(1), 163–194.
 
-8. **Karma, A.** (2001). "Phase-field formulation for quantitative modeling of
+9. **Karma, A.** (2001). "Phase-field formulation for quantitative modeling of
    alloy solidification." *Physical Review Letters*, 87(11), 115701.
+
+10. **Wheeler, A.A.** (2006). "Phase-field theory of edges in an anisotropic
+   crystal." *Proceedings of the Royal Society A*, 462(2075), 3363–3384.
+   doi:10.1098/rspa.2006.1721
+
+11. **Torabi, S., Lowengrub, J., Voigt, A., and Wise, S.** (2009). "A new
+    phase-field model for strongly anisotropic systems." *Proceedings of the
+    Royal Society A*, 465(2105), 1337–1359. doi:10.1098/rspa.2008.0385
+
+12. **Saad, Y.** (2003). *Iterative Methods for Sparse Linear Systems*, 2nd
+    ed. SIAM, Philadelphia. §12.3, Algorithm 12.1 (Chebyshev acceleration).
+    doi:10.1137/1.9780898718003
+
+13. **Notay, Y.** (2000). "Flexible conjugate gradients." *SIAM Journal on
+    Scientific Computing*, 22(4), 1444–1460. doi:10.1137/S1064827599362314
+
+14. **Golub, G.H. and Ye, Q.** (1999). "Inexact preconditioned conjugate
+    gradient method with inner-outer iteration." *SIAM Journal on Scientific
+    Computing*, 21(4), 1305–1320. doi:10.1137/S1064827597323415
+
+15. **Gutknecht, M.H. and Röllin, S.** (2002). "The Chebyshev iteration
+    revisited." *Parallel Computing*, 28, 263–283.
+    doi:10.1016/S0167-8191(01)00139-9
 
 ---
 
@@ -976,23 +1358,37 @@ graph TD
 
 | Property | Euler | Heun (RK2) | RK4 | IMEX |
 |----------|-------|------------|-----|------|
-| Order of accuracy | 1 | 2 | 4 | 1 (AC) + implicit (thermal) |
-| Stages per step | 1 | 2 | 4 | 1 + Jacobi iters |
-| Memory overhead | Minimal | 2 extra fields | 8 extra fields + Fx,Fy,Fz | 2 extra fields |
-| Stability | Conditional | Conditional | Conditional | Unconditional (thermal) |
-| Cost per step | Low | 2× Euler | 4× Euler | 1× + 50 Jacobi |
-| Best for | Quick tests | Moderate accuracy | High accuracy | Stiff thermal diffusion |
+| Order of accuracy in time | 1 | 2 | 4 | 1 |
+| Stages per step | 1 | 2 | 4 | 1 + Jacobi sweeps (until the change is below 1e-10, at most 200; §10.2) |
+| GPU memory, bytes per cell (measured, Appendix C) | 32.1 | 48.1 | 112.1 | 48.1 |
+| … with `willmore_beta > 0` | 108.1 | rejected | rejected | 124.1 |
+| Explicit thermal update stable for (§10.1) | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2.785 | any Δt (u implicit) |
+| ms per step, 160³, h = 0.4, dt = 0.005, ε = 0.05, β = 0 | 4.27 | 8.77 | 18.05 | 10.99 |
+| ms per step, same grid, ε = 0.12, β = 0.25 | 10.80 | rejected | rejected | 17.33 |
+
+ρ is the largest eigenvalue of −∇²ₕ: 12/h² (7-point), 184/(30h²)
+(27-point). Costs measured on an RTX 4090 (CUDA 13.2, median over 200 steps
+after 220 from the seed, no other process on the GPU) with the physics of
+`run_dendrite.json`. With β > 0 the Euler and IMEX φ update is the linearly
+implicit Willmore step (§4.3–4.4); the shipped configurations choose between
+them by measured cost per unit of simulated time (§4.3).
 
 ## Appendix C: GPU Memory Budget (600³ Grid)
 
-| Buffer | Count | Size Each | Total |
-|--------|-------|-----------|-------|
-| `phi_old`, `phi_new` | 2 | 1.6 GB | 3.2 GB |
-| `u_old`, `u_new` | 2 | 1.6 GB | 3.2 GB |
-| Reduction scratch | 1 | 8 bytes | ~0 |
-| **Euler total** | | | **6.4 GB** |
-| + `phi_tmp`, `u_tmp` (Heun/IMEX) | 2 | 1.6 GB | +3.2 GB |
-| **Heun/IMEX total** | | | **9.6 GB** |
-| + `k1..k4_phi`, `k1..k4_u` (RK4) | 8 | 1.6 GB | +12.8 GB |
-| + `Fx`, `Fy`, `Fz` (RK4 non-fused) | 3 | 1.6 GB | +4.8 GB |
-| **RK4 total** | | | **27.2 GB** |
+Measured with `cudaMemGetInfo` around the construction of `CudaSolver`
+(256³ grid, RTX 4090), per cell and scaled to 600³ = 2.16 × 10⁸ cells; one
+double-precision field is 1.61 GiB there.
+
+| Scheme | Double / single fields | Bytes per cell | 600³ |
+|---|---|---|---|
+| Euler | 4 / 0 | 32.1 | 6.4 GiB |
+| Heun, IMEX | 6 / 0 | 48.1 | 9.7 GiB |
+| RK4 | 14 / 0 | 112.1 | 22.5 GiB |
+| Euler, β > 0 | 11 / 5 | 108.1 | 21.7 GiB |
+| IMEX, β > 0 | 13 / 5 | 124.1 | 24.9 GiB |
+
+The Willmore step adds τ, the increment, the CG residual, preconditioned
+residual, direction, `A·p` and `∇²p` in double precision and τ/dt, the scaled
+residual, two Chebyshev iterates and their Laplacian in single precision
+(§4.4). A regularised 600³ Euler solver was also allocated directly on the
+RTX 4090: 21.7 GiB, leaving 1.4 GiB free.

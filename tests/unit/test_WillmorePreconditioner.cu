@@ -1,0 +1,630 @@
+// Tests of the Willmore solve's spectral bounds, Chebyshev plan and
+// single-precision polynomial preconditioner (docs/THEORY.md section 4.4).
+#include "common/Gpu.hpp"
+#include "core/FieldData.hpp"
+#include "core/SimulationConfig.hpp"
+#include "cuda/CudaSolver.cuh"
+#include "cuda/WillmoreSolve.cuh"
+#include "logging/Logger.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <gtest/gtest.h>
+#include <limits>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+using namespace ac;
+using namespace ac::cuda;
+
+namespace {
+
+using V = CudaSolver::CgVector;
+constexpr double kU64 = std::numeric_limits<double>::epsilon() / 2; // unit roundoff
+constexpr double kU32 = std::numeric_limits<float>::epsilon() / 2;
+
+/// Eigenvalues of the symmetric n x n matrix `a` (row-major) by the cyclic
+/// Jacobi method (Golub & Van Loan, Matrix Computations, 2nd ed., Section 8.5,
+/// Jacobi Methods). It stops when the off-diagonal Frobenius norm
+/// is below the unit roundoff times the matrix norm, so every
+/// eigenvalue is then that close (Weyl). Fails the test if 100 sweeps (the
+/// method converges quadratically) do not get there.
+std::vector<double> symmetric_eigenvalues(std::vector<double> a, int n) {
+    auto at = [&](int i, int j) -> double& { return a[static_cast<std::size_t>(i * n + j)]; };
+    double norm2 = 0;
+    for (double v : a)
+        norm2 += v * v;
+    const double tol2 =
+        std::numeric_limits<double>::epsilon() * std::numeric_limits<double>::epsilon() * norm2;
+    bool converged = false;
+    for (int sweep = 0; sweep < 100 && !converged; ++sweep) {
+        double off2 = 0;
+        for (int i = 0; i < n; ++i)
+            for (int j = i + 1; j < n; ++j)
+                off2 += 2 * at(i, j) * at(i, j);
+        if (off2 <= tol2) {
+            converged = true;
+            break;
+        }
+        for (int p = 0; p < n; ++p)
+            for (int q = p + 1; q < n; ++q) {
+                if (at(p, q) == 0)
+                    continue;
+                const double theta = (at(q, q) - at(p, p)) / (2 * at(p, q));
+                const double t =
+                    (theta >= 0 ? 1 : -1) / (std::fabs(theta) + std::sqrt(1 + theta * theta));
+                const double c = 1 / std::sqrt(1 + t * t), s = t * c;
+                for (int k = 0; k < n; ++k) {
+                    const double akp = at(k, p), akq = at(k, q);
+                    at(k, p) = c * akp - s * akq;
+                    at(k, q) = s * akp + c * akq;
+                }
+                for (int k = 0; k < n; ++k) {
+                    const double apk = at(p, k), aqk = at(q, k);
+                    at(p, k) = c * apk - s * aqk;
+                    at(q, k) = s * apk + c * aqk;
+                }
+            }
+    }
+    EXPECT_TRUE(converged) << "Jacobi eigenvalue iteration did not converge";
+    std::vector<double> ev(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i)
+        ev[static_cast<std::size_t>(i)] = at(i, i);
+    std::sort(ev.begin(), ev.end());
+    return ev;
+}
+
+BoundaryConfig bc_of(BCType type, double alpha = 0.0, double beta = 0.0) {
+    BoundaryConfig bc;
+    bc.type = type;
+    bc.alpha = alpha;
+    bc.beta = beta;
+    return bc;
+}
+
+/// The 1-D second-difference matrix (unit spacing) of n cells with the
+/// homogeneous ghost rules, built from the rules' definitions: Dirichlet
+/// ghost 0, Neumann ghost = neighbour, Robin ghost = (beta/h)/(alpha+beta/h)
+/// * neighbour, periodic ghost = cell at the other end.
+std::vector<double> second_difference_matrix(int n, const BoundaryConfig& lo,
+                                             const BoundaryConfig& hi, double h) {
+    std::vector<double> m(static_cast<std::size_t>(n * n), 0);
+    auto at = [&](int i, int j) -> double& { return m[static_cast<std::size_t>(i * n + j)]; };
+    auto ghost = [&](const BoundaryConfig& bc, int self, int other_end) {
+        switch (bc.type) {
+        case BCType::Dirichlet:
+            break;
+        case BCType::Neumann:
+            at(self, self) += 1;
+            break;
+        case BCType::Robin:
+            at(self, self) += (bc.beta / h) / (bc.alpha + bc.beta / h);
+            break;
+        case BCType::Periodic:
+            at(self, other_end) += 1;
+            break;
+        }
+    };
+    for (int i = 0; i < n; ++i) {
+        at(i, i) -= 2;
+        if (i > 0)
+            at(i, i - 1) += 1;
+        else
+            ghost(lo, 0, n - 1);
+        if (i < n - 1)
+            at(i, i + 1) += 1;
+        else
+            ghost(hi, n - 1, 0);
+    }
+    return m;
+}
+
+class WillmorePreconditionerTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        AC_GPU_TEST_SETUP();
+        Logger::init(spdlog::level::off);
+    }
+};
+
+/// A small anisotropic grid with the given phi faces, eps = 0.12, beta = 1.
+SimulationConfig small_config(int Nx, int Ny, int Nz, const PerFaceBoundary& phi_faces) {
+    SimulationConfig cfg;
+    cfg.grid.Nx = Nx;
+    cfg.grid.Ny = Ny;
+    cfg.grid.Nz = Nz;
+    cfg.grid.dx = 0.4;
+    cfg.grid.dy = 0.5;
+    cfg.grid.dz = 0.3;
+    cfg.physics.epsilon = 0.12;
+    cfg.physics.W0 = 1.0;
+    cfg.physics.willmore_beta = 1.0;
+    cfg.time.dt = 0.004;
+    cfg.time.scheme = TimeScheme::Euler;
+    cfg.stencil = StencilType::Standard7Point;
+    cfg.boundary.per_face = true;
+    cfg.boundary.phi_faces = phi_faces;
+    cfg.boundary.u_faces = PerFaceBoundary::uniform(bc_of(BCType::Neumann));
+    cfg.validate();
+    return cfg;
+}
+
+/// phi random in [-1, 1] (so the gradient directions, and tau, vary from cell
+/// to cell), u random in [-0.8, 0].
+void random_state(FieldData& phi, FieldData& u, unsigned seed) {
+    std::mt19937_64 rng(seed);
+    std::uniform_real_distribution<double> P(-1.0, 1.0), U(-0.8, 0.0);
+    for (std::size_t i = 0; i < phi.size(); ++i) {
+        phi.data()[i] = P(rng);
+        u.data()[i] = U(rng);
+    }
+}
+
+std::vector<int> interior_cells(const SimulationConfig& cfg) {
+    std::vector<int> cells;
+    for (int x = 1; x < cfg.grid.Nx - 1; ++x)
+        for (int y = 1; y < cfg.grid.Ny - 1; ++y)
+            for (int z = 1; z < cfg.grid.Nz - 1; ++z)
+                cells.push_back((x * cfg.grid.Ny + y) * cfg.grid.Nz + z);
+    return cells;
+}
+
+/// The production double-precision operator A as a dense matrix over the
+/// interior cells: column j is A e_j computed by the solver's building blocks
+/// (homogeneous BCs on p, t = lap p with BCs, Ap).
+std::vector<double> assemble_operator(CudaSolver& solver, const std::vector<int>& cells) {
+    const int n = static_cast<int>(cells.size());
+    std::vector<double> A(static_cast<std::size_t>(n * n));
+    std::vector<double> e(solver.total_points(), 0.0);
+    for (int j = 0; j < n; ++j) {
+        e[static_cast<std::size_t>(cells[static_cast<std::size_t>(j)])] = 1.0;
+        solver.willmore_upload(V::P, e);
+        e[static_cast<std::size_t>(cells[static_cast<std::size_t>(j)])] = 0.0;
+        solver.willmore_direction_bc();
+        solver.willmore_direction_laplacian();
+        solver.willmore_apply();
+        const std::vector<double> Ae = solver.willmore_download(V::AP);
+        for (int i = 0; i < n; ++i)
+            A[static_cast<std::size_t>(i * n + j)] =
+                Ae[static_cast<std::size_t>(cells[static_cast<std::size_t>(i)])];
+    }
+    return A;
+}
+
+struct Case {
+    std::string name;
+    int Nx, Ny, Nz;
+    PerFaceBoundary faces;
+};
+
+/// Grids and phi BCs covering every ghost rule: zero flux, Dirichlet,
+/// periodic (paired), Robin with c in (0, 1), c > 1 (alpha < 0) and c < 0
+/// (alpha + beta/h < 0), per-face mixes, and axes of 1 and 2 interior cells.
+std::vector<Case> spectrum_cases() {
+    const BoundaryConfig N = bc_of(BCType::Neumann), D = bc_of(BCType::Dirichlet),
+                         P = bc_of(BCType::Periodic), R = bc_of(BCType::Robin, 1.0, 0.5),
+                         R_above = bc_of(BCType::Robin, -1.0, 1.0),
+                         R_below = bc_of(BCType::Robin, -4.0, 1.0);
+    auto faces = [](BoundaryConfig xl, BoundaryConfig xh, BoundaryConfig yl, BoundaryConfig yh,
+                    BoundaryConfig zl, BoundaryConfig zh) {
+        PerFaceBoundary f;
+        f.faces = {xl, xh, yl, yh, zl, zh};
+        return f;
+    };
+    return {
+        {"neumann", 7, 6, 8, PerFaceBoundary::uniform(N)},
+        {"dirichlet", 7, 6, 8, PerFaceBoundary::uniform(D)},
+        {"periodic", 7, 6, 8, PerFaceBoundary::uniform(P)},
+        {"mixed", 7, 6, 8, faces(P, P, D, N, R, N)},
+        {"robin_c_above_1", 7, 6, 8, faces(R_above, N, R_above, R_above, N, R_above)},
+        {"robin_c_below_0", 7, 6, 8, faces(R_below, N, N, R_below, R_below, D)},
+        {"thin_axes", 3, 4, 9, faces(N, R, P, P, D, R_above)},
+    };
+}
+
+} // namespace
+
+// ── Host-only: the per-axis bounds ─────────────────────────────────────────
+
+// The Gershgorin bounds of the 1-D second-difference matrix contain its
+// exact eigenvalues for every ghost rule and every size down to one cell.
+TEST(WillmoreSpectrumBounds, SecondDifferenceBoundsContainTheExactSpectrum) {
+    const double h = 0.4;
+    const std::vector<BoundaryConfig> rules = {
+        bc_of(BCType::Neumann), bc_of(BCType::Dirichlet), bc_of(BCType::Robin, 1.0, 0.5),
+        bc_of(BCType::Robin, -1.0, 1.0), bc_of(BCType::Robin, -4.0, 1.0)};
+    for (int n = 1; n <= 6; ++n) {
+        std::vector<std::pair<BoundaryConfig, BoundaryConfig>> pairs;
+        for (const auto& lo : rules)
+            for (const auto& hi : rules)
+                pairs.emplace_back(lo, hi);
+        pairs.emplace_back(bc_of(BCType::Periodic), bc_of(BCType::Periodic));
+        for (const auto& [lo, hi] : pairs) {
+            double lower = 0, upper = 0;
+            second_difference_bounds(n, lo, hi, h, lower, upper);
+            const auto ev = symmetric_eigenvalues(second_difference_matrix(n, lo, hi, h), n);
+            // Bounds and eigenvalues agree to the few (< 8) roundings of the
+            // double-precision bound arithmetic, relative to their magnitude.
+            const double s = 1.0 / (h * h);
+            const double slack = 8 * kU64 * std::max(std::fabs(lower), std::fabs(upper));
+            EXPECT_GE(ev.front() * s, lower - slack) << "n=" << n;
+            EXPECT_LE(ev.back() * s, upper + slack) << "n=" << n;
+        }
+    }
+    double lo = 0, hi = 0;
+    EXPECT_THROW(
+        second_difference_bounds(4, bc_of(BCType::Periodic), bc_of(BCType::Neumann), h, lo, hi),
+        std::invalid_argument);
+}
+
+// ── Host-only: the Chebyshev plan ──────────────────────────────────────────
+
+// The plan's degree is the lowest meeting the two-iteration bound
+// 2 q^2 sqrt(kappa_A) <= tol, its error bound is 1/T_k(sigma) (T_k from the
+// three-term recurrence), and its recurrence coefficients reproduce the
+// Chebyshev residual polynomial r(lambda) = T_k((theta - lambda)/delta) /
+// T_k(theta/delta): with D = 1 and r = 1, x_k(lambda) of the two-vector
+// iteration satisfies 1 - lambda x_k(lambda) = r(lambda).
+TEST(WillmoreChebyshevPlan, LowestDegreeMeetingTheBoundAndExactPolynomial) {
+    const double tol = kWillmoreCgTolerance;
+    struct S {
+        double a, b, kappa_A;
+    };
+    for (const S& sp :
+         {S{0.0409, 3.2144, 79.5}, S{0.00728, 3.379, 465.0}, S{0.5, 1.5, 3.0}, S{0.9, 1.1, 1.3}}) {
+        WillmoreSpectrum s;
+        s.a = sp.a;
+        s.b = sp.b;
+        s.kappa_A = sp.kappa_A;
+        const ChebyshevPlan plan = chebyshev_plan(s, tol);
+        const double sigma = (sp.b + sp.a) / (sp.b - sp.a);
+        auto T = [](int k, double x) { // T_k(x), x >= 1, by the recurrence
+            double t0 = 1, t1 = x;
+            for (int i = 1; i < k; ++i) {
+                const double t2 = 2 * x * t1 - t0;
+                t0 = t1;
+                t1 = t2;
+            }
+            return k == 0 ? 1.0 : t1;
+        };
+        auto bound = [&](int k) {
+            const double e = 1 / T(k, sigma);
+            const double q = e / (1 + std::sqrt(1 - e * e));
+            return 2 * q * q * std::sqrt(sp.kappa_A);
+        };
+        const int k = plan.degree;
+        EXPECT_LE(bound(k), tol) << "a=" << sp.a;
+        if (k > 1)
+            EXPECT_GT(bound(k - 1), tol) << "a=" << sp.a;
+        EXPECT_NEAR(plan.error_bound * T(k, sigma), 1.0, 64 * k * kU64);
+        ASSERT_EQ(plan.step_a.size(), static_cast<std::size_t>(k - 1));
+
+        // The recurrences are stable, so rounding grows at most linearly per
+        // step: compare within k^2 u relative to the polynomial's range.
+        const double theta = 0.5 * (sp.b + sp.a), delta = 0.5 * (sp.b - sp.a);
+        for (int i = 0; i <= 20; ++i) {
+            const double lambda = sp.a + (sp.b - sp.a) * i / 20.0;
+            double x_prev = 0, x = plan.s0;
+            for (int j = 0; j + 1 < k; ++j) {
+                const double xn = x + plan.step_a[static_cast<std::size_t>(j)] * (x - x_prev) +
+                                  plan.step_b[static_cast<std::size_t>(j)] * (1 - lambda * x);
+                x_prev = x;
+                x = xn;
+            }
+            const double arg = (theta - lambda) / delta; // in [-1, 1]
+            const double exact = std::cos(k * std::acos(std::clamp(arg, -1.0, 1.0))) / T(k, sigma);
+            EXPECT_NEAR(1 - lambda * x, exact, static_cast<double>(k) * k * kU64 * 16)
+                << "a=" << sp.a << " lambda=" << lambda;
+        }
+    }
+    WillmoreSpectrum flat;
+    flat.a = flat.b = 2.0;
+    flat.kappa_A = 1.0;
+    const ChebyshevPlan exact = chebyshev_plan(flat, tol);
+    EXPECT_EQ(exact.degree, 1);
+    EXPECT_DOUBLE_EQ(exact.s0, 0.5);
+}
+
+// ── GPU: the bounds against the production operator ───────────────────────
+
+// For every ghost rule, anisotropic spacing and thin axes, the eigenvalues of
+// D^-1/2 A D^-1/2, with A assembled column by column from the production
+// double-precision operator and tau from the solver, lie in [a, b] of
+// willmore_spectrum. A is also symmetric. Tolerances are rounding bounds:
+// every entry passes through at most 16 double roundings, so the assembled
+// matrix is within 16 u of the exact one entrywise, and by Weyl its
+// eigenvalues within 16 u ||S||_F.
+TEST_F(WillmorePreconditionerTest, SpectrumBoundsContainEveryEigenvalue) {
+    for (const Case& cs : spectrum_cases()) {
+        SCOPED_TRACE(cs.name);
+        const SimulationConfig cfg = small_config(cs.Nx, cs.Ny, cs.Nz, cs.faces);
+        const Grid grid = cfg.make_grid();
+        FieldData phi(grid, "phi"), u(grid, "u");
+        random_state(phi, u, 7);
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        solver.mutable_params().dt = cfg.time.dt;
+        solver.willmore_omega();
+        solver.willmore_rhs_init();
+        const auto [tau_min, tau_max] = solver.willmore_tau_range();
+        const WillmoreSpectrum sp =
+            willmore_spectrum(cfg, cfg.boundary.phi_faces, cfg.time.dt, tau_min, tau_max);
+        const std::vector<double> tau = solver.willmore_download(V::Tau);
+        const std::vector<int> cells = interior_cells(cfg);
+        const int n = static_cast<int>(cells.size());
+        std::vector<double> A = assemble_operator(solver, cells);
+
+        double amax = 0, asym = 0, snorm2 = 0;
+        for (double v : A)
+            amax = std::max(amax, std::fabs(v));
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j)
+                asym = std::max(asym, std::fabs(A[static_cast<std::size_t>(i * n + j)] -
+                                                A[static_cast<std::size_t>(j * n + i)]));
+        EXPECT_LE(asym, 2 * 16 * kU64 * amax);
+
+        const double beta = cfg.physics.willmore_beta;
+        std::vector<double> S(A.size());
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) {
+                const double Di =
+                    tau[static_cast<std::size_t>(cells[static_cast<std::size_t>(i)])] /
+                        cfg.time.dt +
+                    beta * sp.d_L;
+                const double Dj =
+                    tau[static_cast<std::size_t>(cells[static_cast<std::size_t>(j)])] /
+                        cfg.time.dt +
+                    beta * sp.d_L;
+                // Symmetric part: the rounding asymmetry is covered above.
+                const double aij = 0.5 * (A[static_cast<std::size_t>(i * n + j)] +
+                                          A[static_cast<std::size_t>(j * n + i)]);
+                S[static_cast<std::size_t>(i * n + j)] = aij / std::sqrt(Di * Dj);
+                snorm2 +=
+                    S[static_cast<std::size_t>(i * n + j)] * S[static_cast<std::size_t>(i * n + j)];
+            }
+        const auto ev = symmetric_eigenvalues(S, n);
+        const double slack = 16 * kU64 * std::sqrt(snorm2);
+        std::printf("%-16s n=%3d  eig [%.6f, %.6f]  bounds [%.6f, %.6f]\n", cs.name.c_str(), n,
+                    ev.front(), ev.back(), sp.a, sp.b);
+        EXPECT_GE(ev.front(), sp.a - slack);
+        EXPECT_LE(ev.back(), sp.b + slack);
+        EXPECT_GT(ev.front(), 0.0);
+    }
+}
+
+// ── GPU: the single-precision preconditioner ───────────────────────────────
+
+// z = M r from the device (single precision) agrees with the same Chebyshev
+// polynomial applied in double precision to the assembled operator. The
+// device computes the residual r - A x_k explicitly at every step, so there
+// is no gap between a recursively updated and the true residual, and for a
+// real spectrum the recurrence multiplies earlier local errors by factors of
+// modulus below 1 (Gutknecht & Roellin, Parallel Comput. 28 (2002) 263-283,
+// Algorithm 2 and Theorem 2). Each of the k steps therefore adds at most its
+// own rounding, which for the D-scaled operator is at most (b/a) u_32 relative
+// (the explicit residual cancels to that level): k (b/a) u_32 bounds the
+// difference. An implementation error (a wrong ghost rule, coefficient or
+// stencil) shows as O(1).
+TEST_F(WillmorePreconditionerTest, SinglePrecisionMatchesExactPolynomial) {
+    for (const Case& cs : spectrum_cases()) {
+        SCOPED_TRACE(cs.name);
+        const SimulationConfig cfg = small_config(cs.Nx, cs.Ny, cs.Nz, cs.faces);
+        const Grid grid = cfg.make_grid();
+        FieldData phi(grid, "phi"), u(grid, "u");
+        random_state(phi, u, 11);
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        solver.mutable_params().dt = cfg.time.dt;
+        solver.willmore_omega();
+        solver.willmore_rhs_init();
+        const auto [tau_min, tau_max] = solver.willmore_tau_range();
+        const WillmoreSpectrum sp =
+            willmore_spectrum(cfg, cfg.boundary.phi_faces, cfg.time.dt, tau_min, tau_max);
+        const ChebyshevPlan plan = chebyshev_plan(sp, kWillmoreCgTolerance);
+        const std::vector<double> tau = solver.willmore_download(V::Tau);
+        const std::vector<int> cells = interior_cells(cfg);
+        const int n = static_cast<int>(cells.size());
+        const std::vector<double> A = assemble_operator(solver, cells);
+
+        std::mt19937_64 rng(3);
+        std::uniform_real_distribution<double> U(-1.0, 1.0);
+        std::vector<double> r(solver.total_points(), 0.0);
+        std::vector<double> rv(static_cast<std::size_t>(n)), Dinv(static_cast<std::size_t>(n));
+        double rr = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const auto c = static_cast<std::size_t>(cells[static_cast<std::size_t>(i)]);
+            r[c] = U(rng);
+            rv[static_cast<std::size_t>(i)] = r[c];
+            rr += r[c] * r[c];
+            Dinv[static_cast<std::size_t>(i)] =
+                1.0 / (tau[c] / cfg.time.dt + cfg.physics.willmore_beta * sp.d_L);
+        }
+        solver.willmore_upload(V::R, r);
+        apply_willmore_preconditioner({WillmoreDomain{&solver, 0, 1, cfg.grid.Nx - 1, 1}}, plan, rr,
+                                      [](WillmoreBuffer) {});
+        const std::vector<double> z = solver.willmore_download(V::Z);
+
+        // Reference: x_1 = s0 D^-1 r, x_{k+1} = x_k + a_k (x_k - x_{k-1}) + b_k D^-1 (r - A x_k).
+        std::vector<double> x(static_cast<std::size_t>(n)), xp(static_cast<std::size_t>(n), 0);
+        for (int i = 0; i < n; ++i)
+            x[static_cast<std::size_t>(i)] =
+                plan.s0 * Dinv[static_cast<std::size_t>(i)] * rv[static_cast<std::size_t>(i)];
+        for (std::size_t k = 0; k < plan.step_a.size(); ++k) {
+            std::vector<double> xn(static_cast<std::size_t>(n));
+            for (int i = 0; i < n; ++i) {
+                double Ax = 0;
+                for (int j = 0; j < n; ++j)
+                    Ax += A[static_cast<std::size_t>(i * n + j)] * x[static_cast<std::size_t>(j)];
+                const auto ii = static_cast<std::size_t>(i);
+                xn[ii] = x[ii] + plan.step_a[k] * (x[ii] - xp[ii]) +
+                         plan.step_b[k] * Dinv[ii] * (rv[ii] - Ax);
+            }
+            xp = x;
+            x = xn;
+        }
+        double diff2 = 0, ref2 = 0;
+        for (int i = 0; i < n; ++i) {
+            const double d = z[static_cast<std::size_t>(cells[static_cast<std::size_t>(i)])] -
+                             x[static_cast<std::size_t>(i)];
+            diff2 += d * d;
+            ref2 += x[static_cast<std::size_t>(i)] * x[static_cast<std::size_t>(i)];
+        }
+        const double rel = static_cast<double>(std::sqrt(diff2 / ref2));
+        const double allowed = plan.degree * (sp.b / sp.a) * kU32;
+        std::printf("%-16s degree %2d  |z32 - z_exact| / |z_exact| = %.2e  (allowed %.2e)\n",
+                    cs.name.c_str(), plan.degree, rel, allowed);
+        EXPECT_LE(rel, allowed);
+    }
+}
+
+// A right-hand side far below single precision's range must not underflow:
+// the preconditioner scales r by a power of two first. With eps = 0, u = 0
+// and |phi| <= 2^-40 the step is exactly linear in phi in double precision
+// (phi^3 and every other nonlinear term are below one ulp of the linear
+// ones), so the increments for phi = 2^-150 psi and 2^-40 psi must be the
+// same bits up to 2^-110. Without the scaling, 2^-150 psi (~1e-45) rounds to
+// zero or a subnormal in single precision and the solve breaks down.
+TEST_F(WillmorePreconditionerTest, TinyRightHandSideGivesTheScaledIncrementBitwise) {
+    const int N = 14;
+    SimulationConfig cfg;
+    cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = N;
+    cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = 0.4;
+    cfg.physics.epsilon = 0.0;
+    cfg.physics.willmore_beta = 1.0;
+    cfg.time.dt = 0.01;
+    cfg.time.scheme = TimeScheme::Euler;
+    cfg.stencil = StencilType::Standard7Point;
+    cfg.boundary.phi_bc = bc_of(BCType::Periodic);
+    cfg.boundary.u_bc = bc_of(BCType::Periodic);
+    cfg.validate();
+    const Grid grid = cfg.make_grid();
+    auto run = [&](int exponent) {
+        FieldData phi(grid, "phi"), u(grid, "u");
+        u.fill(0.0);
+        for (int x = 0; x < N; ++x)
+            for (int y = 0; y < N; ++y)
+                for (int z = 0; z < N; ++z)
+                    phi(x, y, z) = std::ldexp(
+                        std::cos(0.7 * x) * std::sin(0.4 * y + 0.3 * z) + 0.25, exponent);
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        solver.step(cfg.time.dt);
+        solver.copy_phi_to_host(phi);
+        return std::vector<double>(phi.data(), phi.data() + phi.size());
+    };
+    std::vector<double> tiny, normal;
+    ASSERT_NO_THROW(tiny = run(-150));
+    ASSERT_NO_THROW(normal = run(-40));
+    std::size_t mismatches = 0;
+    for (std::size_t i = 0; i < tiny.size(); ++i)
+        mismatches += std::ldexp(tiny[i], 110) != normal[i] ? 1 : 0;
+    EXPECT_EQ(mismatches, 0U);
+}
+
+// After a solve the true residual ||b - A x|| / ||b||, recomputed from the
+// state, meets the tolerance. The recursive residual CG tests drifts from the
+// true one by rounding: at most 16 u kappa_A ||b|| per iteration (x and r
+// are updated with the same alpha and Ap), far below the tolerance.
+TEST_F(WillmorePreconditionerTest, TrueResidualMeetsTheTolerance) {
+    std::vector<Case> cases = spectrum_cases();
+    // Near the liquid bulk (phi = -1 + 1e-6 * noise) ||b|| is about 0.02.
+    // Below ||b|| = 1 a stopping test on ||r||^2 instead of ||r|| is met as
+    // soon as ||r|| <= sqrt(1e-10 ||b||), i.e. after the first iteration.
+    cases.push_back({"near_equilibrium", 7, 6, 8, cases.front().faces});
+    for (const Case& cs : cases) {
+        SCOPED_TRACE(cs.name);
+        const SimulationConfig cfg = small_config(cs.Nx, cs.Ny, cs.Nz, cs.faces);
+        const Grid grid = cfg.make_grid();
+        FieldData phi(grid, "phi"), u(grid, "u");
+        random_state(phi, u, 5);
+        if (cs.name == "near_equilibrium") {
+            for (std::size_t i = 0; i < phi.size(); ++i) {
+                phi.data()[i] = -1.0 + 1e-6 * phi.data()[i];
+                u.data()[i] = 0.0;
+            }
+        }
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        solver.mutable_params().dt = cfg.time.dt;
+        const WillmoreSolveStats st = solve_willmore_step(
+            {WillmoreDomain{&solver, 0, 1, cfg.grid.Nx - 1, 1}}, cfg, [](WillmoreBuffer) {});
+        const std::vector<double> x = solver.willmore_download(V::X);
+        // b again, as the solve builds it (omega first: the solve reused its
+        // buffer for lap p; rhs_init zeroes x, so x was saved first), then A x.
+        solver.willmore_omega();
+        solver.willmore_rhs_init();
+        const std::vector<double> b = solver.willmore_download(V::R);
+        solver.willmore_upload(V::P, x);
+        solver.willmore_direction_bc();
+        solver.willmore_direction_laplacian();
+        solver.willmore_apply();
+        const std::vector<double> Ax = solver.willmore_download(V::AP);
+        double rr = 0, bb = 0;
+        for (int c : interior_cells(cfg)) {
+            const auto i = static_cast<std::size_t>(c);
+            rr += (static_cast<double>(b[i]) - Ax[i]) * (static_cast<double>(b[i]) - Ax[i]);
+            bb += static_cast<double>(b[i]) * b[i];
+        }
+        const double true_rel = static_cast<double>(std::sqrt(rr / bb));
+        std::printf("%-16s iterations %d  degree %d  ||b|| %.3e  true relative residual %.3e\n",
+                    cs.name.c_str(), st.iterations, st.chebyshev_degree,
+                    static_cast<double>(std::sqrt(bb)), true_rel);
+        EXPECT_LE(true_rel, kWillmoreCgTolerance + st.iterations * 16 * kU64 * st.spectrum.kappa_A);
+    }
+}
+
+// The bounds and the polynomial depend on dt, which adaptive stepping changes
+// from step to step: every solve must rebuild them for its own dt (a plan
+// kept from an earlier step would be a polynomial for another operator).
+// Consecutive steps with dt = 0.004, 0.001, 0.004 use exactly the degree
+// chebyshev_plan gives for their dt and the tau range of their own state.
+TEST_F(WillmorePreconditionerTest, EveryStepUsesThePlanOfItsOwnTimeStep) {
+    const SimulationConfig cfg =
+        small_config(7, 6, 8, PerFaceBoundary::uniform(bc_of(BCType::Neumann)));
+    const Grid grid = cfg.make_grid();
+    FieldData phi(grid, "phi"), u(grid, "u");
+    random_state(phi, u, 9);
+    CudaSolver solver(cfg);
+    solver.initialize(phi, u);
+    int previous_degree = 0;
+    for (double dt : {0.004, 0.001, 0.004}) {
+        solver.step(dt);
+        const WillmoreSolveStats& st = solver.last_willmore_stats();
+        const WillmoreSpectrum expected =
+            willmore_spectrum(cfg, cfg.boundary.phi_faces, dt, st.tau_min, st.tau_max);
+        EXPECT_EQ(st.chebyshev_degree, chebyshev_plan(expected, kWillmoreCgTolerance).degree)
+            << "dt=" << dt;
+        EXPECT_DOUBLE_EQ(st.spectrum.b, expected.b) << "dt=" << dt;
+        EXPECT_NE(st.chebyshev_degree, previous_degree) << "dt=" << dt;
+        previous_degree = st.chebyshev_degree;
+    }
+}
+
+// A non-finite phase field must make the solve throw, never loop or return.
+// A NaN cell reaches the right-hand side (its gradient is NaN, and
+// compute_An treats a NaN gradient like a zero one, so tau stays finite); an
+// infinite cell makes the gradient infinite and tau NaN (inf/inf in
+// compute_An), which the bounds reject before any degree is sought.
+TEST_F(WillmorePreconditionerTest, NonFiniteStateThrows) {
+    const SimulationConfig cfg =
+        small_config(7, 6, 8, PerFaceBoundary::uniform(bc_of(BCType::Neumann)));
+    const Grid grid = cfg.make_grid();
+    for (double bad :
+         {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        SCOPED_TRACE(bad);
+        FieldData phi(grid, "phi"), u(grid, "u");
+        random_state(phi, u, 1);
+        phi(3, 3, 3) = bad;
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        EXPECT_THROW(solver.step(cfg.time.dt), std::runtime_error);
+    }
+    const PerFaceBoundary faces = PerFaceBoundary::uniform(bc_of(BCType::Neumann));
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW((void)willmore_spectrum(cfg, faces, cfg.time.dt, 0.3, nan), std::runtime_error);
+    EXPECT_THROW((void)willmore_spectrum(cfg, faces, cfg.time.dt, nan, 0.5), std::runtime_error);
+    EXPECT_THROW((void)willmore_spectrum(cfg, faces, cfg.time.dt, 0.0, 0.5), std::runtime_error);
+}

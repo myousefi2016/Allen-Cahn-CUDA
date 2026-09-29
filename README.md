@@ -31,11 +31,12 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 ## Features
 
 - **Modern C++23 / CUDA 20** with RAII, move semantics, and no raw owning pointers.
-- **Four time integrators**: Forward Euler, Heun (RK2), classical RK4, and IMEX (explicit Allen–Cahn + implicit thermal via Jacobi).
+- **Four time integrators**: Forward Euler, Heun (RK2), classical RK4, and IMEX (explicit Allen–Cahn, linearly implicit with the Willmore term, + implicit thermal via Jacobi).
 - **Compact anisotropic operator**: the Allen–Cahn kernel evaluates the anisotropic flux at the six cell faces (±1-cell stencil, second-order, exactly the 7-point Laplacian at ε = 0) and updates φ in one pass, with no stored flux arrays.
 - **O(1) field swap**: pointer swap (`std::swap` of `DeviceField` handles) replaces O(N) data-copy kernels at the end of each step.
 - **Multi-GPU support**: X-axis domain decomposition with `cudaMemcpyPeerAsync` halo exchange (one-plane halos, the reach of every stencil), bit-identical to a single-GPU run.
 - **Anisotropic solidification**: cubic anisotropy A(n) with 4-fold crystal symmetry, including the corrected isotropic spherical-average fallback `1 − 3ε/5` when the gradient vanishes.
+- **Strong anisotropy (ε > 1/15)**: the Allen–Cahn equation is ill-posed there (its solutions do not converge under grid refinement), so `physics.willmore_beta > 0` is required. It adds the Willmore regularisation, integrated linearly implicitly by the Euler and IMEX schemes: every step solves a symmetric positive-definite system by conjugate gradients with a single-precision Chebyshev polynomial preconditioner whose degree guarantees two outer iterations in exact arithmetic; at the shipped configurations' h = 0.4 every measured step took two (`docs/THEORY.md` §4.3–4.4).
 - **Two Laplacian stencils**: standard 7-point and isotropic 27-point (Patra–Karttunen weights `14·face + 3·edge + 1·corner − 128·center`, divisor `30·h²`).
 - **Per-face boundary conditions**: independent Dirichlet / Neumann / Periodic / Robin on each of the 6 faces (`x_lo`, `x_hi`, `y_lo`, `y_hi`, `z_lo`, `z_hi`); periodic identifies the two faces of an axis, so it must be set on both (`docs/DESIGN.md` §5.2).
 - **Adaptive time stepping**: CFL-bounded with target-tolerance control via parallel reduction.
@@ -44,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) boundary-only reduction stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 22 unit-test files, 7 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 24 unit-test files, 8 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -169,6 +170,17 @@ graph LR
     end
 ```
 
+With `physics.willmore_beta > 0` (required when ε > 1/15), the φ update of
+Euler and IMEX is the linearly implicit Willmore step instead of
+`allen_cahn_fused`: `(τ/dt + βL) δφ = rhs`, solved by flexible conjugate
+gradients in double precision with a Chebyshev polynomial preconditioner in
+single precision (`src/cuda/WillmoreSolve.cu`, `docs/THEORY.md` §4.4). Heun
+and RK4 are fully explicit and reject β > 0. The shipped configurations set
+β = |S(ε)| ℓ*² with the corner length ℓ* = 0.528 W₀ (S(ε) = (1+ε)(1−15ε),
+the most negative gradient-energy stiffness) and the largest dt whose time
+error does not exceed the spatial error at h = 0.4; both were measured per
+configuration (`docs/THEORY.md` §4.3).
+
 ## Multi-GPU Domain Decomposition
 
 ```mermaid
@@ -264,9 +276,9 @@ make cuda-test-unit              # unit tests only
 make cuda-test-integration       # integration tests only
 make cuda-run-small              # 128^3 quick benchmark      -> ./out (raw)
 make cuda-run-vtk                # 128^3 dendrite             -> ./out (.vts for ParaView)
-make cuda-run-dendrite           # 160^3 dendrite (Heun, 27pt, eps=0.12) -> ./out (.vts)
-make cuda-run-dendrite-large     # 384^3 dendrite (~16 min on T4)
-make cuda-run-dendrite-long      # 192^3 long ~5 hour run with crash-safe checkpointing
+make cuda-run-dendrite           # 160^3 dendrite (Euler + Willmore beta=0.25, 27pt, eps=0.12) -> ./out (.vts)
+make cuda-run-dendrite-large     # 384^3 dendrite until saturation (179 min of compute on an RTX 4090)
+make cuda-run-dendrite-long      # 192^3 long run until saturation, crash-safe checkpointing
 make cuda-resume-dendrite        # resume the long run from latest intact checkpoint
 make cuda-resume-dendrite-large  # resume the large run
 make cuda-status-dendrite        # show progress: latest checkpoint, frame count, % done
@@ -283,17 +295,20 @@ make cuda-clean                  # wipe build/, out/, checkpoints/, viz/
 make cuda-image-rebuild          # force-rebuild the dev image (after apt-pkg change)
 ```
 
-### Long resumable run (overnight dendrite simulation)
+### Long resumable run
 
-`cuda-run-dendrite-long` runs a 192³ Allen–Cahn simulation for ~530 τ₀ on a
-T4 (≈ 5 hours wall-clock). This is the time horizon needed for textbook
-6-arm cubic dendrites to develop via the Mullins–Sekerka instability (per
-Plapp & Karma 2003); the short `cuda-run-dendrite` only reaches ≈ 40 τ₀
-which produces a faceted cube but no extended arms.
+`cuda-run-dendrite-long` grows a 192³ crystal at ε = 0.15 (β = 0.401, Euler,
+dt = 0.0003125) until the saturation guard stops it. Measured on an RTX 4090:
+the guard fires at step 113 600 (t = 35.5, 63 τ₀), when the six ⟨100⟩ tips
+reach the walls, after 27 minutes of compute (14.4 ms per step), with 16
+frames (1.0 GB). The crystal is a convex octahedron with rounded ⟨100⟩
+corners at t = 17.5 and has grown six ⟨100⟩ tips with concave faces between
+them by the end. `cuda-run-dendrite` (160³, ε = 0.12) ends at t = 17.5
+(31 τ₀).
 
 Crash safety:
-- Checkpoints every 3000 steps (≈ 4 minutes of compute lost on `SIGKILL` / suspend).
-- `keep_last = 3` (≈ 324 MB on disk for 192³).
+- Checkpoints every 48 000 steps (15 time units, 11.6 minutes of compute on an RTX 4090, the most lost on `SIGKILL` / suspend).
+- `keep_last = 3` (340 MB on disk for 192³).
 - `cuda-resume-dendrite` finds the highest-numbered intact checkpoint
   (the 128-byte header must match the config's grid, the file size must be
   exact and the stored CRC32 must match the data; truncated, foreign-grid
@@ -396,7 +411,9 @@ them entirely.
 ```bash
 make cuda-image                # one-time, ~3 min
 make cuda-dendrite-demo        # build + 160^3 dendrite run + production viz
-                               # ≈ 3-5 min total on a T4
+                               # 6.4 and 8.7 min in two runs on an RTX 4090:
+                               # build ~40 s, 28 000 steps 229 s, rendering
+                               # 36 frames and the video 2-4 min
 ```
 
 Output:
@@ -470,14 +487,14 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
 
 ```json
 {
-    "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "beta0": 0.0, "D": 2.0, "d0": 0.5 },
+    "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "beta0": 0.0, "D": 2.0, "d0": 0.5, "willmore_beta": 0.0149 },
     "grid":     { "Nx": 600, "Ny": 600, "Nz": 600, "dx": 0.4, "dy": 0.4, "dz": 0.4 },
-    "time":     { "dt": 0.01, "max_steps": 6000, "scheme": "euler", "adaptive": false, "cfl_safety": 0.9 },
+    "time":     { "dt": 0.0025, "max_steps": 24000, "scheme": "euler", "adaptive": false, "cfl_safety": 0.9 },
     "stencil":  "7pt",
-    "output":   { "frequency": 100, "output_dir": "./out", "format": "vts", "async_io": true },
-    "checkpoint": { "frequency": 500, "checkpoint_dir": "./checkpoints", "keep_last": 3 },
+    "output":   { "frequency": 400, "output_dir": "./out", "format": "vts", "async_io": true },
+    "checkpoint": { "frequency": 2000, "checkpoint_dir": "./checkpoints", "keep_last": 3 },
     "gpu":      { "device_ids": [0], "multi_gpu": false },
-    "initial":  { "seed_radius": 2.4 },
+    "initial":  { "seed_radius": 2.0 },
     "boundary": {
         "phi": { "type": "dirichlet", "value": -1.0 },
         "u":   { "type": "dirichlet", "value": -0.8 }
@@ -490,6 +507,8 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
 | Parameter             | Accepted values |
 |-----------------------|-----------------|
 | `time.scheme`         | `"euler"`, `"heun"`, `"rk4"`, `"imex"` |
+| `physics.epsilon`     | anisotropy strength in [0, 1/3); above 1/15 it requires `physics.willmore_beta > 0` |
+| `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (default 0); > 0 requires `time.scheme` `"euler"` or `"imex"` |
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
 | `boundary.*.type`     | `"dirichlet"`, `"neumann"`, `"periodic"` (on both faces of an axis), `"robin"` |
 | `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary) |
@@ -526,22 +545,27 @@ object must name all six faces (a missing face is an error, not a default):
 
 ## GPU memory budget (600³ grid)
 
-For 600³ = 2.16 × 10⁸ cells × 8 bytes per double = 1.6875 GB per field.
-The fused Allen–Cahn kernel removes the three force arrays (`Fx`, `Fy`,
-`Fz`) and any precomputed index arrays — they are recomputed on the fly
-inside the kernel.
+Device memory allocated by `CudaSolver`, measured with `cudaMemGetInfo`
+around its construction on a 256³ grid (RTX 4090), per grid cell, and the
+total for 600³ = 2.16 × 10⁸ cells (GiB = 2³⁰ bytes). Every double-precision
+field costs 8 bytes per cell and every single-precision one 4; the rest
+(0.125 bytes per cell at 256³) is reduction scratch and allocation
+granularity. The fused Allen–Cahn kernel stores no flux or index arrays.
 
-| Component                              | Original code               | Optimized                          | Savings |
-|----------------------------------------|-----------------------------|------------------------------------|---------|
-| `IDx`, `IDy`, `IDz` (index arrays)     | ~5.0 GB                     | 0 GB (computed from thread ID)     | 100%    |
-| `Fx`, `Fy`, `Fz` (force arrays)        | ~5.0 GB                     | 0 GB (fused-kernel recomputation)  | 100%    |
-| `phi_old`, `phi_new`, `u_old`, `u_new` | ~6.75 GB                    | ~6.75 GB                           | —       |
-| Field swap                             | O(N) `cudaMemcpyAsync`      | O(1) pointer swap                  | ~100%   |
-| **Total (Euler)**                      | **~17 GB**                  | **~6.75 GB**                       | **~60%** |
+| Scheme | Fields | Bytes per cell | 600³ |
+|---|---|---|---|
+| Euler | φ, u (old and new) | 32.1 | 6.4 GiB |
+| Heun, IMEX | + φ, u stage buffers | 48.1 | 9.7 GiB |
+| RK4 | + stage buffers and the four stages of φ and u | 112.1 | 22.5 GiB |
+| Euler, `willmore_beta > 0` | Euler + 7 double (τ, x, r, z, p, Ap, ∇²p) + 5 single (τ/dt, scaled r, two iterates, their Laplacian) | 108.1 | 21.7 GiB |
+| IMEX, `willmore_beta > 0` | IMEX + the same | 124.1 | 24.9 GiB |
 
-For RK4 add `phi_tmp`, `u_tmp`, four `k*_phi`, four `k*_u`, plus three
-force arrays — total about 28 GB, which exceeds 16 GB-class GPUs (e.g.
-T4); use 384³ or smaller for RK4 on those devices.
+A regularised 600³ Euler run fits on a 24 GB GPU (measured on the RTX 4090:
+21.7 GiB allocated, 1.4 GiB left); a regularised 600³ IMEX run does not. A
+grid fits when N³ times the bytes per cell is below the free memory: on a
+16 GB-class GPU (e.g. T4, about 15 GiB free) that is about 500³ for RK4 and
+the regularised schemes. Larger grids can use several GPUs
+(`gpu.device_ids`), which split the X planes between them.
 
 ---
 
@@ -603,6 +627,11 @@ Manifests in `k8s/base/`:
 Per-environment overlays in `k8s/overlays/{dev,prod}/` add the namespace and
 patch resources / activeDeadlineSeconds / PVC size / config payload.
 
+GPU memory: the base configuration (600³, ε = 0.07 with `willmore_beta`,
+Euler) allocates 21.7 GiB on the GPU (measured on an RTX 4090), so it needs
+a 24 GB-class GPU; the Job requests one `nvidia.com/gpu` and does not select
+nodes by GPU memory. The dev overlay (128³) needs 0.21 GiB.
+
 The Job runs `ghcr.io/myousefi2016/allen-cahn-cuda:latest`, which the CI
 `release-docker` job pushes from the default branch (alongside
 `sha-<commit>` tags). The image is set once, via `images:` in
@@ -631,8 +660,8 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 
 | Suite             | Files | Status            |
 |-------------------|-------|-------------------|
-| Unit tests        | 22    | ✅ all passing     |
-| Integration tests | 7     | ✅ all passing     |
+| Unit tests        | 24    | ✅ all passing     |
+| Integration tests | 8     | ✅ all passing     |
 
 ```bash
 git clone https://github.com/myousefi2016/Allen-Cahn-CUDA.git
@@ -653,7 +682,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   '
 ```
 
-### Unit tests (`tests/unit/`, 22 files)
+### Unit tests (`tests/unit/`, 24 files)
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
@@ -676,11 +705,13 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions                                |
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
-| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split; engine run |
+| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; engine run |
+| `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
+| `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states |
 | `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt, short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks |
 | `test_VTKWriter.cpp`          | Async and synchronous writes, raw / VTS output, VTS topology, write failures reported (never a published broken file), statistics cache |
 
-### Integration tests (`tests/integration/`, 7 files)
+### Integration tests (`tests/integration/`, 8 files)
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
@@ -691,6 +722,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_CheckpointRestart.cu`   | Checkpoint at midpoint then restart matches uninterrupted run                    |
 | `test_StencilComparison.cu`   | 7-point vs 27-point: bounded fields, smoother 27-pt interface, same physics      |
 | `test_AnisotropyForce.cu`     | Seed growth favours <100> increasingly with ε; grid anisotropy at ε = 0 is < 2% and vanishes under refinement |
+| `test_WillmoreRefinement.cu`  | At ε = 0.12 grid refinement does not converge without the Willmore term and converges with it |
 
 ### End-to-end test (`tests/e2e/`)
 
@@ -720,15 +752,16 @@ Allen-Cahn-CUDA/
 │   ├── core/                  # Grid, SimulationConfig, FieldData,
 │   │                          # CheckpointManager, LRUCache, SpatialHash, ConcurrentMap
 │   ├── cuda/                  # ISolver, CudaSolver, MultiGPUSolver,
-│   │                          # AllenCahn / Thermal / Boundary / Reduction kernels,
+│   │                          # AllenCahn / Thermal / Boundary / Reduction / Willmore kernels,
+│   │                          # WillmoreSolve (implicit Willmore step),
 │   │                          # DeviceField (RAII GPU memory), CudaUtils (Stream, Event)
 │   ├── io/                    # VTKWriter (async), CheckpointIO (binary, fsync, CRC32)
 │   ├── logging/               # Logger (spdlog wrapper)
 │   ├── main.cpp               # Entry point + signal handler
 │   └── CMakeLists.txt
 ├── tests/
-│   ├── unit/                  # 22 unit-test files
-│   ├── integration/           # 7 integration-test files
+│   ├── unit/                  # 24 unit-test files
+│   ├── integration/           # 8 integration-test files
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   └── CMakeLists.txt
 ├── config/                    # JSON simulation configs (default, dendrite, etc.)
@@ -760,7 +793,7 @@ Allen-Cahn-CUDA/
 ## References
 
 1. Karma, A., & Rappel, W.-J. (1998). Quantitative phase-field modeling of dendritic growth in two and three dimensions. *Physical Review E*, **57**(4), 4323.
-2. Plapp, M., & Karma, A. (2003). Multiscale finite-difference–diffusion–Monte-Carlo method for simulating dendritic solidification. *Journal of Computational Physics*, **165**(2), 592–619.
+2. Plapp, M., & Karma, A. (2000). Multiscale finite-difference–diffusion–Monte-Carlo method for simulating dendritic solidification. *Journal of Computational Physics*, **165**(2), 592–619.
 3. Patra, M., & Karttunen, M. (2006). Stencils with isotropic discretization error for differential operators. *Numerical Methods for Partial Differential Equations*, **22**(4), 936–953.
 4. Provatas, N., Goldenfeld, N., & Dantzig, J. (1998). Efficient computation of dendritic microstructures using adaptive mesh refinement. *Physical Review Letters*, **80**(15), 3308.
 
