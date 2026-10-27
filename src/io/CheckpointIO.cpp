@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
@@ -120,17 +121,40 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) 
         throw std::runtime_error("Unsupported checkpoint version: " + std::to_string(hdr.version));
     }
 
-    if (hdr.Nx < 1 || hdr.Ny < 1 || hdr.Nz < 1 || hdr.Nx > 100000 || hdr.Ny > 100000 ||
-        hdr.Nz > 100000) {
+    if (hdr.Nx < 3 || hdr.Ny < 3 || hdr.Nz < 3) {
         throw std::runtime_error("Checkpoint has invalid dimensions: " + std::to_string(hdr.Nx) +
                                  "x" + std::to_string(hdr.Ny) + "x" + std::to_string(hdr.Nz));
     }
-    if (hdr.dx <= 0.0 || hdr.dy <= 0.0 || hdr.dz <= 0.0) {
+    if (!(hdr.dx > 0.0) || !(hdr.dy > 0.0) || !(hdr.dz > 0.0)) {
         throw std::runtime_error("Checkpoint has non-positive grid spacing");
     }
     if (hdr.num_fields != 2) {
         throw std::runtime_error("Checkpoint has unexpected num_fields: " +
                                  std::to_string(hdr.num_fields));
+    }
+    // The file must be exactly the header and the two fields of the header's
+    // grid. Checked before allocating: a corrupted header cannot request an
+    // arbitrary allocation, and a truncated or extended file is rejected.
+    std::uint64_t cells = 0, payload = 0, expected = 0;
+    const bool overflow =
+        __builtin_mul_overflow(static_cast<std::uint64_t>(hdr.Nx),
+                               static_cast<std::uint64_t>(hdr.Ny), &cells) ||
+        __builtin_mul_overflow(cells, static_cast<std::uint64_t>(hdr.Nz), &cells) ||
+        __builtin_mul_overflow(cells, std::uint64_t{2} * sizeof(Real), &payload) ||
+        __builtin_add_overflow(payload, std::uint64_t{sizeof(Header)}, &expected);
+    std::error_code size_error;
+    const std::uintmax_t actual = std::filesystem::file_size(path, size_error);
+    if (size_error) {
+        throw std::runtime_error("Cannot read the size of checkpoint file " + path.string() + ": " +
+                                 size_error.message());
+    }
+    if (overflow || actual != expected) {
+        throw std::runtime_error(
+            "Checkpoint file size " + std::to_string(actual) + " does not match its " +
+            std::to_string(hdr.Nx) + "x" + std::to_string(hdr.Ny) + "x" + std::to_string(hdr.Nz) +
+            " grid (" +
+            (overflow ? std::string("overflows") : std::to_string(expected) + " bytes") +
+            "): " + path.string());
     }
 
     // Reconstruct grid

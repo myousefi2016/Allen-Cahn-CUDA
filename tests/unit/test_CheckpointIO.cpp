@@ -11,6 +11,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <iterator>
+#include <string>
 #include <vector>
 
 using namespace ac;
@@ -168,4 +169,62 @@ TEST_F(CheckpointIOTest, CorruptedPayloadIsRejected) {
         f.write(&byte, 1);
     }
     EXPECT_THROW(CheckpointIO::read(path), std::runtime_error);
+}
+
+namespace {
+
+/// read() must throw a runtime_error whose message contains `needle`.
+void expect_read_rejects(const std::filesystem::path& path, const std::string& needle) {
+    try {
+        (void)CheckpointIO::read(path);
+        ADD_FAILURE() << "accepted " << path;
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find(needle), std::string::npos) << e.what();
+    }
+}
+
+} // namespace
+
+// A checkpoint is exactly the header and the two fields of its grid: a file
+// one byte longer or shorter is rejected (the payload CRC alone cannot catch
+// trailing bytes; the resume helper rejects them too).
+TEST_F(CheckpointIOTest, FileSizeMustMatchTheHeaderGrid) {
+    Grid grid(Dim3{8, 8, 8}, Spacing{0.5, 0.5, 0.5});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    phi.fill(0.25);
+    u.fill(-0.75);
+    const auto longer = test_dir_ / "longer.acbin", shorter = test_dir_ / "shorter.acbin";
+    CheckpointIO::write(longer, 3, 0.1, 0.01, grid, phi, u);
+    CheckpointIO::write(shorter, 3, 0.1, 0.01, grid, phi, u);
+    const auto size = std::filesystem::file_size(longer);
+    ASSERT_EQ(size, sizeof(CheckpointIO::Header) + 2 * 512 * sizeof(double));
+    std::ofstream(longer, std::ios::binary | std::ios::app).put('\0');
+    std::filesystem::resize_file(shorter, size - 1);
+    expect_read_rejects(longer, "does not match its 8x8x8 grid");
+    expect_read_rejects(shorter, "does not match its 8x8x8 grid");
+}
+
+// The size check replaces a cap of 100000 cells per axis: a long thin grid is
+// a valid checkpoint, and a header whose grid overflows 64 bits is rejected
+// by its size before anything is allocated.
+TEST_F(CheckpointIOTest, LongAxisIsReadAndAnOverflowingHeaderIsRejected) {
+    Grid grid(Dim3{100001, 3, 3}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    phi.fill(0.5);
+    u.fill(-0.25);
+    const auto path = test_dir_ / "long_axis.acbin";
+    CheckpointIO::write(path, 7, 0.7, 0.1, grid, phi, u);
+    const auto data = CheckpointIO::read(path);
+    EXPECT_EQ(data.grid.Nx(), 100001);
+    EXPECT_EQ(data.phi.data()[data.phi.size() - 1], 0.5);
+
+    CheckpointIO::Header hdr{};
+    hdr.Nx = hdr.Ny = hdr.Nz = 1 << 30;
+    hdr.dx = hdr.dy = hdr.dz = 0.4;
+    hdr.num_fields = 2;
+    const auto huge = test_dir_ / "huge.acbin";
+    std::ofstream(huge, std::ios::binary)
+        .write(reinterpret_cast<const char*>(&hdr), sizeof(hdr))
+        .write("payload", 7);
+    expect_read_rejects(huge, "overflows");
 }
