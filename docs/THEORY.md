@@ -486,23 +486,31 @@ over the front (its maximum is 14–23 times its mean) than the spatial error
 implicitly, has 0.57 of Euler's time error at ε = 0.07 and about 0.9 at
 ε ≥ 0.10, where the error of the φ step, common to both, dominates.
 
-**Choice of scheme.** Between Euler and IMEX, each at its own dt, the one
-with the lower measured cost per unit of simulated time (RTX 4090, median
-over 200 steps, no other process on the GPU):
+**Choice of scheme.** Between Euler and IMEX, each at its own dt, a
+configuration ships the one whose measured cost per unit of simulated time
+is lower in each of four interleaved repetitions (RTX 4090, CUDA 13.2,
+median over 200 steps after 220 from the seed, no other process on the
+GPU). Where neither is lower in all four, the two costs are equal within
+the spread of the measurement, and the configuration keeps Euler, which
+needs 13 % less memory (Appendix C: 108.1 against 124.1 bytes per cell
+with β > 0):
 
 | Configuration | Euler: ms/step, ms per unit time | IMEX: ms/step, ms per unit time | Shipped |
 |---|---|---|---|
-| `benchmark_small.json` (128³) | 3.49–3.51, 1394–1406 | 6.24–6.29, 1249–1257 | IMEX, dt = 0.005 |
-| Makefile `cuda-run-vtk` (128³) | 3.54–3.57, 707–713 | 7.12–7.16, 712–716 | Euler, dt = 0.005 |
-| `run_dendrite.json` (160³) | 7.79, 12 456 | 11.05, 17 678 | Euler, dt = 0.000625 |
-| `run_dendrite_large.json` (384³) | 118.1, 94 453 | 164.2, 131 366 | Euler, dt = 0.00125 |
-| `run_dendrite_long.json` (192³) | 14.4, 46 198 | 20.3, 64 862 | Euler, dt = 0.0003125 |
+| `benchmark_small.json` (128³) | 3.52–3.55, 1407–1419 | 6.25–6.27, 1250–1254 | IMEX, dt = 0.005 |
+| Makefile `cuda-run-vtk` (128³) | 3.57, 713–715 | 7.13–7.14, 713–714 | Euler, dt = 0.005 (tie) |
+| `run_dendrite.json` (160³) | 7.80–7.81, 12 482–12 500 | 11.05–11.06, 17 680–17 690 | Euler, dt = 0.000625 |
+| `run_dendrite_large.json` (384³) | 117.9, 94 330–94 339 | 164.0, 131 203–131 212 | Euler, dt = 0.00125 |
+| `run_dendrite_long.json` (192³) | 14.41–14.42, 46 116–46 133 | 20.27–20.29, 64 879–64 928 | Euler, dt = 0.0003125 |
 
-(ranges: four interleaved repetitions). For `cuda-run-vtk` Euler was
-cheaper in all four repetitions, by 0.4–1.0 %, and also needs 13 % less
-memory. The 600³ configurations (`default.json`, the k8s base and the README
-example) use Euler, dt = 0.0025: with β > 0 the IMEX fields alone take 24.9 GiB there, more
-than a 24 GB GPU has (Appendix C). The k8s dev overlay is by its own
+(ranges over the four repetitions). In every other configuration one
+scheme is lower in all four repetitions, by 10.9–29.4 %. For `cuda-run-vtk`
+IMEX was lower in three repetitions, by 0.09–0.11 %, and Euler in one, by
+0.04 %, while each scheme's own cost varied by up to 0.25 % between
+repetitions: a tie, so Euler. The 600³ configurations (`default.json`, the
+k8s base and the README example) use Euler, dt = 0.0025: with β > 0 the
+IMEX fields alone take 24.9 GiB there, more than a 24 GB GPU has
+(Appendix C). The k8s dev overlay is by its own
 description the base with a smaller grid and fewer steps, so it keeps the
 base's scheme and dt. Two outer iterations in every step of every run above.
 
@@ -635,7 +643,8 @@ throughput (RTX 4090: their time equals their instruction count at the
 measured rate within 1.4 %, and grows linearly with the number of divisions
 at fixed memory traffic), and each division compiles to a reciprocal estimate
 refined by eight double-precision instructions. A step of the benchmark case
-drops from 17.33 to 15.9 ms.
+dropped from 17.33 to 15.9 ms (both measured when the change was made;
+16.0 ms on the current code, table below).
 
 **Multi-GPU.** The single-precision iterate and its Laplacian are exchanged
 between domains like the double-precision fields (their boundary cells
@@ -645,19 +654,19 @@ a decomposed run gives the same bits as one GPU (`MultiGPUEquivalence/*_Willmore
 
 **Cost** (RTX 4090, CUDA 13.2, β = 1, Euler, ms per step over the first
 steps of a run from the seed; the Jacobi column is the Jacobi-preconditioned
-CG this section replaces):
+CG this section replaces, measured before it was replaced):
 
 | Case | Jacobi CG | Chebyshev | Degree | Outer iterations |
 |---|---|---|---|---|
-| 64³, h = 0.8, dt = 0.03, ε = 0.12 | 8.20 | 1.14 | 33 | 2 |
-| 127³, h = 0.4, dt = 0.0075, ε = 0.12 | 60.7 | 6.92 | 70 | 2 |
-| 160³, h = 0.4, dt = 0.005, ε = 0.12 (run_dendrite grid) | 106.9 | 15.9 | 58 | 2 |
+| 64³, h = 0.8, dt = 0.03, ε = 0.12 | 8.20 | 1.20 | 33 | 2 |
+| 127³, h = 0.4, dt = 0.0075, ε = 0.12 | 60.7 | 6.95 | 70 | 2 |
+| 160³, h = 0.4, dt = 0.005, ε = 0.12 (run_dendrite grid) | 106.9 | 16.0 | 58 | 2 |
 | 192³, h = 0.4, dt = 0.005, ε = 0.15 (run_dendrite_long grid) | 222.8 | 37.3 | 61 | 2 |
-| 253³, h = 0.2, dt = 0.001875, ε = 0.12 | 1102.9 | 184.9 | 145 | 2 (2.48 on average over 8000 steps) |
-| 384³, h = 0.4, dt = 0.005, ε = 0.10 (run_dendrite_large grid) | 2010.9 | 288.2 | 55 | 2 |
+| 253³, h = 0.2, dt = 0.001875, ε = 0.12 | 1102.9 | 185.0 | 145 | 2 (2.48 on average over 8000 steps) |
+| 384³, h = 0.4, dt = 0.005, ε = 0.10 (run_dendrite_large grid) | 2010.9 | 288.3 | 55 | 2 |
 
 For comparison, an unregularised (β = 0) Heun step on the run_dendrite grid
-at dt = 0.005, ε = 0.12 takes 8.7 ms.
+at dt = 0.005, ε = 0.12 takes 8.82 ms.
 
 **Evidence** (`tests/unit/test_WillmorePreconditioner.cu`):
 
@@ -1607,8 +1616,8 @@ graph TD
 | … with `willmore_beta > 0` | 108.1 | rejected | rejected | 124.1 |
 | Explicit thermal update stable for (§10.1) | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2.785 | any Δt (u implicit) |
 | Checkerboards of the liquid do not grow only if (§10.1; minimum over S and the gradient direction) | Δt(Λ_S − βL_S) ≤ 2τ | Δt·Λ_S ≤ 2τ | Δt·Λ_S ≤ 2.785τ | Δt(Λ_S − βL_S) ≤ 2τ |
-| ms per step, 160³, h = 0.4, dt = 0.005, ε = 0.05, β = 0 | 4.27 | 8.77 | 18.05 | 10.99 |
-| ms per step, same grid, ε = 0.12, β = 0.25 | 10.80 | rejected | rejected | 17.33 |
+| ms per step, 160³, h = 0.4, dt = 0.005, ε = 0.05, β = 0 | 4.30 | 8.82 | 18.07 | 10.95 |
+| ms per step, same grid, ε = 0.12, β = 0.25 | 10.84 | rejected | rejected | 17.34 |
 
 ρ is the largest eigenvalue of −∇²ₕ: 4 Σ_d h_d⁻² (7-point), 184/(30h²)
 (27-point); Λ_S, τ and L_S are those of §10.1 (with the 7-point μ_S for
