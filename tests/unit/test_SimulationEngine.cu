@@ -193,6 +193,26 @@ TEST_F(SimulationEngineTest, SaturationStopsAtFirstCheckWithCheckpointAndOutput)
     EXPECT_FALSE(std::filesystem::exists(cfg.checkpoint.checkpoint_dir / "checkpoint_2.acbin"));
 }
 
+// The same with Dirichlet phi = -1 walls (default.json, benchmark_small, the
+// k8s configurations): the boundary cells always hold -1, so the guard must
+// read the cells next to the walls to see the solid there.
+TEST_F(SimulationEngineTest, SaturationStopsWithDirichletWalls) {
+    auto cfg = make_config(8, 10);
+    cfg.boundary.phi_bc.type = BCType::Dirichlet;
+    cfg.boundary.phi_bc.value = -1.0;
+    cfg.initial.seed_radius = 2.0; // the cells next to the walls are 1.0 from the centre
+    cfg.time.exit_on_saturation = true;
+    cfg.time.saturation_threshold = -0.5;
+    cfg.time.saturation_check_freq = 1;
+
+    SimulationEngine engine(cfg);
+    ASSERT_NO_THROW(engine.run());
+
+    EXPECT_TRUE(std::filesystem::exists(cfg.checkpoint.checkpoint_dir / "checkpoint_1.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(cfg.output.output_dir / "output_1.vts"));
+    EXPECT_FALSE(std::filesystem::exists(cfg.output.output_dir / "output_2.vts"));
+}
+
 // Control for the test above: a seed well inside the box never trips the
 // guard, so the run reaches max_steps.
 TEST_F(SimulationEngineTest, NoSaturationRunsToMaxSteps) {

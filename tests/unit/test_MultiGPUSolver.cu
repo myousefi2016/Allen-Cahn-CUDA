@@ -5,6 +5,7 @@
 #include "cuda/MultiGPUSolver.cuh"
 #include "logging/Logger.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -341,6 +342,86 @@ TEST_F(MultiGPUSolverTest, RejectsDomainsThinnerThanTwoPlanes) {
     auto cfg = make_config({TimeScheme::Euler, 3, BcLayout::Uniform, 5});
     cfg.gpu.device_ids = shared_device(3);
     EXPECT_THROW(MultiGPUSolver solver(cfg), std::invalid_argument);
+}
+
+// The saturation guard's reduction reads the interior cells next to the
+// walls (layers 1 and N-2 of each axis), not the boundary cells: those hold
+// the boundary condition. A Dirichlet face at phi = +5, far above every
+// interior value, must not show; the result is the exact maximum over the
+// layers next to the walls, on one GPU and split into two and three domains
+// (only the physical X walls count). With zero-flux faces every boundary cell
+// is a copy of a cell next to a wall, so there the maximum over the boundary
+// cells is the same number.
+TEST_F(MultiGPUSolverTest, BoundaryMaxReadsTheCellsNextToTheWalls) {
+    auto bc = [](BCType type, double value, double alpha, double beta) {
+        BoundaryConfig b;
+        b.type = type;
+        b.value = value;
+        b.alpha = alpha;
+        b.beta = beta;
+        return b;
+    };
+    const BoundaryConfig zero_flux = bc(BCType::Neumann, 0.0, 1.0, 0.0);
+    for (bool all_zero_flux : {false, true}) {
+        SCOPED_TRACE(all_zero_flux ? "zero-flux faces" : "Dirichlet +5, Robin, zero-flux faces");
+        SimulationConfig cfg;
+        cfg.grid.Nx = 12;
+        cfg.grid.Ny = 7;
+        cfg.grid.Nz = 9;
+        cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = 0.4;
+        cfg.physics.epsilon = 0.05;
+        cfg.time.scheme = TimeScheme::Euler;
+        cfg.boundary.per_face = true;
+        if (all_zero_flux)
+            cfg.boundary.phi_faces = PerFaceBoundary::uniform(zero_flux);
+        else
+            cfg.boundary.phi_faces.faces = {
+                bc(BCType::Dirichlet, 5.0, 1.0, 0.0), zero_flux,
+                bc(BCType::Robin, 0.0, 1.0, 0.5),     zero_flux,
+                bc(BCType::Dirichlet, 5.0, 1.0, 0.0), bc(BCType::Dirichlet, 5.0, 1.0, 0.0)};
+        cfg.boundary.u_faces = PerFaceBoundary::uniform(zero_flux);
+        cfg.validate();
+        const Grid grid = cfg.make_grid();
+        FieldData phi(grid, "phi"), u(grid, "u");
+        std::uint64_t state = 12345;
+        for (std::size_t i = 0; i < phi.size(); ++i) {
+            state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+            phi.data()[i] = -1.0 + 2.0 * static_cast<double>(state >> 11) / 9007199254740992.0;
+            u.data()[i] = -0.5;
+        }
+        const int Nx = cfg.grid.Nx, Ny = cfg.grid.Ny, Nz = cfg.grid.Nz;
+        double expected = -1e30;
+        for (int x = 1; x < Nx - 1; ++x)
+            for (int y = 1; y < Ny - 1; ++y)
+                for (int z = 1; z < Nz - 1; ++z)
+                    if (x == 1 || x == Nx - 2 || y == 1 || y == Ny - 2 || z == 1 || z == Nz - 2)
+                        expected = std::max(expected, phi(x, y, z));
+
+        CudaSolver single(cfg);
+        single.initialize(phi, u);
+        EXPECT_EQ(single.compute_boundary_max_phi(), expected);
+        for (int domains : {2, 3}) {
+            auto multi_cfg = cfg;
+            multi_cfg.gpu.multi_gpu = true;
+            multi_cfg.gpu.device_ids = shared_device(domains);
+            MultiGPUSolver multi(multi_cfg);
+            multi.initialize(phi, u);
+            EXPECT_EQ(multi.compute_boundary_max_phi(), expected) << domains << " domains";
+        }
+        if (all_zero_flux) {
+            // The boundary cells after the BCs hold copies of the cells next
+            // to the walls: their maximum is the same number.
+            FieldData applied(grid, "phi");
+            single.copy_phi_to_host(applied);
+            double boundary_max = -1e30;
+            for (int x = 0; x < Nx; ++x)
+                for (int y = 0; y < Ny; ++y)
+                    for (int z = 0; z < Nz; ++z)
+                        if (x == 0 || x == Nx - 1 || y == 0 || y == Ny - 1 || z == 0 || z == Nz - 1)
+                            boundary_max = std::max(boundary_max, applied(x, y, z));
+            EXPECT_EQ(boundary_max, expected);
+        }
+    }
 }
 
 // ── Engine level: solver selection, adaptive dt and the step timer ────────

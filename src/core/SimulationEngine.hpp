@@ -48,7 +48,7 @@ private:
     void copy_phi_if_needed(int step);
     void copy_u_if_needed(int step);
 
-    /// Max of phi over the six 1-cell-thick boundary slabs: true if above
+    /// Max of phi over the interior cells next to the walls: true if above
     /// config.time.saturation_threshold, i.e. the solid has reached a wall and
     /// the run no longer models growth into an unbounded melt. Throws if the
     /// maximum is NaN (diverged field).

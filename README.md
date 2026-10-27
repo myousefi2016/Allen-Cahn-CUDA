@@ -43,7 +43,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Async I/O**: dedicated VTK/raw writer thread with bounded job queue, `condition_variable` backpressure, atomic temp-then-rename writes, and an LRU-cached field-statistics map.
 - **Crash-safe binary checkpointing**: 128-byte fixed header with magic `ACCHKPT`, CRC32 over field data, atomic rename + parent-directory `fsync`, and rolling retention that keeps one consistent trajectory per directory.
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
-- **Saturation guard**: an O(N²) boundary-only reduction stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
+- **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
 - **Comprehensive test suite**: 24 unit-test files, 8 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
@@ -400,8 +400,9 @@ produces in late frames:
 
 ### Saturation guard
 
-When the dendrite reaches a wall (`phi > -0.5` anywhere on the boundary
-slab) the frame carries no useful morphology. By default these frames are
+When the dendrite reaches a wall (`phi > -0.5` anywhere in the cells next
+to a wall, the rule of the engine's guard) the frame carries no useful
+morphology. By default these frames are
 rendered with a red **SATURATED — wall reached** badge in the upper-right.
 `--skip-saturated` (or `make cuda-dendrite-demo`, which sets it) drops
 them entirely.

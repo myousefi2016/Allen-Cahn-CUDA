@@ -247,7 +247,7 @@ int SimulationEngine::time_loop() {
 
         // Saturation guard
         if (sat_guard && step % sat_freq == 0 && check_saturation(step)) {
-            spdlog::warn("Saturation detected at step {} (phi > {:.3f} on a boundary slab). "
+            spdlog::warn("Saturation detected at step {} (phi > {:.3f} next to a wall). "
                          "Writing final checkpoint and exiting cleanly.",
                          step, config_.time.saturation_threshold);
             if (!checkpoint_mgr_->should_checkpoint(step))

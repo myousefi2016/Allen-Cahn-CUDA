@@ -78,9 +78,10 @@ public:
     /// max|phi_new - phi_old| over the x-slab [x_begin, x_end).
     [[nodiscard]] double compute_max_dphi(int x_begin, int x_end) const;
 
-    /// max(phi) over the physical boundary cells of the x-slab [x_begin, x_end):
-    /// Y/Z faces restricted to the slab plus the X planes x_begin / x_end-1
-    /// when x_lo_face / x_hi_face say they are walls.
+    /// max(phi) over the interior cells next to the walls in the x-slab
+    /// [x_begin, x_end): the layers y = 1, Ny-2 and z = 1, Nz-2 of its interior
+    /// planes, plus the planes x_begin+1 / x_end-2 when x_lo_face / x_hi_face
+    /// say that x_begin / x_end-1 are walls.
     [[nodiscard]] double compute_boundary_max_phi(int x_begin, int x_end, bool x_lo_face,
                                                   bool x_hi_face) const;
 

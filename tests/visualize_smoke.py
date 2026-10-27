@@ -180,6 +180,27 @@ def main() -> int:
                 "saturation guard failed on wall-touching grid")
         sys.stdout.write("  PASS  saturated detection on wall-touching grid\n")
 
+        # The rule reads the cells next to the walls, not the boundary cells,
+        # which hold the boundary condition: a solid touching Dirichlet -1
+        # walls is saturated, a liquid whose boundary cells hold +1 is not.
+        def with_boundary(grid, value):
+            g = grid.copy()
+            n = g.dimensions
+            phi = np.asarray(g.point_data["phi"]).reshape(n, order="F").copy()
+            phi[0, :, :] = phi[-1, :, :] = value
+            phi[:, 0, :] = phi[:, -1, :] = value
+            phi[:, :, 0] = phi[:, :, -1] = value
+            g.point_data["phi"] = phi.ravel(order="F")
+            return g
+
+        _assert(viz.detect_saturation(with_boundary(sat_grid, -1.0)),
+                "solid next to Dirichlet -1 walls not detected")
+        liquid = pv.read(str(_make_tmp_grid(tmpdir / "liquid", n=24, dx=0.5, r0=1.5,
+                                            name="output_0.vts")))
+        _assert(not viz.detect_saturation(with_boundary(liquid, 1.0)),
+                "boundary cells holding +1 read as saturation")
+        sys.stdout.write("  PASS  saturation read next to the walls, not on the boundary cells\n")
+
         # ── 4. Render: panels layout ───────────────────────────────────
         out_panels = tmpdir / "viz_panels"
         out_panels.mkdir(parents=True, exist_ok=True)

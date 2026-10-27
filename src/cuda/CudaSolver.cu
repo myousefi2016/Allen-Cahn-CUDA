@@ -644,55 +644,62 @@ __device__ double warp_reduce_max(double val) {
     return val;
 }
 
-/// Per-block reduction: max(phi) over the physical boundary cells of the
-/// X range [x_begin, x_end): the Y and Z faces restricted to that range, plus
-/// the X planes x_begin / x_end-1 when they are walls (not inter-GPU halos).
-/// NaN propagates, so a diverged field cannot read as unsaturated.
-/// Writes one per-block result (no cross-block atomics — avoids the broken
-/// atomicMax-for-negative-doubles pattern).
+/// Per-block reduction: max(phi) over the interior cells next to the walls in
+/// the X range [x_begin, x_end): the cells of the first and last interior Y
+/// and Z layers (y = 1, Ny-2; z = 1, Nz-2) in the range's interior planes,
+/// plus the planes x_begin+1 / x_end-2 next to X planes x_begin / x_end-1 that
+/// are walls (not inter-GPU halos). These are the solution's values next to
+/// each wall whatever the boundary condition: the boundary cells themselves
+/// hold the BC (a Dirichlet value, a Robin combination), or for zero-flux and
+/// periodic faces a copy of these cells. NaN propagates, so a diverged field
+/// cannot read as unsaturated. Writes one per-block result (no cross-block
+/// atomics: avoids the broken atomicMax-for-negative-doubles pattern).
 __global__ void __launch_bounds__(256)
     boundary_max_kernel(const double* __restrict__ phi, double* __restrict__ block_results, int Ny,
                         int Nz, int x_begin, int x_end, int x_lo_face, int x_hi_face) {
     extern __shared__ double sdata[];
     unsigned int tid = threadIdx.x;
     unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
-    const std::size_t nx = static_cast<std::size_t>(x_end - x_begin);
-    const std::size_t face_yz = static_cast<std::size_t>(Ny) * Nz;
-    const std::size_t n_xlo = x_lo_face ? face_yz : 0;
-    const std::size_t n_xhi = x_hi_face ? face_yz : 0;
-    const std::size_t face_xz = nx * Nz;
-    const std::size_t face_xy = nx * Ny;
-    const std::size_t total_boundary = n_xlo + n_xhi + 2 * face_xz + 2 * face_xy;
+    const int xs = x_begin + (x_lo_face ? 1 : 0), xe = x_end - (x_hi_face ? 1 : 0);
+    const std::size_t nyi = static_cast<std::size_t>(Ny - 2),
+                      nzi = static_cast<std::size_t>(Nz - 2);
+    const std::size_t nxi = xe > xs ? static_cast<std::size_t>(xe - xs) : 0;
+    const std::size_t layer_yz = nyi * nzi;
+    const std::size_t n_xlo = x_lo_face ? layer_yz : 0;
+    const std::size_t n_xhi = x_hi_face ? layer_yz : 0;
+    const std::size_t layer_xz = nxi * nzi;
+    const std::size_t layer_xy = nxi * nyi;
+    const std::size_t total = n_xlo + n_xhi + 2 * layer_xz + 2 * layer_xy;
     double local_max = -1e30;
 
-    for (std::size_t i = gid; i < total_boundary; i += gridDim.x * blockDim.x) {
+    for (std::size_t i = gid; i < total; i += gridDim.x * blockDim.x) {
         int x, y, z;
         std::size_t off = i;
         if (off < n_xlo) {
-            x = x_begin;
-            y = static_cast<int>(off / Nz);
-            z = static_cast<int>(off % Nz);
+            x = x_begin + 1;
+            y = 1 + static_cast<int>(off / nzi);
+            z = 1 + static_cast<int>(off % nzi);
         } else if ((off -= n_xlo) < n_xhi) {
-            x = x_end - 1;
-            y = static_cast<int>(off / Nz);
-            z = static_cast<int>(off % Nz);
-        } else if ((off -= n_xhi) < face_xz) {
-            x = x_begin + static_cast<int>(off / Nz);
-            y = 0;
-            z = static_cast<int>(off % Nz);
-        } else if ((off -= face_xz) < face_xz) {
-            x = x_begin + static_cast<int>(off / Nz);
-            y = Ny - 1;
-            z = static_cast<int>(off % Nz);
-        } else if ((off -= face_xz) < face_xy) {
-            x = x_begin + static_cast<int>(off / Ny);
-            y = static_cast<int>(off % Ny);
-            z = 0;
+            x = x_end - 2;
+            y = 1 + static_cast<int>(off / nzi);
+            z = 1 + static_cast<int>(off % nzi);
+        } else if ((off -= n_xhi) < layer_xz) {
+            x = xs + static_cast<int>(off / nzi);
+            y = 1;
+            z = 1 + static_cast<int>(off % nzi);
+        } else if ((off -= layer_xz) < layer_xz) {
+            x = xs + static_cast<int>(off / nzi);
+            y = Ny - 2;
+            z = 1 + static_cast<int>(off % nzi);
+        } else if ((off -= layer_xz) < layer_xy) {
+            x = xs + static_cast<int>(off / nyi);
+            y = 1 + static_cast<int>(off % nyi);
+            z = 1;
         } else {
-            off -= face_xy;
-            x = x_begin + static_cast<int>(off / Ny);
-            y = static_cast<int>(off % Ny);
-            z = Nz - 1;
+            off -= layer_xy;
+            x = xs + static_cast<int>(off / nyi);
+            y = 1 + static_cast<int>(off % nyi);
+            z = Nz - 2;
         }
         double v = phi[(static_cast<std::size_t>(x) * Ny + y) * Nz + z];
         local_max = nan_max(local_max, v);
@@ -747,14 +754,17 @@ double CudaSolver::compute_boundary_max_phi() const {
 
 double CudaSolver::compute_boundary_max_phi(int x_begin, int x_end, bool x_lo_face,
                                             bool x_hi_face) const {
-    const std::size_t nx = static_cast<std::size_t>(x_end - x_begin);
-    std::size_t total_boundary = static_cast<std::size_t>(2) * nx * params_.Nz +
-                                 static_cast<std::size_t>(2) * nx * params_.Ny;
+    // Cells read by boundary_max_kernel: the interior layers next to the walls.
+    const int xs = x_begin + (x_lo_face ? 1 : 0), xe = x_end - (x_hi_face ? 1 : 0);
+    const std::size_t nyi = static_cast<std::size_t>(params_.Ny - 2),
+                      nzi = static_cast<std::size_t>(params_.Nz - 2);
+    const std::size_t nxi = xe > xs ? static_cast<std::size_t>(xe - xs) : 0;
+    std::size_t total = 2 * nxi * nzi + 2 * nxi * nyi;
     if (x_lo_face)
-        total_boundary += static_cast<std::size_t>(params_.Ny) * params_.Nz;
+        total += nyi * nzi;
     if (x_hi_face)
-        total_boundary += static_cast<std::size_t>(params_.Ny) * params_.Nz;
-    auto cfg = LaunchConfig::for_1d(total_boundary, 256);
+        total += nyi * nzi;
+    auto cfg = LaunchConfig::for_1d(total, 256);
     int num_blocks = static_cast<int>(cfg.grid.x);
 
     DeviceField<double> block_results(static_cast<std::size_t>(num_blocks));

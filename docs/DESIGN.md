@@ -414,15 +414,18 @@ IMEX.
 
 ## 6. Saturation Guard
 
-`SimulationEngine::check_saturation` (`SimulationEngine.cu:177-180`)
-calls `solver_->compute_boundary_max_phi()`, which is an O(N²)
-boundary-only reduction implemented in
-`CudaSolver::compute_boundary_max_phi` (`CudaSolver.cu:498-565`).
-It iterates over the six 1-cell-thick boundary slabs, computes the
-maximum, and triggers a clean shutdown if it exceeds
-`time.saturation_threshold` (default `-0.5`). This avoids the late-time
-numerical blow-up that would otherwise occur once the solid touches the
-domain wall.
+`SimulationEngine::check_saturation` calls
+`solver_->compute_boundary_max_phi()`, an O(N²) reduction implemented in
+`CudaSolver::compute_boundary_max_phi`. It reads the interior cells next to
+the walls (the first and last interior layer of each axis; on several GPUs
+only the domains' physical X walls count), computes the maximum, and
+triggers a clean shutdown if it exceeds `time.saturation_threshold`
+(default `-0.5`): from then on the wall's boundary condition acts on the
+solid and the run no longer represents growth into an unbounded melt. The
+boundary cells themselves are not read: they hold the boundary condition
+(a Dirichlet value never changes), or for zero-flux and periodic faces a
+copy of the cells next to the wall, so for those faces the result is the
+same.
 
 ---
 

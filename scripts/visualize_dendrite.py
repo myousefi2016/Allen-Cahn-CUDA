@@ -27,8 +27,9 @@
 #
 # Saturation guard
 #   --skip-saturated : skip frames where the solid has reached the box wall
-#                       (phi > -0.5 anywhere on the boundary slab). These
-#                       frames carry no useful dendrite morphology.
+#                       (phi > -0.5 anywhere in the cells next to a wall, the
+#                       engine's rule). These frames carry no useful dendrite
+#                       morphology.
 #   without --skip-saturated, saturated frames are rendered with a red
 #   "SATURATED" badge in the upper-right.
 #
@@ -123,7 +124,7 @@ DEFAULT_BG_TOP = (0.65, 0.70, 0.78)     # cool steel-blue
 DEFAULT_WINDOW = (1920, 1080)
 DEFAULT_SMOOTH_ITERS = 20
 DEFAULT_PASS_BAND = 0.10
-DEFAULT_SATURATION_THRESHOLD = -0.5  # phi above this on a boundary cell ⇒ wall touched
+DEFAULT_SATURATION_THRESHOLD = -0.5  # phi above this next to a wall ⇒ wall touched
 
 PANEL_RATIO = 0.62                # main 3D view occupies 62% width
 SIDEBAR_HEIGHT_RATIO = 0.18       # time-series sidebar occupies bottom 18%
@@ -157,22 +158,26 @@ def discover_frames(input_dir: Path, pattern: str) -> List[Path]:
 
 def detect_saturation(grid: pv.StructuredGrid,
                       threshold: float = DEFAULT_SATURATION_THRESHOLD) -> bool:
-    """True if any boundary cell has phi above `threshold`.
+    """True if any interior cell next to a wall has phi above `threshold`.
 
-    Uses extract_subset to grab the six 1-cell-thick boundary slabs and checks
-    the maximum phi value. This is O(N²), not O(N³).
+    The rule of the engine's saturation guard: the first and last interior
+    layer of each axis (indices 1 and n-2), not the boundary cells, which hold
+    the boundary condition (a Dirichlet value never changes). Uses
+    extract_subset on the six layers; O(N^2), not O(N^3).
     """
     if "phi" not in grid.point_data:
         return False
     nx, ny, nz = grid.dimensions
+    if min(nx, ny, nz) < 3:
+        return False
     # extract_subset uses inclusive (i_min, i_max, j_min, j_max, k_min, k_max)
     slabs = [
-        (0, 0, 0, ny - 1, 0, nz - 1),                # x_min
-        (nx - 1, nx - 1, 0, ny - 1, 0, nz - 1),       # x_max
-        (0, nx - 1, 0, 0, 0, nz - 1),                 # y_min
-        (0, nx - 1, ny - 1, ny - 1, 0, nz - 1),        # y_max
-        (0, nx - 1, 0, ny - 1, 0, 0),                 # z_min
-        (0, nx - 1, 0, ny - 1, nz - 1, nz - 1),        # z_max
+        (1, 1, 1, ny - 2, 1, nz - 2),                 # next to x_min
+        (nx - 2, nx - 2, 1, ny - 2, 1, nz - 2),       # next to x_max
+        (1, nx - 2, 1, 1, 1, nz - 2),                 # next to y_min
+        (1, nx - 2, ny - 2, ny - 2, 1, nz - 2),       # next to y_max
+        (1, nx - 2, 1, ny - 2, 1, 1),                 # next to z_min
+        (1, nx - 2, 1, ny - 2, nz - 2, nz - 2),       # next to z_max
     ]
     for sl in slabs:
         try:
@@ -1196,7 +1201,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help="Drop frames where the solid has reached the box wall")
     p.add_argument("--saturation-threshold", type=float,
                    default=DEFAULT_SATURATION_THRESHOLD,
-                   help="phi value above which a boundary cell is 'saturated'")
+                   help="phi value above which a cell next to a wall is 'saturated'")
 
     # Video
     p.add_argument("--make-video", action="store_true",

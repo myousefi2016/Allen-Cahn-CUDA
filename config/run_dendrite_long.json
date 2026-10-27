@@ -18,7 +18,7 @@
         "dy": 0.4,
         "dz": 0.4
     },
-    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.0003125 is the largest dt whose time error does not exceed the spatial error at h = 0.4 (docs/THEORY.md section 4.3); the explicit thermal update is stable below 0.0261. max_steps = 960000 (t = 300) is an upper bound: exit_on_saturation stops the run cleanly, with a final checkpoint and VTK frame, once phi > saturation_threshold on a boundary slab (measured: step 113600, t = 35.5, when the six <100> tips reach the walls). 14.4 ms per step on an RTX 4090: 27 minutes to saturation.",
+    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.0003125 is the largest dt whose time error does not exceed the spatial error at h = 0.4 (docs/THEORY.md section 4.3); the explicit thermal update is stable below 0.0261. max_steps = 960000 (t = 300) is an upper bound: exit_on_saturation stops the run cleanly, with a final checkpoint and VTK frame, once phi > saturation_threshold next to a wall (measured: step 113600, t = 35.5, when the six <100> tips reach the walls). 14.4 ms per step on an RTX 4090: 27 minutes to saturation.",
     "time": {
         "dt": 0.0003125,
         "dt_min": 1e-6,
