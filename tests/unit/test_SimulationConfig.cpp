@@ -3,10 +3,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <initializer_list>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -226,6 +229,13 @@ void expect_rejected(const std::string& json, std::initializer_list<std::string>
     }
 }
 
+/// v to 17 significant digits, enough to tell any two doubles apart.
+std::string digits(double v) {
+    std::ostringstream s;
+    s << std::setprecision(17) << v;
+    return s.str();
+}
+
 std::string all_faces(const std::string& extra = "") {
     std::string s = "{";
     for (const char* f : {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"})
@@ -425,18 +435,114 @@ TEST_F(SimulationConfigTest, RobinCoefficientsMustNotHaveOppositeSigns) {
     }
 }
 
-// alpha + beta/h, the denominator of the ghost value, is checked as the kernel
-// computes it: alpha = 0 with the smallest subnormal beta passes the other
-// rules, but beta/h underflows to zero at h = 4 (not at h = 0.4).
-TEST_F(SimulationConfigTest, RobinDenominatorMustNotVanish) {
-    const std::string robin = R"({"type": "robin", "alpha": 0.0, "beta": 5e-324, "gamma": 0.5})";
+// A Robin face is filled with its coefficients scaled by a power of two
+// (scaled_robin), so its denominator never vanishes and beta*u/h never
+// overflows: extreme but meaningful coefficients are accepted (zero flux with
+// beta = 1e308 or with the smallest subnormal beta at h = 4, the Dirichlet
+// value 1 as 1e-300 u = 1e-300, and the Dirichlet value 2^1024/1.5 = 1.2e308
+// as 1.5 * 2^-10 u = 2^1014, whose gamma a scaling with a denominator above 1
+// would overflow), and only a ghost constant gamma/(alpha + beta/h) beyond the
+// double range is rejected.
+TEST_F(SimulationConfigTest, RobinCoefficientsAtTheEdgesOfTheDoubleRange) {
+    auto with = [](const std::string& field, double h, const std::string& alpha,
+                   const std::string& beta, const std::string& gamma) {
+        return R"({"grid": {"dx": )" + std::to_string(h) + R"(, "dy": )" + std::to_string(h) +
+               R"(, "dz": )" + std::to_string(h) + R"(}, "boundary": {")" + field +
+               R"(": {"type": "robin", "alpha": )" + alpha + R"(, "beta": )" + beta +
+               R"(, "gamma": )" + gamma + "}}}";
+    };
     for (const std::string field : {"phi", "u"}) {
-        expect_rejected(R"({"grid": {"dx": 4.0, "dy": 4.0, "dz": 4.0}, "boundary": {")" + field +
-                            "\": " + robin + "}}",
-                        {"Robin BC for " + field + ":", "alpha + beta/h is zero"});
+        EXPECT_NO_THROW(
+            (void)SimulationConfig::from_json_string(with(field, 0.4, "0.0", "1e308", "0.0")));
+        EXPECT_NO_THROW(
+            (void)SimulationConfig::from_json_string(with(field, 4.0, "0.0", "5e-324", "0.0")));
+        EXPECT_NO_THROW(
+            (void)SimulationConfig::from_json_string(with(field, 0.4, "1e-300", "0.0", "1e-300")));
         EXPECT_NO_THROW((void)SimulationConfig::from_json_string(
-            R"({"grid": {"dx": 0.4, "dy": 0.4, "dz": 0.4}, "boundary": {")" + field +
-            "\": " + robin + "}}"));
+            with(field, 0.4, "0.00146484375", "0.0", "1.7555597020139804e+305")));
+        expect_rejected(with(field, 0.4, "1e-200", "0.0", "1e200"),
+                        {"Robin BC for " + field + ":", "gamma/(alpha + beta/h) overflows"});
+        expect_rejected(with(field, 4.0, "0.0", "5e-324", "0.5"),
+                        {"Robin BC for " + field + ":", "gamma/(alpha + beta/h) overflows"});
+    }
+}
+
+// scaled_robin over alpha and beta from zero and the smallest subnormal to the
+// largest double, both signs, three gammas and four spacings: the larger
+// scaled term lies in (1/8, 1/2) and the denominator in (1/8, 1) in
+// magnitude, and the ghost (gamma + beta*u/h)/(alpha + beta/h) of the kernel
+// has the same bits as with the unscaled coefficients whenever every
+// intermediate of both is a normal double or zero.
+TEST_F(SimulationConfigTest, ScaledRobinCoefficients) {
+    const double magnitudes[] = {0.0, 5e-324, 1e-300, 0.00146484375,
+                                 0.7, 3.0,    1e300,  std::numeric_limits<double>::max()};
+    const double spacings[] = {0.4, 4.0, 1.0 / 3.0, 1e-3};
+    auto normal_or_zero = [](double v) { return v == 0.0 || std::fpclassify(v) == FP_NORMAL; };
+    struct Ghost {
+        double ghost;
+        bool normal;
+    };
+    // The ghost as apply_bc_face_kernel computes it, and whether every
+    // intermediate is a normal double or zero.
+    auto ghost = [&](double alpha, double beta, double gamma, double h, double u) {
+        const double bu = beta * u, buh = bu / h, bh = beta / h, num = gamma + buh,
+                     den = alpha + bh, q = num / den;
+        bool normal = true;
+        for (double v : {alpha, beta, gamma, bu, buh, bh, num, den, q})
+            normal = normal && normal_or_zero(v);
+        return Ghost{q, normal};
+    };
+    int compared = 0;
+    for (double sign : {1.0, -1.0})
+        for (double a : magnitudes)
+            for (double b : magnitudes)
+                for (double gamma : {0.0, 0.5, -2.0})
+                    for (double h : spacings) {
+                        if (a == 0.0 && b == 0.0)
+                            continue;
+                        BoundaryConfig bc;
+                        bc.type = BCType::Robin;
+                        bc.alpha = sign * a;
+                        bc.beta = sign * b;
+                        bc.gamma = gamma;
+                        SCOPED_TRACE("alpha " + digits(bc.alpha) + " beta " + digits(bc.beta) +
+                                     " gamma " + digits(gamma) + " h " + digits(h));
+                        const RobinCoefficients r = scaled_robin(bc, h);
+                        const double larger = std::max(std::fabs(r.alpha), std::fabs(r.beta / h));
+                        EXPECT_GT(larger, 0.125);
+                        EXPECT_LT(larger, 0.5);
+                        const double den = std::fabs(r.alpha + r.beta / h);
+                        EXPECT_GT(den, 0.125);
+                        EXPECT_LT(den, 1.0);
+                        for (double u : {-0.8, 0.3, 1.0}) {
+                            const Ghost unscaled = ghost(bc.alpha, bc.beta, gamma, h, u);
+                            const Ghost scaled = ghost(r.alpha, r.beta, r.gamma, h, u);
+                            if (!unscaled.normal || !scaled.normal)
+                                continue;
+                            EXPECT_EQ(scaled.ghost, unscaled.ghost) << "u " << u;
+                            ++compared;
+                        }
+                    }
+    // How many of the 2 * 63 * 3 * 4 * 3 = 4536 ghosts stay in the normal range.
+    std::printf("ScaledRobinCoefficients: %d ghosts compared bit for bit\n", compared);
+
+    // The preconditions are checked, not assumed.
+    BoundaryConfig bc;
+    bc.type = BCType::Robin;
+    bc.alpha = 0.0;
+    bc.beta = 0.0;
+    EXPECT_THROW((void)scaled_robin(bc, 0.4), std::invalid_argument);
+    bc.alpha = 1.0;
+    for (double h : {0.0, -0.4, std::numeric_limits<double>::infinity(),
+                     std::numeric_limits<double>::quiet_NaN()})
+        EXPECT_THROW((void)scaled_robin(bc, h), std::invalid_argument) << h;
+    for (double bad :
+         {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+        BoundaryConfig a = bc, b = bc;
+        a.alpha = bad;
+        b.beta = bad;
+        EXPECT_THROW((void)scaled_robin(a, 0.4), std::invalid_argument) << bad;
+        EXPECT_THROW((void)scaled_robin(b, 0.4), std::invalid_argument) << bad;
     }
 }
 

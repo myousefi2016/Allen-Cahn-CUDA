@@ -1102,8 +1102,15 @@ c = (β/h) / (α + β/h)
 ```
 
 `validate()` requires α, β and γ finite, α and β not both zero and not of
-opposite signs (αβ ≥ 0), and α + β/h ≠ 0 as the kernel computes it. Then
-c ∈ [0, 1] (c = 0 at β = 0, Dirichlet-like; c = 1 at α = 0, Neumann-like).
+opposite signs (αβ ≥ 0), and the ghost constant γ/(α + β/h) within the
+double range. The fill multiplies α, β and γ by one power of two 2⁻ᵏ that
+brings max(|α|, |β|/h) into (1/8, 1/2) (`scaled_robin`): the denominator
+α + β/h then lies in (1/8, 1) in magnitude, so it cannot vanish and the
+scaled γ cannot overflow while the quotient is finite, and the ghost keeps
+its bits whenever every intermediate is a normal double. Unscaled, β = 10³⁰⁸
+at h = 0.4 makes β/h infinite and the ghost 0 or NaN, and β = 5·10⁻³²⁴ at
+h = 4 makes β/h zero and the ghost NaN. Then c ∈ [0, 1] (c = 0 at β = 0,
+Dirichlet-like; c = 1 at α = 0, Neumann-like).
 Opposite signs describe a face that feeds the field in proportion to its own
 value, a negative heat-transfer coefficient: for γ = 0 the heat equation
 gives d/dt ½∫u² = −D∫|∇u|² − D(α/β)∮u², and the boundary term is a source

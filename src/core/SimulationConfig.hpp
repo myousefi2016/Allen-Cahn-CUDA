@@ -24,6 +24,24 @@ struct BoundaryConfig {
     Real gamma = 0.0;
 };
 
+/// The coefficients of a Robin face as the ghost fill uses them, for the
+/// spacing ds normal to the face: alpha, beta and gamma times the same power
+/// of two 2^-k, k chosen so that max(|alpha|, |beta|/ds) lies in (1/8, 1/2).
+/// With alpha*beta >= 0 the denominator alpha + beta/ds then lies in (1/8, 1)
+/// in magnitude: it cannot vanish, the scaled gamma is smaller in magnitude
+/// than the ghost constant gamma/(alpha + beta/ds), and |beta*u/ds| < |u|/2.
+/// A power-of-two scaling is exact, so the ghost
+/// (gamma + beta*u/ds)/(alpha + beta/ds) has the same bits as with the
+/// unscaled coefficients whenever every intermediate of both is a normal
+/// double or zero. Throws std::invalid_argument unless alpha and beta are
+/// finite and not both zero and ds is positive and finite.
+struct RobinCoefficients {
+    Real alpha = 0.0;
+    Real beta = 0.0;
+    Real gamma = 0.0;
+};
+[[nodiscard]] RobinCoefficients scaled_robin(const BoundaryConfig& bc, Real ds);
+
 // ── Physics parameters ─────────────────────────────────────────────────────
 struct PhysicsParams {
     Real delta = 0.8;    ///< Dimensionless undercooling

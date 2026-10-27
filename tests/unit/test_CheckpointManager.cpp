@@ -279,6 +279,50 @@ TEST_F(CheckpointManagerTest, RetentionLeavesCheckpointsOfOtherGridsAlone) {
     EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_12000.acbin"));
 }
 
+// Checkpoints of another grid and files named like checkpoints whose header
+// cannot be read are left alone and do not count toward keep_last: with
+// keep_last = 2 the run keeps its two newest. Retention walks the directory
+// newest first, so the foreign files at 25 and 27 are met before checkpoint
+// 20 and would push it out if they counted; those at 10 and 15 sit between
+// this run's steps. The manager warns once about them, not at every save.
+TEST_F(CheckpointManagerTest, ForeignAndUnreadableCheckpointsDoNotCountAndWarnOnce) {
+    auto stream = std::make_shared<std::ostringstream>();
+    auto logger = std::make_shared<spdlog::logger>(
+        "capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(*stream));
+    logger->set_level(spdlog::level::info);
+    const auto previous = spdlog::default_logger();
+    spdlog::set_default_logger(logger);
+
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    const Grid other(Dim3{N + 2, N, N}, Spacing{1.0, 1.0, 1.0});
+    FieldData phi_o(other, "phi"), u_o(other, "u");
+    for (int step : {10, 25})
+        CheckpointIO::write(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin"), step,
+                            0.01 * step, 0.01, other, phi_o, u_o);
+    for (int step : {15, 27})
+        std::ofstream(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin"))
+            << "not a checkpoint header";
+
+    CheckpointManager mgr(make_params(10, 2), grid_);
+    mgr.save(5, 0.05, 0.01, phi, u);
+    mgr.save(20, 0.2, 0.01, phi, u);
+    mgr.save(30, 0.3, 0.01, phi, u);
+    spdlog::set_default_logger(previous);
+
+    for (int step : {10, 15, 20, 25, 27, 30})
+        EXPECT_TRUE(
+            std::filesystem::exists(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin")))
+            << step;
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_5.acbin"));
+    const std::string log = stream->str();
+    const std::string warning = "also holds checkpoints that are not of this run's";
+    const auto first = log.find(warning);
+    ASSERT_NE(first, std::string::npos) << log;
+    EXPECT_EQ(log.find(warning, first + 1), std::string::npos) << log;
+}
+
 // Removals are logged at info level, the console level of the binary: the
 // user sees which checkpoint was deleted and why.
 TEST_F(CheckpointManagerTest, RemovalsAreLoggedAtInfoLevel) {

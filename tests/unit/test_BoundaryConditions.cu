@@ -3,9 +3,14 @@
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
 #include "cuda/Kernels.cuh"
+#include "cuda/WillmoreSolve.cuh"
 #include "logging/Logger.hpp"
 
+#include <cmath>
 #include <gtest/gtest.h>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include <vector>
 
 using namespace ac;
@@ -246,8 +251,8 @@ TEST_F(BoundaryConditionsTest, RobinBCUsesAdjacentInteriorCell) {
 
 // A Robin face with a small denominator is still that Robin face: alpha =
 // 1e-31, beta = 0 is the Dirichlet value gamma/alpha = 2 (2e-31 is exactly
-// twice the double nearest 1e-31). SimulationConfig::validate rejects only a
-// denominator that is exactly zero, so no size threshold may change the rule.
+// twice the double nearest 1e-31). The fill scales the coefficients by a
+// power of two (scaled_robin) and compares them with no size threshold.
 TEST_F(BoundaryConditionsTest, RobinWithSmallDenominatorKeepsItsValue) {
     const int N = 6;
     KernelParams p{};
@@ -272,6 +277,109 @@ TEST_F(BoundaryConditionsTest, RobinWithSmallDenominatorKeepsItsValue) {
                 EXPECT_EQ(field_host[(a * N + side) * N + b], 2.0) << "Y face " << a << "," << b;
                 EXPECT_EQ(field_host[(a * N + b) * N + side], 2.0) << "Z face " << a << "," << b;
             }
+}
+
+// Robin faces at the edges of the double range fill their ghosts like the
+// boundary conditions they are: zero flux with beta = 1e308 (unscaled, beta/h
+// overflows to inf at h = 0.4, and the ghost is 0, or NaN where beta*u/h
+// overflows too, |u| > 0.72) and with the smallest subnormal beta at h = 4
+// (unscaled, beta/h underflows to 0 and the ghost is NaN), the Dirichlet value
+// 1 from 1e-300 u = 1e-300, and the Dirichlet value 2^1024/1.5 = 1.2e308 from
+// 1.5 * 2^-10 u = 2^1014 (whose gamma a scaling with a denominator above 1
+// would overflow).
+TEST_F(BoundaryConditionsTest, RobinAtTheEdgesOfTheDoubleRange) {
+    const int N = 6;
+    // Zero flux (alpha = gamma = 0): the ghost is u (1+d1)(1+d2)(1+d4)/(1+d3),
+    // the roundings of beta*u, of its division by h, of beta/h and of the
+    // quotient, so |ghost - u| <= gamma_4 |u| (Higham, Lemma 3.1). Dirichlet
+    // (beta = 0): beta*u/h is zero, so the ghost is gamma/alpha in one
+    // rounding, the bits of the host's gamma/alpha.
+    const double unit = std::numeric_limits<double>::epsilon() / 2;
+    const double gamma_4 = 4 * unit / (1 - 4 * unit);
+    struct Case {
+        double h, alpha, beta, gamma;
+        bool zero_flux;
+    };
+    for (const Case c :
+         {Case{0.4, 0.0, 1e308, 0.0, true}, Case{4.0, 0.0, 5e-324, 0.0, true},
+          Case{0.4, 1e-300, 0.0, 1e-300, false}, Case{0.4, 0x1.8p-10, 0.0, 0x1p1014, false}}) {
+        std::ostringstream trace;
+        trace << std::setprecision(17) << "h " << c.h << " alpha " << c.alpha << " beta " << c.beta
+              << " gamma " << c.gamma;
+        SCOPED_TRACE(trace.str());
+        KernelParams p{};
+        p.Nx = p.Ny = p.Nz = N;
+        p.dx = p.dy = p.dz = c.h;
+        const std::size_t total = static_cast<std::size_t>(N) * N * N;
+        std::vector<double> field(total);
+        for (int x = 0; x < N; ++x)
+            for (int y = 0; y < N; ++y)
+                for (int z = 0; z < N; ++z)
+                    field[(x * N + y) * N + z] = -0.8 + 0.05 * x;
+        DeviceField<double> d_field(total);
+        d_field.copy_from_host(field.data());
+        launch_boundary_conditions(d_field.data(), p, BCType::Robin, 0.0, 0.0, c.alpha, c.beta,
+                                   c.gamma);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        d_field.copy_to_host(field.data());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        auto at = [&](int x, int y, int z) { return field[(x * N + y) * N + z]; };
+        for (int a = 1; a < N - 1; ++a)
+            for (int b = 1; b < N - 1; ++b) {
+                if (c.zero_flux) {
+                    const double lo = at(1, a, b), hi = at(N - 2, a, b);
+                    EXPECT_NEAR(at(0, a, b), lo, gamma_4 * std::fabs(lo)) << a << "," << b;
+                    EXPECT_NEAR(at(N - 1, a, b), hi, gamma_4 * std::fabs(hi)) << a << "," << b;
+                } else {
+                    EXPECT_EQ(at(0, a, b), c.gamma / c.alpha) << a << "," << b;
+                    EXPECT_EQ(at(N - 1, a, b), c.gamma / c.alpha) << a << "," << b;
+                }
+            }
+    }
+}
+
+// robin_ghost_coefficient, the factor c of ghost = c * inner with which the
+// Willmore solve's operator and spectral bounds treat a Robin face, is the
+// factor the fill applies with gamma = 0, bit for bit on all six faces: the
+// fill of a field of ones computes (beta' * 1/h)/(alpha' + beta'/h) with the
+// same operations. Ordinary and extreme coefficients alike (unscaled, c is NaN
+// for beta = 1e308 at h = 0.4 and for beta = 5e-324 at h = 4); c lies in
+// [0, 1] since alpha*beta >= 0.
+TEST_F(BoundaryConditionsTest, RobinGhostCoefficientIsTheFillsFactor) {
+    const int N = 4;
+    struct Case {
+        double h, alpha, beta;
+    };
+    for (const Case c : {Case{0.4, 1.0, 0.5}, Case{0.4, 0.05, 1.0}, Case{0.4, 20.0, 0.1},
+                         Case{0.4, -1.0, -0.5}, Case{0.4, 0.0, 1e308}, Case{4.0, 0.0, 5e-324},
+                         Case{0.4, 1e-300, 0.0}, Case{0.4, 0x1.8p-10, 1e300}}) {
+        std::ostringstream trace;
+        trace << std::setprecision(17) << "h " << c.h << " alpha " << c.alpha << " beta " << c.beta;
+        SCOPED_TRACE(trace.str());
+        KernelParams p{};
+        p.Nx = p.Ny = p.Nz = N;
+        p.dx = p.dy = p.dz = c.h;
+        const std::size_t total = static_cast<std::size_t>(N) * N * N;
+        std::vector<double> field(total, 1.0);
+        DeviceField<double> d_field(total);
+        d_field.copy_from_host(field.data());
+        launch_boundary_conditions(d_field.data(), p, BCType::Robin, 0.0, 0.0, c.alpha, c.beta,
+                                   0.0);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        d_field.copy_to_host(field.data());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        const double coef = robin_ghost_coefficient(c.alpha, c.beta, c.h);
+        EXPECT_GE(coef, 0.0);
+        EXPECT_LE(coef, 1.0);
+        auto at = [&](int x, int y, int z) { return field[(x * N + y) * N + z]; };
+        for (int a = 1; a < N - 1; ++a)
+            for (int b = 1; b < N - 1; ++b)
+                for (int side : {0, N - 1}) {
+                    EXPECT_EQ(at(side, a, b), coef) << "x face " << side;
+                    EXPECT_EQ(at(a, side, b), coef) << "y face " << side;
+                    EXPECT_EQ(at(a, b, side), coef) << "z face " << side;
+                }
+    }
 }
 
 TEST_F(BoundaryConditionsTest, PerFaceMixedBC) {

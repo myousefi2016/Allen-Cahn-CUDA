@@ -58,8 +58,9 @@ struct WillmoreSpectrum {
 
 /// Ghost coefficient of the homogeneous form of a Robin face, as
 /// apply_bc_face_kernel fills it: ghost = c * inner with
-/// c = (beta/ds) / (alpha + beta/ds). SimulationConfig::validate accepts only
-/// alpha*beta >= 0 with a nonzero denominator, so c lies in [0, 1].
+/// c = (beta/ds) / (alpha + beta/ds), from the coefficients of scaled_robin
+/// (the same quotient, without under- or overflow). SimulationConfig::validate
+/// accepts only alpha*beta >= 0, so c lies in [0, 1].
 [[nodiscard]] double robin_ghost_coefficient(double alpha, double beta, double ds);
 
 /// Bounds of the 1-D second-difference matrix (unit spacing) of n interior

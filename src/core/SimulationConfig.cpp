@@ -42,6 +42,26 @@ static StencilType parse_stencil(const std::string& s) {
     throw std::invalid_argument("Unknown stencil type: " + s);
 }
 
+RobinCoefficients scaled_robin(const BoundaryConfig& bc, Real ds) {
+    if (!std::isfinite(bc.alpha) || !std::isfinite(bc.beta) ||
+        (bc.alpha == 0.0 && bc.beta == 0.0) || !std::isfinite(ds) || !(ds > 0.0)) {
+        throw std::invalid_argument("scaled_robin: alpha and beta must be finite and not both "
+                                    "zero, and ds positive and finite");
+    }
+    // The larger of the exponents of alpha and beta/ds, the latter from those
+    // of beta and ds so that beta/ds itself cannot overflow or underflow
+    // here. |alpha| < 2^(ilogb(alpha) + 1) and |beta|/ds < 2^(ilogb(beta) -
+    // ilogb(ds) + 1), so 2 more bring both below 1/2, and the larger stays
+    // above 1/8 (above 1/4 for alpha).
+    int k = std::numeric_limits<int>::min();
+    if (bc.alpha != 0.0)
+        k = std::ilogb(bc.alpha);
+    if (bc.beta != 0.0)
+        k = std::max(k, std::ilogb(bc.beta) - std::ilogb(ds));
+    k += 2;
+    return {std::ldexp(bc.alpha, -k), std::ldexp(bc.beta, -k), std::ldexp(bc.gamma, -k)};
+}
+
 static BCType parse_bc_type(const std::string& s) {
     if (s == "dirichlet")
         return BCType::Dirichlet;
@@ -451,8 +471,9 @@ void SimulationConfig::validate() const {
     // (a negative heat-transfer coefficient), and c leaves [0, 1], where the
     // stability limit of the explicit diffusion and the convergence of the
     // IMEX Jacobi sweeps no longer hold (docs/THEORY.md 9.1, 10.1, 10.2).
-    // With alpha*beta >= 0 the denominator vanishes only when alpha and beta
-    // do, or when beta/h underflows; it is checked as the kernel computes it.
+    // With alpha*beta >= 0 and the scaling of scaled_robin, which the ghost
+    // fill uses, the denominator never vanishes; the ghost constant
+    // gamma/(alpha + beta/h) must be a finite double.
     const Real spacing[3] = {grid.dx, grid.dy, grid.dz};
     auto validate_bc = [&spacing](const BoundaryConfig& bc, const std::string& name, int first_axis,
                                   int last_axis) {
@@ -485,11 +506,17 @@ void SimulationConfig::validate() const {
                     "stability limit and the IMEX Jacobi convergence assume alpha*beta >= 0, "
                     "docs/THEORY.md 9.1)");
             }
+            // The ghost fill uses scaled_robin's coefficients. Their
+            // denominator lies in (1/8, 1) in magnitude, so the scaled gamma
+            // is finite whenever the quotient is, and the quotient is the one
+            // of the unscaled coefficients: it is not finite exactly when
+            // gamma/(alpha + beta/h) exceeds the double range.
             for (int axis = first_axis; axis <= last_axis; ++axis) {
-                if (bc.alpha + bc.beta / spacing[axis] == 0.0) {
+                const RobinCoefficients r = scaled_robin(bc, spacing[axis]);
+                if (!std::isfinite(r.gamma / (r.alpha + r.beta / spacing[axis]))) {
                     throw std::invalid_argument(
                         "Robin BC for " + name +
-                        ": alpha + beta/h is zero at h = " + std::to_string(spacing[axis]));
+                        ": gamma/(alpha + beta/h) overflows at h = " + digits17(spacing[axis]));
                 }
             }
             break;

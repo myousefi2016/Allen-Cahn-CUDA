@@ -22,6 +22,7 @@
 #   9. a config without usable grid dimensions exits 2, never 1
 #  9a. given only the config, as the Makefile's resume targets call it, the
 #      helper searches the config's own checkpoint_dir
+#  10. checkpoints of another spacing, or with NaN spacing, are skipped
 #
 # Run:  python3 tests/test_resume_checkpoint.py   (stdlib only; exit 0 = pass)
 # ============================================================================
@@ -182,7 +183,7 @@ class ResumeHelperTest(unittest.TestCase):
             "bad magic": dict(magic=b"NOTCHKPT"),
             "unsupported version": dict(version=2),
             "num_fields": dict(num_fields=3),
-            "non-positive grid spacing": dict(spacing=0.0),
+            "non-positive or NaN grid spacing": dict(spacing=0.0),
             "does not match the file name": dict(header_step=999),
             "trailing data": dict(trailing=b"\0" * 8),
         }
@@ -245,11 +246,30 @@ class ResumeHelperTest(unittest.TestCase):
     def test_config_grid(self) -> None:
         self.assertEqual(resume.config_grid({}), (600, 600, 600))  # engine defaults
         self.assertEqual(resume.config_grid({"grid": {"Nx": 8}}), (8, 600, 600))
+        self.assertEqual(resume.config_spacing({}), (0.4, 0.4, 0.4))  # engine defaults
+        self.assertEqual(resume.config_spacing({"grid": {"dy": 0.5}}), (0.4, 0.5, 0.4))
+        self.assertEqual(resume.config_spacing({"grid": {"dz": 1}}), (0.4, 0.4, 1.0))
+        for bad in (0, -0.4, "0.4", True, float("nan"), float("inf"), 10**400):
+            with self.assertRaises(ValueError):
+                resume.config_spacing({"grid": {"dx": bad}})
         write_checkpoint(self.ckpt, 100)
         self.write_config({**self.config, "grid": {"Nx": "4", "Ny": 4, "Nz": 4}})
         res = self.run_helper()
         self.assertEqual(res.returncode, 2, res.stderr)
         self.assertEqual(res.stdout, "")
+
+    # 10 ---------------------------------------------------------------------
+    def test_skips_other_spacing_and_nan_spacing(self) -> None:
+        # Retention leaves checkpoints of another spacing alone (a different
+        # grid), and the binary refuses them and NaN spacing: the helper must
+        # skip both and resume from the newest one the binary restores.
+        write_checkpoint(self.ckpt, 100)
+        write_checkpoint(self.ckpt, 200, spacing=0.3)
+        write_checkpoint(self.ckpt, 300, spacing=float("nan"))
+        res = self.assert_resumes_from(100)
+        self.assertIn("skipping checkpoint_300.acbin: non-positive or NaN grid spacing",
+                      res.stderr)
+        self.assertIn("skipping checkpoint_200.acbin: spacing", res.stderr)
 
 
 if __name__ == "__main__":

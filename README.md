@@ -333,9 +333,11 @@ run past the point this run restarted from), so "resume from the latest
 checkpoint" can never jump back to a stale history; each removal is logged.
 So every run needs its own `checkpoint_dir`: every shipped configuration
 writes to `checkpoints/<config>` and `out/<config>`. As a safety net,
-retention leaves alone checkpoints of another grid (header `Nx`, `Ny`, `Nz`,
-spacing) and files not named `checkpoint_<step>.acbin`; it cannot tell two
-runs of the same grid apart.
+retention leaves alone, and does not count toward `keep_last`, checkpoints
+of another grid (header `Nx`, `Ny`, `Nz`, spacing), files named like
+checkpoints whose header cannot be read, and files not named
+`checkpoint_<step>.acbin`, and warns once that the directory holds such
+checkpoints; it cannot tell two runs of the same grid apart.
 
 Recommended workflow (mandatory backgrounding so it survives terminal close):
 
@@ -359,7 +361,12 @@ make cuda-visualize VIZ_EXTRA_ARGS="--skip-saturated"
 ```
 
 The resume mechanism is implemented in `scripts/resume_from_latest_checkpoint.py`,
-which is idempotent and safe to invoke repeatedly.
+which is idempotent and safe to invoke repeatedly. It restarts from the
+newest checkpoint the binary can restore on the configuration's grid (magic
+and version, header `Nx`, `Ny`, `Nz` and spacing equal to the
+configuration's, the step of its file name, exact file size, and the
+payload's CRC-32 when the header records one) and skips any other with a
+warning (`tests/test_resume_checkpoint.py`).
 
 Override defaults on the command line:
 
@@ -718,11 +725,11 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_Grid.cpp`               | Grid construction, indexing, spacing, validity checks                            |
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
 | `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the gradient energy's Hessian diagonal, the phase-field limit over the axis subsets and gradient directions), `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap |
-| `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and denominator, finite BC parameters), defaults, derived quantities |
+| `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters), defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
 | `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32, exact file size (trailing or missing bytes rejected, long axes accepted, overflowing headers rejected) |
-| `test_CheckpointManager.cpp`  | Frequency, retention (just-written file kept, one trajectory after a restart, checkpoints of other grids left alone, removals logged at info), restart-from-latest, missing restart file |
+| `test_CheckpointManager.cpp`  | Frequency, retention (just-written file kept, one trajectory after a restart, checkpoints of other grids and unreadable files left alone, not counted toward `keep_last` and warned about once, removals logged at info), restart-from-latest, missing restart file |
 | `test_LRUCache.cpp`           | LRU eviction order, capacity, hit/miss, concurrent access                        |
 | `test_SpatialHash.cpp`        | 3D bucket insert/query, FNV-1a hashing                                           |
 | `test_ConcurrentMap.cpp`      | Striped concurrent map operations under contention                               |
@@ -731,13 +738,13 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_Laplacian.cu`           | 7- and 27-point isotropic Laplacian on analytic quadratic / linear / constant fields |
 | `test_Gradient.cu`            | 2nd- and 4th-order central-difference gradient kernels                           |
 | `test_Anisotropy.cu`          | A(n), dFunc, dF/dphi; face flux = ∂f/∂∇φ; ∇·F second-order (all ε) and = W₀²·7-point Laplacian at ε = 0 |
-| `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin (also with a tiny denominator), per-face mixed, interior unchanged |
+| `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin (also with a tiny denominator, at the edges of the double range, and its ghost factor as the Willmore solve uses it), per-face mixed, interior unchanged |
 | `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions; the fused change and magnitude reduction of the IMEX check (exact maxima, NaN and Inf reach both) |
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
 | `test_ImexJacobi.cu`          | IMEX thermal solve: error within 1e-10 of a long-double solution at s ≈ 17 (both stencils, every kind of u face, one GPU and three domains); NaN temperature and a tolerance below rounding throw; the stopping rule on the host |
 | `test_StabilityLimitsGpu.cu`  | The solver's explicit updates have these limits: a checkerboard decays at 0.99× and grows at 1.01× (thermal: every scheme and stencil; phase field: the uniform liquid's 3-D, 1-D and 2-D checkerboards with and without the Willmore term, and a liquid with a ⟨111⟩ gradient) |
-| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; engine run |
+| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer and no halo; engine run |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states |
 | `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (capped at the stability limits after the dt_min clamp, also after a restart; growth when φ is at rest), short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks, dt after a restart |
@@ -795,7 +802,10 @@ Allen-Cahn-CUDA/
 ├── tests/
 │   ├── unit/                  # 27 unit-test files
 │   ├── integration/           # 8 integration-test files
+│   ├── e2e/                   # signal_exit.py, validate_shipped_configs.py
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
+│   ├── test_resume_checkpoint.py  # resume helper: checkpoint choice and config rewrite
+│   ├── test_gpu_runner_guard.py   # self-hosted GPU runner guard
 │   └── CMakeLists.txt
 ├── config/                    # JSON simulation configs (default, dendrite, etc.)
 ├── docker/                    # Dockerfile.dev, .test, .prod, .cuda-dev

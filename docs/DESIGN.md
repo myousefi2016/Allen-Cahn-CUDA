@@ -382,11 +382,16 @@ graph LR
 
 Robin BC enforces `alpha*u + beta*du/dn = gamma`. The validator
 (`SimulationConfig::validate`) requires `alpha`, `beta` and `gamma` finite,
-forbids `alpha == 0 && beta == 0`, `alpha` and `beta` of opposite signs, and
-`alpha + beta/h == 0` (`h` the spacing normal to the face), so the ghost
-`(gamma + beta*u_inner/h)/(alpha + beta/h)` is defined and its factor of
-`u_inner` lies in [0, 1] (docs/THEORY.md §9.1). Dirichlet values and Neumann
-fluxes must be finite as well.
+forbids `alpha == 0 && beta == 0` and `alpha` and `beta` of opposite signs,
+and rejects a ghost constant `gamma/(alpha + beta/h)` (`h` the spacing normal
+to the face) beyond the double range. The fill computes the ghost
+`(gamma + beta*u_inner/h)/(alpha + beta/h)` from the coefficients of
+`scaled_robin`, scaled by one power of two so that the denominator lies in
+(1/8, 1) in magnitude: it never vanishes or overflows, the ghost keeps its
+bits whenever every intermediate is a normal double, and its factor of
+`u_inner` lies in [0, 1] (docs/THEORY.md §9.1). The Willmore solve takes that
+factor from `robin_ghost_coefficient`, which uses the same coefficients.
+Dirichlet values and Neumann fluxes must be finite as well.
 
 ### 5.2 Periodic faces come in pairs
 

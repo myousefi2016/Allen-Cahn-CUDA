@@ -18,8 +18,9 @@
 # field ourselves before invoking the binary.
 #
 # A checkpoint is accepted only if its 128-byte CheckpointIO::Header has the
-# ACCHKPT magic, version 1, num_fields 2, the config's Nx/Ny/Nz, positive
-# spacing and the step in its file name; the file is exactly
+# ACCHKPT magic, version 1, num_fields 2, the config's Nx/Ny/Nz and spacing
+# (exactly, as the engine compares them; positive and not NaN) and the step
+# in its file name; the file is exactly
 # 128 + 2*Nx*Ny*Nz*8 bytes; and, when data_crc32 != 0, the CRC-32 of the
 # phi||u payload matches it. Anything else (a truncated or foreign file, a
 # checkpoint from another grid, corrupted data) is skipped with a warning and
@@ -45,6 +46,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import struct
@@ -77,6 +79,7 @@ REAL_BYTES = 8  # Real is double (src/core/Grid.hpp)
 
 # GridParams defaults (src/core/SimulationConfig.hpp) for keys a config omits.
 DEFAULT_GRID = {"Nx": 600, "Ny": 600, "Nz": 600}
+DEFAULT_SPACING = {"dx": 0.4, "dy": 0.4, "dz": 0.4}  # GridParams defaults
 
 # The CRC is streamed so memory stays bounded (a 600^3 payload is 3.2 GiB).
 CRC_CHUNK_BYTES = 16 * 1024 * 1024
@@ -142,9 +145,41 @@ def config_grid(cfg: dict) -> tuple[int, int, int]:
     return dims[0], dims[1], dims[2]
 
 
+def config_spacing(cfg: dict) -> tuple[float, float, float]:
+    """Return the (dx, dy, dz) the engine builds from `cfg`.
+
+    SimulationEngine::initialize_from_checkpoint refuses a checkpoint whose
+    spacing differs from these (compared exactly: both are parsed into, and
+    written from, the same double). Raises ValueError if the config does not
+    give positive finite numbers.
+    """
+    grid = cfg.get("grid", {})
+    if not isinstance(grid, dict):
+        raise ValueError(f'"grid" must be an object, got {grid!r}')
+    spacing = []
+    for key, default in DEFAULT_SPACING.items():
+        value = grid.get(key, default)
+        message = f"grid.{key} must be a positive finite number, got {value!r}"
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(message)
+        try:
+            # An integer is rounded to the nearest double, as the engine's JSON
+            # reader does; one beyond the double range cannot be a spacing.
+            number = float(value)
+        except OverflowError:
+            raise ValueError(message) from None
+        if not math.isfinite(number) or number <= 0:
+            raise ValueError(message)
+        spacing.append(number)
+    return spacing[0], spacing[1], spacing[2]
+
+
 def read_valid_header(path: Path, step: int,
-                      grid: tuple[int, int, int]) -> CheckpointHeader:
-    """Return the header of `path` if the binary can restore it on `grid`.
+                      grid: tuple[int, int, int],
+                      spacing: Optional[tuple[float, float, float]] = None
+                      ) -> CheckpointHeader:
+    """Return the header of `path` if the binary can restore it on `grid`
+    (and, when given, `spacing`).
 
     `step` is the step in the file name. Raises InvalidCheckpoint with the
     reason otherwise. I/O errors propagate: an unreadable newest checkpoint
@@ -171,8 +206,13 @@ def read_valid_header(path: Path, step: int,
             raise InvalidCheckpoint(
                 f"grid {hdr.nx}x{hdr.ny}x{hdr.nz} does not match the config's "
                 f"{nx}x{ny}x{nz}")
-        if hdr.dx <= 0.0 or hdr.dy <= 0.0 or hdr.dz <= 0.0:
-            raise InvalidCheckpoint("non-positive grid spacing")
+        # `not (x > 0)` also rejects NaN, as CheckpointIO::read does.
+        if not (hdr.dx > 0.0 and hdr.dy > 0.0 and hdr.dz > 0.0):
+            raise InvalidCheckpoint("non-positive or NaN grid spacing")
+        if spacing is not None and (hdr.dx, hdr.dy, hdr.dz) != spacing:
+            raise InvalidCheckpoint(
+                f"spacing ({hdr.dx!r}, {hdr.dy!r}, {hdr.dz!r}) does not match the "
+                f"config's {spacing!r}")
         if hdr.step != step:
             raise InvalidCheckpoint(
                 f"header step {hdr.step} does not match the file name")
@@ -201,7 +241,9 @@ def read_valid_header(path: Path, step: int,
 
 def find_latest_checkpoint(
         checkpoint_dir: Path,
-        grid: tuple[int, int, int]) -> Optional[tuple[Path, CheckpointHeader]]:
+        grid: tuple[int, int, int],
+        spacing: Optional[tuple[float, float, float]] = None
+        ) -> Optional[tuple[Path, CheckpointHeader]]:
     """Return (path, header) of the highest-step valid checkpoint, or None.
 
     Candidates are tried newest first; each invalid one is reported on stderr
@@ -223,7 +265,7 @@ def find_latest_checkpoint(
 
     for step, path in candidates:
         try:
-            return path, read_valid_header(path, step, grid)
+            return path, read_valid_header(path, step, grid, spacing)
         except InvalidCheckpoint as exc:
             sys.stderr.write(f"  WARN: skipping {path.name}: {exc}\n")
     return None
@@ -253,6 +295,7 @@ def main(argv: list[str]) -> int:
 
     try:
         grid = config_grid(cfg)
+        spacing = config_spacing(cfg)
     except ValueError as exc:
         sys.stderr.write(f"ERROR: {config_path}: {exc}\n")
         return 2
@@ -270,7 +313,7 @@ def main(argv: list[str]) -> int:
     expected = HEADER_BYTES + NUM_FIELDS * nx * ny * nz * REAL_BYTES
     sys.stderr.write(f"==> Looking for latest checkpoint in {ckpt_dir}\n")
     sys.stderr.write(f"    grid {nx}x{ny}x{nz}: expecting {expected:,} B per checkpoint\n")
-    found = find_latest_checkpoint(ckpt_dir, grid)
+    found = find_latest_checkpoint(ckpt_dir, grid, spacing)
     if found is None:
         sys.stderr.write(
             "==> No usable checkpoint found.  Caller should run the BASE config "

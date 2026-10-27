@@ -424,6 +424,52 @@ TEST_F(MultiGPUSolverTest, BoundaryMaxReadsTheCellsNextToTheWalls) {
     }
 }
 
+// Every wall layer counts and nothing else does: phi = -0.9 everywhere, 0.9
+// at a cell that is not next to any wall (must never show), and 0.5 at one
+// cell of a single wall layer, in turn for each of the six layers and, for
+// the Y layer, on the planes where two or three domains split the grid
+// (x = 4, 6, 8). The reduction must return 0.5 on one GPU and on two and
+// three domains.
+TEST_F(MultiGPUSolverTest, BoundaryMaxSeesEveryWallLayerAndNothingElse) {
+    SimulationConfig cfg;
+    cfg.grid.Nx = 12;
+    cfg.grid.Ny = 7;
+    cfg.grid.Nz = 9;
+    cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = 0.4;
+    cfg.physics.epsilon = 0.05;
+    cfg.time.scheme = TimeScheme::Euler;
+    BoundaryConfig zero_flux;
+    zero_flux.type = BCType::Neumann;
+    cfg.boundary.phi_bc = zero_flux;
+    cfg.boundary.u_bc = zero_flux;
+    cfg.validate();
+    const Grid grid = cfg.make_grid();
+    struct Spike {
+        int x, y, z;
+    };
+    for (const Spike sp : {Spike{1, 3, 4}, Spike{10, 3, 4}, Spike{4, 1, 4}, Spike{6, 1, 4},
+                           Spike{8, 1, 4}, Spike{5, 5, 4}, Spike{8, 3, 1}, Spike{4, 3, 7}}) {
+        SCOPED_TRACE("spike at " + std::to_string(sp.x) + "," + std::to_string(sp.y) + "," +
+                     std::to_string(sp.z));
+        FieldData phi(grid, "phi"), u(grid, "u");
+        phi.fill(-0.9);
+        u.fill(-0.5);
+        phi(6, 3, 4) = 0.9;
+        phi(sp.x, sp.y, sp.z) = 0.5;
+        CudaSolver single(cfg);
+        single.initialize(phi, u);
+        EXPECT_EQ(single.compute_boundary_max_phi(), 0.5);
+        for (int domains : {2, 3}) {
+            auto multi_cfg = cfg;
+            multi_cfg.gpu.multi_gpu = true;
+            multi_cfg.gpu.device_ids = shared_device(domains);
+            MultiGPUSolver multi(multi_cfg);
+            multi.initialize(phi, u);
+            EXPECT_EQ(multi.compute_boundary_max_phi(), 0.5) << domains << " domains";
+        }
+    }
+}
+
 // ── Engine level: solver selection, adaptive dt and the step timer ────────
 
 class MultiGPUEngineTest : public ::testing::Test {

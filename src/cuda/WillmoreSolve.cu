@@ -14,9 +14,13 @@ namespace ac::cuda {
 
 double robin_ghost_coefficient(double alpha, double beta, double ds) {
     // apply_bc_face_kernel: ghost = (gamma + beta * inner / ds) / (alpha +
-    // beta/ds), gamma = 0 in the homogeneous form. SimulationConfig::validate
-    // rejects a zero denominator.
-    return (beta / ds) / (alpha + beta / ds);
+    // beta/ds), gamma = 0 in the homogeneous form, with the coefficients of
+    // scaled_robin as launch_bc_face passes them.
+    BoundaryConfig bc;
+    bc.alpha = alpha;
+    bc.beta = beta;
+    const RobinCoefficients r = scaled_robin(bc, ds);
+    return (r.beta / ds) / (r.alpha + r.beta / ds);
 }
 
 namespace {

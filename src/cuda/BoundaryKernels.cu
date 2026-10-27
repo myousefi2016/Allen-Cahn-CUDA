@@ -176,9 +176,14 @@ static void launch_bc_face(double* field, const KernelParams& params, int axis, 
     dim3 grid((static_cast<unsigned>(dim1) + block.x - 1) / block.x,
               (static_cast<unsigned>(dim2) + block.y - 1) / block.y);
 
+    // A Robin face's coefficients scaled by a power of two (the same ghost
+    // bits, no overflow of beta * u_inner / ds; scaled_robin).
+    RobinCoefficients robin{bc.alpha, bc.beta, bc.gamma};
+    if (bc.type == BCType::Robin)
+        robin = scaled_robin(bc, axis == 0 ? params.dx : axis == 1 ? params.dy : params.dz);
     apply_bc_face_kernel<<<grid, block, 0, stream>>>(
         field, params.Nx, params.Ny, params.Nz, params.dx, params.dy, params.dz, axis, side,
-        static_cast<int>(bc.type), bc.value, bc.flux, bc.alpha, bc.beta, bc.gamma);
+        static_cast<int>(bc.type), bc.value, bc.flux, robin.alpha, robin.beta, robin.gamma);
     CUDA_CHECK(cudaGetLastError());
 }
 
