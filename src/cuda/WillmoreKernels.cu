@@ -224,12 +224,13 @@ void launch_plane_dot(const double* a, const double* b, double* out, int x_begin
 
 namespace {
 
-// Interior cells are covered by a (z, y) thread grid and a grid-stride loop
-// over the X planes, so no index division is needed.
+// Interior cells are covered by a (z, y) thread grid with grid-stride loops
+// over Y rows and X planes, so no index division is needed and every grid
+// size fits the launch limits (gridDim.x up to 2^31 - 1 covers z directly).
 constexpr int kPcBlockZ = 32;
 constexpr int kPcBlockY = 8;
 constexpr int kPcThreads = kPcBlockZ * kPcBlockY;
-// Largest gridDim.y / gridDim.z of a launch.
+// Largest gridDim.y / gridDim.z of a launch (CUDA limit on every device).
 constexpr unsigned kMaxGridYZ = 65535;
 
 struct PcLaunch {
@@ -241,8 +242,8 @@ PcLaunch pc_launch(const KernelParams& p) {
                nx = static_cast<unsigned>(p.Nx - 2);
     PcLaunch l;
     l.block = dim3(kPcBlockZ, kPcBlockY, 1);
-    l.grid = dim3((nz + kPcBlockZ - 1) / kPcBlockZ, (ny + kPcBlockY - 1) / kPcBlockY,
-                  std::min(nx, kMaxGridYZ));
+    l.grid = dim3((nz + kPcBlockZ - 1) / kPcBlockZ,
+                  std::min((ny + kPcBlockY - 1) / kPcBlockY, kMaxGridYZ), std::min(nx, kMaxGridYZ));
     return l;
 }
 
@@ -311,16 +312,18 @@ __global__ void __launch_bounds__(kPcThreads)
                             unsigned long long* __restrict__ range_bits, KernelParams p) {
     unsigned long long lo = ~0ULL, hi = 0ULL;
     const int z = 1 + static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    const int y = 1 + static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-    if (z <= p.Nz - 2 && y <= p.Ny - 2) {
-        for (int x = 1 + static_cast<int>(blockIdx.z); x <= p.Nx - 2;
-             x += static_cast<int>(gridDim.z)) {
-            const int c = idx3d(x, y, z, p.Ny, p.Nz);
-            const double t = tau[c];
-            tdt[c] = static_cast<float>(t * inv_dt);
-            const auto bits = static_cast<unsigned long long>(__double_as_longlong(t));
-            lo = bits < lo ? bits : lo;
-            hi = bits > hi ? bits : hi;
+    if (z <= p.Nz - 2) {
+        for (int y = 1 + static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y); y <= p.Ny - 2;
+             y += static_cast<int>(gridDim.y * blockDim.y)) {
+            for (int x = 1 + static_cast<int>(blockIdx.z); x <= p.Nx - 2;
+                 x += static_cast<int>(gridDim.z)) {
+                const int c = idx3d(x, y, z, p.Ny, p.Nz);
+                const double t = tau[c];
+                tdt[c] = static_cast<float>(t * inv_dt);
+                const auto bits = static_cast<unsigned long long>(__double_as_longlong(t));
+                lo = bits < lo ? bits : lo;
+                hi = bits > hi ? bits : hi;
+            }
         }
     }
     __shared__ unsigned long long s_lo[kPcThreads], s_hi[kPcThreads];
@@ -347,21 +350,23 @@ __global__ void __launch_bounds__(kPcThreads)
                          float s0, GhostRules32 g, double* __restrict__ z_final, double inv_scale,
                          KernelParams p) {
     const int z = 1 + static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    const int y = 1 + static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-    if (z > p.Nz - 2 || y > p.Ny - 2)
+    if (z > p.Nz - 2)
         return;
-    for (int x = 1 + static_cast<int>(blockIdx.z); x <= p.Nx - 2;
-         x += static_cast<int>(gridDim.z)) {
-        const int c = idx3d(x, y, z, p.Ny, p.Nz);
-        const float fc = static_cast<float>(scale * r[c]);
-        const float xc = s0 * fc / (tdt[c] + op.beta_dL);
-        if (z_final != nullptr) {
-            z_final[c] = static_cast<double>(xc) * inv_scale;
-            continue;
+    for (int y = 1 + static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y); y <= p.Ny - 2;
+         y += static_cast<int>(gridDim.y * blockDim.y)) {
+        for (int x = 1 + static_cast<int>(blockIdx.z); x <= p.Nx - 2;
+             x += static_cast<int>(gridDim.z)) {
+            const int c = idx3d(x, y, z, p.Ny, p.Nz);
+            const float fc = static_cast<float>(scale * r[c]);
+            const float xc = s0 * fc / (tdt[c] + op.beta_dL);
+            if (z_final != nullptr) {
+                z_final[c] = static_cast<double>(xc) * inv_scale;
+                continue;
+            }
+            f[c] = fc;
+            x1[c] = xc;
+            write_face_ghosts(x1, x, y, z, xc, g, p);
         }
-        f[c] = fc;
-        x1[c] = xc;
-        write_face_ghosts(x1, x, y, z, xc, g, p);
     }
 }
 
@@ -369,16 +374,18 @@ __global__ void __launch_bounds__(kPcThreads)
     precond_laplacian_kernel(const float* __restrict__ xv, float* __restrict__ t, Operator32 op,
                              GhostRules32 g, KernelParams p) {
     const int z = 1 + static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    const int y = 1 + static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-    if (z > p.Nz - 2 || y > p.Ny - 2)
+    if (z > p.Nz - 2)
         return;
     const int sx = p.Ny * p.Nz, sy = p.Nz;
-    for (int x = 1 + static_cast<int>(blockIdx.z); x <= p.Nx - 2;
-         x += static_cast<int>(gridDim.z)) {
-        const int c = idx3d(x, y, z, p.Ny, p.Nz);
-        const float tc = lap32(xv, c, sx, sy, op);
-        t[c] = tc;
-        write_face_ghosts(t, x, y, z, tc, g, p);
+    for (int y = 1 + static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y); y <= p.Ny - 2;
+         y += static_cast<int>(gridDim.y * blockDim.y)) {
+        for (int x = 1 + static_cast<int>(blockIdx.z); x <= p.Nx - 2;
+             x += static_cast<int>(gridDim.z)) {
+            const int c = idx3d(x, y, z, p.Ny, p.Nz);
+            const float tc = lap32(xv, c, sx, sy, op);
+            t[c] = tc;
+            write_face_ghosts(t, x, y, z, tc, g, p);
+        }
     }
 }
 
@@ -389,24 +396,26 @@ __global__ void __launch_bounds__(kPcThreads)
                         float a, float b, GhostRules32 g, double* __restrict__ z_final,
                         double inv_scale, KernelParams p) {
     const int z = 1 + static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    const int y = 1 + static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-    if (z > p.Nz - 2 || y > p.Ny - 2)
+    if (z > p.Nz - 2)
         return;
     const int sx = p.Ny * p.Nz, sy = p.Nz;
-    for (int x = 1 + static_cast<int>(blockIdx.z); x <= p.Nx - 2;
-         x += static_cast<int>(gridDim.z)) {
-        const int c = idx3d(x, y, z, p.Ny, p.Nz);
-        const float xc = xv[c], tc = t[c], tdtc = tdt[c];
-        const float Ax =
-            tdtc * xc + op.beta * (op.W4 * lap32(t, c, sx, sy, op) - op.four_W2 * tc + 4.0f * xc);
-        const float xp = prev_is_zero ? 0.0f : x_prev_next[c];
-        const float xn = xc + a * (xc - xp) + b * (f[c] - Ax) / (tdtc + op.beta_dL);
-        if (z_final != nullptr) {
-            z_final[c] = static_cast<double>(xn) * inv_scale;
-            continue;
+    for (int y = 1 + static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y); y <= p.Ny - 2;
+         y += static_cast<int>(gridDim.y * blockDim.y)) {
+        for (int x = 1 + static_cast<int>(blockIdx.z); x <= p.Nx - 2;
+             x += static_cast<int>(gridDim.z)) {
+            const int c = idx3d(x, y, z, p.Ny, p.Nz);
+            const float xc = xv[c], tc = t[c], tdtc = tdt[c];
+            const float Ax = tdtc * xc + op.beta * (op.W4 * lap32(t, c, sx, sy, op) -
+                                                    op.four_W2 * tc + 4.0f * xc);
+            const float xp = prev_is_zero ? 0.0f : x_prev_next[c];
+            const float xn = xc + a * (xc - xp) + b * (f[c] - Ax) / (tdtc + op.beta_dL);
+            if (z_final != nullptr) {
+                z_final[c] = static_cast<double>(xn) * inv_scale;
+                continue;
+            }
+            x_prev_next[c] = xn;
+            write_face_ghosts(x_prev_next, x, y, z, xn, g, p);
         }
-        x_prev_next[c] = xn;
-        write_face_ghosts(x_prev_next, x, y, z, xn, g, p);
     }
 }
 

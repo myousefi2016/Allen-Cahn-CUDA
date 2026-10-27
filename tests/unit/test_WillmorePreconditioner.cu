@@ -628,3 +628,109 @@ TEST_F(WillmorePreconditionerTest, NonFiniteStateThrows) {
     EXPECT_THROW((void)willmore_spectrum(cfg, faces, cfg.time.dt, nan, 0.5), std::runtime_error);
     EXPECT_THROW((void)willmore_spectrum(cfg, faces, cfg.time.dt, 0.0, 0.5), std::runtime_error);
 }
+
+// The single-precision kernels cover the interior with a (z, y) thread grid.
+// One block row covers 8 Y rows and gridDim.y is limited to 65535, so above
+// Ny - 2 = 8 * 65535 interior rows the Y rows are covered by a grid-stride
+// loop. A pencil of 1 x (8 * 65535 + 1) x 1 interior cells along Y must give
+// the same bits as its transpose along Z (gridDim.x covers z without that
+// limit): with zero-flux faces every stencil term across the pencil is an
+// exact zero, so both orientations do the same arithmetic cell by cell.
+// One full step must agree within what the two solves' residuals allow:
+// ||x_y - x_z|| <= (||r_y|| + ||r_z||) / lambda_min(A) <= 2 tol ||b|| /
+// (tau_min/dt + beta L_min), the denominator a lower bound of A's spectrum.
+TEST_F(WillmorePreconditionerTest, PencilBeyondTheGridYLimitMatchesItsTranspose) {
+    const int L = 8 * 65535 + 3; // Ny - 2 = 524281 interior rows > 8 * 65535
+    auto make = [&](bool along_y) {
+        SimulationConfig cfg;
+        cfg.grid.Nx = 3;
+        cfg.grid.Ny = along_y ? L : 3;
+        cfg.grid.Nz = along_y ? 3 : L;
+        cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = 0.4;
+        cfg.physics.epsilon = 0.12;
+        cfg.physics.W0 = 1.0;
+        cfg.physics.willmore_beta = 0.25;
+        cfg.time.dt = 0.005;
+        cfg.time.scheme = TimeScheme::Euler;
+        cfg.stencil = StencilType::Standard7Point;
+        cfg.boundary.phi_bc = bc_of(BCType::Neumann);
+        cfg.boundary.u_bc = bc_of(BCType::Neumann);
+        cfg.validate();
+        return cfg;
+    };
+    const SimulationConfig cy = make(true), cz = make(false);
+    // A front pair along the pencil (a solid slab of half-width 40 h centred
+    // in the pencil), u = -0.55.
+    auto value = [&](int i) {
+        const double s = 0.4 * (i - 0.5 * (L - 1));
+        return -std::tanh((std::fabs(s) - 16.0) / std::sqrt(2.0));
+    };
+    const Grid gy = cy.make_grid(), gz = cz.make_grid();
+    FieldData phy(gy, "phi"), uy(gy, "u"), phz(gz, "phi"), uz(gz, "u");
+    for (int i = 0; i < L; ++i)
+        for (int a = 0; a < 3; ++a)
+            for (int b = 0; b < 3; ++b) {
+                phy(a, i, b) = value(i);
+                phz(a, b, i) = value(i);
+                uy(a, i, b) = -0.55;
+                uz(a, b, i) = -0.55;
+            }
+    CudaSolver sy(cy), sz(cz);
+    sy.initialize(phy, uy);
+    sz.initialize(phz, uz);
+    // Index of interior cell i of the pencil in each layout.
+    auto iy = [&](int i) { return static_cast<std::size_t>((1 * L + i) * 3 + 1); };
+    auto iz = [&](int i) { return static_cast<std::size_t>((1 * 3 + 1) * L + i); };
+
+    std::vector<double> tau_y, tau_z, r_y, r_z;
+    for (CudaSolver* s : {&sy, &sz}) {
+        s->mutable_params().dt = cy.time.dt;
+        s->willmore_omega();
+        s->willmore_rhs_init();
+    }
+    tau_y = sy.willmore_download(V::Tau);
+    tau_z = sz.willmore_download(V::Tau);
+    r_y = sy.willmore_download(V::R);
+    r_z = sz.willmore_download(V::R);
+    double rr = 0.0;
+    int tau_mismatch = 0, r_mismatch = 0;
+    for (int i = 1; i < L - 1; ++i) {
+        tau_mismatch += tau_y[iy(i)] != tau_z[iz(i)];
+        r_mismatch += r_y[iy(i)] != r_z[iz(i)];
+        rr += r_y[iy(i)] * r_y[iy(i)];
+    }
+    EXPECT_EQ(tau_mismatch, 0);
+    EXPECT_EQ(r_mismatch, 0);
+    ASSERT_GT(rr, 0.0);
+    EXPECT_EQ(sy.willmore_tau_range(), sz.willmore_tau_range());
+
+    const auto [tau_min, tau_max] = sy.willmore_tau_range();
+    const WillmoreSpectrum sp =
+        willmore_spectrum(cy, cy.boundary.phi_faces, cy.time.dt, tau_min, tau_max);
+    const ChebyshevPlan plan = chebyshev_plan(sp, kWillmoreCgTolerance);
+    apply_willmore_preconditioner({WillmoreDomain{&sy, 0, 1, cy.grid.Nx - 1, 1}}, plan, rr,
+                                  [](WillmoreBuffer) {});
+    apply_willmore_preconditioner({WillmoreDomain{&sz, 0, 1, cz.grid.Nx - 1, 1}}, plan, rr,
+                                  [](WillmoreBuffer) {});
+    const std::vector<double> z_y = sy.willmore_download(V::Z), z_z = sz.willmore_download(V::Z);
+    int z_mismatch = 0;
+    for (int i = 1; i < L - 1; ++i)
+        z_mismatch += z_y[iy(i)] != z_z[iz(i)];
+    EXPECT_EQ(z_mismatch, 0) << "degree " << plan.degree;
+
+    sy.step(cy.time.dt);
+    sz.step(cz.time.dt);
+    const WillmoreSolveStats st_y = sy.last_willmore_stats(), st_z = sz.last_willmore_stats();
+    EXPECT_LE(st_y.relative_residual, kWillmoreCgTolerance);
+    EXPECT_LE(st_z.relative_residual, kWillmoreCgTolerance);
+    const std::vector<double> x_y = sy.willmore_download(V::X), x_z = sz.willmore_download(V::X);
+    double d2 = 0.0;
+    for (int i = 1; i < L - 1; ++i)
+        d2 += (x_y[iy(i)] - x_z[iz(i)]) * (x_y[iy(i)] - x_z[iz(i)]);
+    const double lambda_min =
+        st_y.tau_min / cy.time.dt + cy.physics.willmore_beta * st_y.spectrum.L_min;
+    const double allowed = 2.0 * kWillmoreCgTolerance * std::sqrt(rr) / lambda_min;
+    std::printf("pencil L=%d: degree %d, its %d/%d, |x_y - x_z| = %.3e (allowed %.3e)\n", L,
+                plan.degree, st_y.iterations, st_z.iterations, std::sqrt(d2), allowed);
+    EXPECT_LE(std::sqrt(d2), allowed);
+}
