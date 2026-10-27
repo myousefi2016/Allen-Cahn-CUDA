@@ -276,36 +276,31 @@ graph LR
 
 ---
 
-## 4. Adaptive Time Stepping & CFL
+## 4. Adaptive Time Stepping & Stability Limits
 
-`SimulationEngine::adapt_time_step` (`SimulationEngine.cu:208-236`) does
-three things:
+`SimulationEngine::adapt_time_step` does three things:
 
 1. Reads `max_dphi = solver_->compute_max_dphi()`
    (parallel reduction of `|phi_new − phi_old|`).
 2. Targets `adaptive_tolerance` per step:
    `new_dt = dt * clamp(0.9 * tolerance / max_dphi, 0.5, 1.5)`.
-3. Clamps to the joint CFL of thermal and phase-field diffusivity.
+3. Clamps to `[dt_min, dt_max]`, then caps at `cfl_safety` times the
+   smaller explicit stability limit, last, so dt_min cannot lift a step
+   above it. φ unchanged gives tolerance / max_dphi = +∞ and the factor 1.5.
 
-CFL constants (also enforced by `SimulationConfig::validate`):
-
-```
-inv_h2_sum = 3 / min(dx, dy, dz)^2
-thermal_cfl = cfl_safety / (2 * D       * inv_h2_sum)
-A_max       = 1 + epsilon
-D_phi       = W0^2 * A_max^2 / tau0
-phi_cfl     = cfl_safety / (2 * D_phi   * inv_h2_sum)
-new_dt      = clamp(min(new_dt, min(thermal_cfl, phi_cfl)),
-                    dt_min, dt_max)
-```
-
-(`SimulationEngine.cu:217-228`, `SimulationConfig.cpp:281-292`).
+The limits (`core/StabilityLimits.hpp`, docs/THEORY.md §10.1) are exact for
+a checkerboard mode: the explicit thermal update of Euler, Heun and RK4,
+`dt * D * rho <= r` (rho = 4 sum_d h_d^-2 for the 7-point, 184/(30 h^2) for
+the 27-point stencil; r = 2, or 2.785293563405282 for RK4; none for IMEX),
+and the explicit phase-field update in the liquid,
+`dt (Lam - beta Lcb) <= r tau_cb` (none when beta Lcb >= Lam).
+`SimulationConfig::validate` rejects a fixed dt above either limit, and with
+adaptive stepping a time.dt or dt_min above the cap and `cfl_safety`
+outside (0, 1]. The engine computes the cap once, in its constructor.
 
 The validator also rejects:
-- `time.adaptive_tolerance <= 0` when `time.adaptive == true`
-  (`SimulationConfig.cpp:312-315`).
-- `output.format` other than `"vts"` or `"raw"`
-  (`SimulationConfig.cpp:297-299`).
+- `time.adaptive_tolerance <= 0` when `time.adaptive == true`.
+- `output.format` other than `"vts"` or `"raw"`.
 - `checkpoint.keep_last < 1`, an empty `checkpoint.restart_file`,
   `initial.seed_radius <= 0`, `epsilon` outside `[0, 1/3)`, etc.
 - more than 2^31 − 1 grid points (kernels index cells with 32-bit `int`).

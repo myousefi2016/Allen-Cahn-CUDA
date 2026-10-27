@@ -1006,11 +1006,14 @@ flowchart TD
 ```
 
 **Why IMEX?** The explicit thermal update has a stability limit
-(`Δt ≤ h²/(6D)` for the 7-point and `≈ 0.326 h²/D` for the 27-point
-stencil, §10.1) which can be very restrictive for fine grids. Making it
-implicit removes this constraint, allowing larger time steps while keeping
-the nonlinear Allen-Cahn term explicit (where implicit treatment would
-require a nonlinear solver).
+(`Δt ≤ h²/(6D)` for the 7-point and `60h²/(184D) ≈ 0.326 h²/D` for the
+27-point stencil, §10.1) which can be very restrictive for fine grids.
+Making it implicit removes this constraint while keeping the nonlinear
+Allen-Cahn term explicit (where implicit treatment would require a nonlinear
+solver). The explicit phase-field update keeps its own limit (§10.1), close
+to the thermal one when W₀²(1+ε)²/τ₀ ≈ D (0.012570 against 0.013333 at the
+default physics); the Willmore term (β > 0) removes it for the checkerboard
+of the liquid when βL_cb ≥ Λ, as in every shipped configuration.
 
 ---
 
@@ -1105,26 +1108,85 @@ This enables complex simulation setups, e.g.:
 
 ## 10. Stability Analysis
 
-### 10.1 CFL Condition for Explicit Diffusion
+### 10.1 Explicit Stability Limits
 
-The explicit thermal update `u ← u + Δt·D·∇²ₕu` (Euler, and every stage of
-Heun and RK4) is stable when `Δt·D·ρ ≤ 2` for Euler and Heun (their real
-stability interval is [−2, 0]; RK4's is [−2.785, 0]), where ρ is the largest
-eigenvalue of `−∇²ₕ`. Both Laplacian stencils are multilinear in
-`cᵢ = cos θᵢ`, so the maximum of their symbol over [−1, 1]³ is at a vertex:
-the checkerboard mode (−1, −1, −1).
+**Thermal update.** The explicit thermal update `u ← u + Δt·D·∇²ₕu` (Euler,
+and every stage of Heun and RK4) multiplies an eigenmode of ∇²ₕ with
+eigenvalue −μ by R(−Δt·D·μ), R the scheme's stability polynomial:
+1 + z (Euler), 1 + z + z²/2 (Heun), 1 + z + z²/2 + z³/6 + z⁴/24 (RK4).
+|R(z)| ≤ 1 on the real interval [−r, 0] with r = 2 for Euler and Heun and
+r = 2.785293563405282 for RK4 (the real root of z³ + 4z² + 12z + 24, where
+R(z) returns to 1). The update is stable exactly when Δt·D·ρ ≤ r, ρ the
+spectral radius of −∇²ₕ:
 
 ```
-7-point:   ρ = 4 Σ_d 1/h_d²   (= 12/h²)   →  Δt ≤ h²/(6D)
-27-point:  ρ = 184/(30 h²)                →  Δt ≤ 60 h²/(184 D) ≈ 0.326 h²/D
+7-point:   ρ = 4 Σ_d h_d⁻²     (12/h² for cubic cells)
+27-point:  ρ = 184/(30 h²)
 ```
 
-At h = 0.4 and D = 2 these are 0.013333 (7-point) and 0.026087 (27-point).
-`validate()` warns (it does not reject) when dt exceeds `cfl_safety` times the
-smaller of the 7-point bound and the same bound for the phase field's
-explicit diffusion, `W₀²(1+ε)²/τ₀` in place of D, unless adaptive stepping
-is on. The Willmore step (§4.3) treats the stiff part of the φ equation
-implicitly; its measured stability limits are in §4.3.
+These hold for every accepted boundary condition. Let X_d = T_d⁺ + T_d⁻ be
+the sum of the two shifts along axis d, with the ghost rules of §9.1 (a
+ghost is c ∈ [0, 1] times its adjacent value plus a constant, or the
+periodic copy). X_d is symmetric with spectrum in [−2, 2] (Gershgorin:
+radius 2 in the interior rows, [c − 1, c + 1] in the end rows), and the X_d
+of different axes commute. The 7-point Laplacian is Σ_d (X_d − 2)/h_d²;
+the 27-point is (14 ΣX_d + 3 Σ_{d<e} X_d X_e + X_x X_y X_z − 128)/(30h²),
+edge and corner ghosts included, since the faces are filled Z, Y, X and a
+ghost of a ghost applies both rules. Both are multilinear polynomials in
+commuting symmetric matrices, so their spectra lie in the polynomial's range
+over the cube [−2, 2]³, whose extremes are at its vertices: [−ρ, 0] with ρ
+above, at the checkerboard vertex (−2, −2, −2). On a periodic grid with an
+even number of interior cells per axis the checkerboard is an exact mode and
+ρ is attained; otherwise the largest eigenvalue is within O(1/N²) of ρ.
+
+**Phase field.** In the liquid (φ = −1) a checkerboard perturbation
+η(−1)^{x+y+z} has at every face a gradient along the face normal only (the
+tangential averages of central differences vanish) and at every cell a zero
+central-difference gradient. So A = 1 + ε at every face and
+τ = τ₀(1 − 3ε/5)² at every cell (the spherical average the kernel uses for a
+zero gradient), and the face-flux divergence (§11, whatever `stencil` says)
+acts on the mode as W₀²(1 + ε)² times the 7-point Laplacian. With the
+reaction's derivative 2 at φ = −1 (independent of u), one explicit step
+multiplies η by R(−Δt·Λ/τ_cb), with
+
+```
+Λ = W₀²(1 + ε)² ρ₇ + 2,   τ_cb = τ₀(1 − 3ε/5)²,   ρ₇ = 4 Σ_d h_d⁻²
+```
+
+With the Willmore term (Euler and IMEX, β > 0, §4.4) the step solves
+(τ/Δt + βL)δφ = rhs, and at this mode L = (W₀²ρ₇ + 2)² =: L_cb and
+rhs = −(Λ + βL_cb)η:
+
+```
+g = 1 − Δt (Λ + β L_cb) / (τ_cb + Δt β L_cb),    |g| ≤ 1  ⟺  Δt (Λ − β L_cb) ≤ 2 τ_cb
+```
+
+When βL_cb ≥ Λ the mode decays at every Δt; every shipped configuration is
+in this case (at ε = 0.07, β = 0.0149, h = 0.4: βL_cb = 88.3, Λ = 87.9).
+Above the limit the checkerboard of the liquid grows every step, so the
+limit is necessary; it is not shown to be sufficient, since no closed form
+bounds the anisotropic update at an interface (its linearisation is not
+symmetric for ε > 0).
+
+**Measured** (`StabilityLimitsGpuTest`, periodic 18³, h = 0.4, D = 2, the
+checkerboard over 40 steps): at 0.99 and 1.01 times each limit the factor
+per step is 0.9800 / 1.0200 (Euler), 0.9802 / 1.0202 (Heun) and 0.9588 /
+1.0428 (RK4) for both stencils, as R predicts to 10⁻⁹; for the phase field
+(IMEX) 0.980 / 1.020 at ε = 0 and 0.05 with β = 0, 0.981 / 1.019 with
+β = 5·10⁻⁴, and below 1 at ten times the β = 0 limit with β = 0.0149. The
+runs of §4.3 bracket the thermal limits on the shipped grids: 7-point stable
+at 0.0125 and blown up at 0.014, 27-point stable at 0.025 and blown up at
+0.027.
+
+**Validation** (`core/StabilityLimits.hpp`, `SimulationConfig::validate`):
+a fixed Δt above either limit is rejected, with the configured stencil,
+spacing per axis and scheme (IMEX has no thermal limit). With adaptive
+stepping every step after the first is capped at `cfl_safety` times the
+smaller limit (§10.3), so `cfl_safety` must lie in (0, 1] and time.dt (the
+first step) and dt_min must not exceed that cap. At h = 0.4, D = 2 and the
+default physics (ε = 0.05, d₀ = 0.5) the limits are 0.013333 (thermal,
+Euler and Heun, 7-point), 0.026087 (27-point), 0.018569 (RK4, 7-point) and
+0.012570 (phase field).
 
 ### 10.2 Jacobi Iteration Convergence
 
@@ -1221,17 +1283,20 @@ unchanged.
 
 ### 10.3 Adaptive Time Stepping
 
-The code implements adaptive time stepping based on the maximum rate of change:
+With `time.adaptive` the step after the first is chosen from the largest
+change of φ in the previous step (`SimulationEngine::adapt_time_step`):
 
 ```
-ratio = target_tolerance / max|Δφ|
+ratio  = adaptive_tolerance / max|Δφ|          (+∞ when φ did not change)
 new_dt = current_dt · min(1.5, max(0.5, 0.9 · ratio))
 new_dt = clamp(new_dt, dt_min, dt_max)
-new_dt = min(new_dt, CFL_limit)
+new_dt = min(new_dt, cfl_safety · min(thermal limit, phase-field limit))   (§10.1)
 ```
 
-The growth/shrink factors (1.5 and 0.5) prevent oscillation, and the 0.9
-safety factor provides a stability margin.
+The growth and shrink factors (1.5, 0.5) limit how fast dt changes, and 0.9
+aims below the tolerance. The stability cap is applied last, so dt_min
+cannot lift a step above it (`validate()` also rejects such a dt_min), and a
+step without any change of φ grows dt by 1.5 up to the cap.
 
 ---
 
@@ -1456,11 +1521,13 @@ graph TD
 | GPU memory, bytes per cell (measured, Appendix C) | 32.1 | 48.1 | 112.1 | 48.1 |
 | … with `willmore_beta > 0` | 108.1 | rejected | rejected | 124.1 |
 | Explicit thermal update stable for (§10.1) | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2.785 | any Δt (u implicit) |
+| Checkerboard of the liquid does not grow for (§10.1) | Δt(Λ − βL_cb) ≤ 2τ_cb | Δt·Λ ≤ 2τ_cb | Δt·Λ ≤ 2.785τ_cb | Δt(Λ − βL_cb) ≤ 2τ_cb |
 | ms per step, 160³, h = 0.4, dt = 0.005, ε = 0.05, β = 0 | 4.27 | 8.77 | 18.05 | 10.99 |
 | ms per step, same grid, ε = 0.12, β = 0.25 | 10.80 | rejected | rejected | 17.33 |
 
-ρ is the largest eigenvalue of −∇²ₕ: 12/h² (7-point), 184/(30h²)
-(27-point). Costs measured on an RTX 4090 (CUDA 13.2, median over 200 steps
+ρ is the largest eigenvalue of −∇²ₕ: 4 Σ_d h_d⁻² (7-point), 184/(30h²)
+(27-point); Λ, τ_cb and L_cb are those of §10.1 (with the 7-point ρ₇ for
+either stencil). Costs measured on an RTX 4090 (CUDA 13.2, median over 200 steps
 after 220 from the seed, no other process on the GPU) with the physics of
 `run_dendrite.json`. With β > 0 the Euler and IMEX φ update is the linearly
 implicit Willmore step (§4.3–4.4); the shipped configurations choose between

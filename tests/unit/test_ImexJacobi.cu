@@ -47,8 +47,12 @@ PerFaceBoundary u_faces() {
 }
 
 /// phi = -1 (liquid) with zero-flux phi faces is a fixed point of the phase
-/// field update (no reaction, coupling or gradient term), so an IMEX step is
-/// exactly the backward-Euler heat solve (I - dt D Lap_h) u_new = u_old.
+/// field update (no reaction, coupling or gradient term, and a zero Willmore
+/// right-hand side, whose solve returns zero), so an IMEX step is exactly the
+/// backward-Euler heat solve (I - dt D Lap_h) u_new = u_old. The Willmore
+/// term (beta = 0.0149, as shipped at eps = 0.07) makes these large dt
+/// accepted configurations: it damps the checkerboard mode that limits the
+/// explicit phase-field update (docs/THEORY.md 10.1).
 SimulationConfig imex_config(StencilType stencil, double dt, int domains = 1) {
     SimulationConfig cfg;
     cfg.grid.Nx = 20;
@@ -59,6 +63,7 @@ SimulationConfig imex_config(StencilType stencil, double dt, int domains = 1) {
     cfg.grid.dy = stencil == StencilType::Standard7Point ? 0.5 : 0.4;
     cfg.grid.dz = stencil == StencilType::Standard7Point ? 0.3 : 0.4;
     cfg.physics.epsilon = 0.05;
+    cfg.physics.willmore_beta = 0.0149;
     cfg.physics.D = 2.0;
     cfg.time.dt = dt;
     cfg.time.scheme = TimeScheme::IMEX;

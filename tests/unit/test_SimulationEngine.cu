@@ -2,6 +2,7 @@
 #include "common/TempDir.hpp"
 #include "core/SimulationConfig.hpp"
 #include "core/SimulationEngine.hpp"
+#include "core/StabilityLimits.hpp"
 #include "io/CheckpointIO.hpp"
 #include "logging/Logger.hpp"
 
@@ -384,6 +385,60 @@ TEST_F(SimulationEngineTest, AdaptiveRestartContinuesFromTheCheckpointDt) {
     const auto next = CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_11.acbin");
     EXPECT_EQ(next.dt, 0.0005);
     EXPECT_EQ(next.time, 0.1 + 0.0005);
+}
+
+// Adaptive steps never exceed cfl_safety times the explicit stability limits,
+// even when dt_min is larger (validate() rejects such a dt_min; the engine
+// must not depend on it): the cap is applied after the dt_min / dt_max clamp.
+TEST_F(SimulationEngineTest, AdaptiveStepsNeverExceedTheStabilityCap) {
+    auto cfg = make_config(8, 4);
+    cfg.time.adaptive = true;
+    cfg.time.cfl_safety = 0.9;
+    const double cap =
+        cfg.time.cfl_safety * std::min(thermal_dt_limit(cfg), phase_field_dt_limit(cfg));
+    cfg.time.dt_min = 2.0 * cap;
+    cfg.time.dt_max = 4.0 * cap;
+    cfg.checkpoint.frequency = 1;
+    cfg.checkpoint.keep_last = 4;
+    SimulationEngine engine(cfg);
+    engine.run();
+    for (int step = 2; step <= 4; ++step) {
+        const auto data = CheckpointIO::read(cfg.checkpoint.checkpoint_dir /
+                                             ("checkpoint_" + std::to_string(step) + ".acbin"));
+        EXPECT_EQ(data.dt, cap) << "step " << step;
+    }
+}
+
+// When phi does not change (here the liquid at rest, u in equilibrium with
+// its Dirichlet walls), tolerance / max|dphi| is infinite and dt grows by the
+// largest factor, 1.5, per step until the stability cap.
+TEST_F(SimulationEngineTest, AdaptiveDtGrowsToTheCapWhenPhiIsAtRest) {
+    auto cfg = make_config(8, 18);
+    cfg.time.adaptive = true;
+    cfg.checkpoint.frequency = 1;
+    cfg.checkpoint.keep_last = 8;
+    std::filesystem::create_directories(cfg.checkpoint.checkpoint_dir);
+    Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    phi.fill(-1.0);
+    u.fill(-0.8);
+    const auto file = test_dir_ / "rest.acbin";
+    CheckpointIO::write(file, 10, 0.1, 0.001, grid, phi, u);
+    cfg.checkpoint.restart_file = file;
+    const double cap =
+        cfg.time.cfl_safety * std::min(thermal_dt_limit(cfg), phase_field_dt_limit(cfg));
+
+    SimulationEngine engine(cfg);
+    engine.run();
+    double expected = 0.001; // step 11, the first after the restart, keeps it
+    for (int step = 11; step <= 18; ++step) {
+        if (step > 11)
+            expected = std::min(1.5 * expected, cap);
+        const auto data = CheckpointIO::read(cfg.checkpoint.checkpoint_dir /
+                                             ("checkpoint_" + std::to_string(step) + ".acbin"));
+        EXPECT_EQ(data.dt, expected) << "step " << step;
+    }
+    EXPECT_EQ(expected, cap) << "the run is too short to reach the cap";
 }
 
 TEST_F(SimulationEngineTest, ConfigValidationRejectsInvalid) {

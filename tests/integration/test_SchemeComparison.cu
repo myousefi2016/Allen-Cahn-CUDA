@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <gtest/gtest.h>
+#include <string>
 #include <vector>
 
 using namespace ac;
@@ -136,18 +137,20 @@ TEST_F(SchemeComparisonTest, HeunIntermediateAccuracy) {
 
 // IMEX treats thermal diffusion implicitly. At dt = 0.04, h = 0.4, D = 2 the
 // explicit thermal update has dt*D*rho = 6 (rho = 12/h^2, 7-point stencil),
-// three times its stability limit 2 (docs/THEORY.md 10.1): Euler overflows,
-// IMEX stays finite. d0 = 0.1 keeps the phase-field update, explicit in both
-// schemes, inside its own limit: its diffusivity W0^2 (1+eps)^2 / tau0 is
-// 0.40, five times smaller than D.
+// three times its stability limit 2 (docs/THEORY.md 10.1): validate()
+// rejects the Euler configuration, and run anyway Euler overflows, while
+// IMEX is accepted and stays finite. d0 = 0.1 keeps the phase-field update,
+// explicit in both schemes, inside its own limit (0.0615 here).
 TEST_F(SchemeComparisonTest, IMEXStableBeyondTheExplicitThermalLimit) {
     const int N = 16, steps = 500;
     const double dt = 0.04;
-    auto finite_after_run = [&](TimeScheme scheme) {
+    auto config = [&](TimeScheme scheme) {
         auto cfg = make_config(N, scheme);
         cfg.physics.d0 = 0.1;
         cfg.time.dt = dt;
-        cfg.validate();
+        return cfg;
+    };
+    auto finite_after_run = [&](const SimulationConfig& cfg) {
         CudaSolver solver(cfg);
         Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
         FieldData phi(grid, "phi"), u(grid, "u");
@@ -162,6 +165,15 @@ TEST_F(SchemeComparisonTest, IMEXStableBeyondTheExplicitThermalLimit) {
                 return false;
         return true;
     };
-    EXPECT_FALSE(finite_after_run(TimeScheme::Euler)) << "dt is not beyond the explicit limit";
-    EXPECT_TRUE(finite_after_run(TimeScheme::IMEX));
+    const SimulationConfig euler = config(TimeScheme::Euler), imex = config(TimeScheme::IMEX);
+    try {
+        euler.validate();
+        ADD_FAILURE() << "Euler at dt = 0.04 accepted";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_NE(std::string(e.what()).find("explicit thermal update"), std::string::npos)
+            << e.what();
+    }
+    EXPECT_FALSE(finite_after_run(euler)) << "dt is not beyond the explicit limit";
+    EXPECT_NO_THROW(imex.validate());
+    EXPECT_TRUE(finite_after_run(imex));
 }

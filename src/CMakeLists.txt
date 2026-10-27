@@ -10,6 +10,7 @@ add_library(ac_core STATIC
     core/SimulationConfig.cpp
     core/Grid.cpp
     core/FieldData.cpp
+    core/StabilityLimits.cpp
 )
 target_include_directories(ac_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ac_core

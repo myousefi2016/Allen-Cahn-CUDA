@@ -65,7 +65,7 @@ struct TimeParams {
     TimeScheme scheme = TimeScheme::Euler;
     bool adaptive = false;
     Real adaptive_tolerance = 0.01; ///< Max allowed |dphi| per step
-    Real cfl_safety = 0.9;
+    Real cfl_safety = 0.9;          ///< In (0, 1]: adaptive dt <= cfl_safety * stability limit
     // Saturation guard: once the solid (phi > saturation_threshold) reaches
     // the cells next to a wall, the run no longer represents growth into an
     // unbounded melt (the wall's boundary condition now acts on the solid), so

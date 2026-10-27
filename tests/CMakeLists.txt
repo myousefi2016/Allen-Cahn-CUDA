@@ -5,6 +5,7 @@ add_executable(unit_tests
     # Core (CPU-only)
     unit/test_Grid.cpp
     unit/test_SimulationConfig.cpp
+    unit/test_StabilityLimits.cpp
     unit/test_FieldData.cpp
     unit/test_CheckpointIO.cpp
     unit/test_LRUCache.cpp
@@ -19,6 +20,7 @@ add_executable(unit_tests
     unit/test_Reduction.cu
     unit/test_CudaSolver.cu
     unit/test_ImexJacobi.cu
+    unit/test_StabilityLimitsGpu.cu
     unit/test_MultiGPUSolver.cu
     unit/test_Willmore.cu
     unit/test_WillmorePreconditioner.cu

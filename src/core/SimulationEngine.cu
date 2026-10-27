@@ -1,4 +1,5 @@
 #include "core/SimulationEngine.hpp"
+#include "core/StabilityLimits.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/ISolver.cuh"
@@ -47,7 +48,9 @@ std::unique_ptr<cuda::ISolver> SimulationEngine::create_solver() {
 
 SimulationEngine::SimulationEngine(SimulationConfig config)
     : config_(std::move(config)), grid_(config_.make_grid()), phi_host_(grid_, "phi"),
-      u_host_(grid_, "u") {
+      u_host_(grid_, "u"),
+      adaptive_dt_cap_(config_.time.cfl_safety *
+                       std::min(thermal_dt_limit(config_), phase_field_dt_limit(config_))) {
     // Create CUDA solver (single or multi-GPU based on config)
     solver_ = create_solver();
 
@@ -303,25 +306,16 @@ double SimulationEngine::adapt_time_step(double current_dt, int step) {
     if (!std::isfinite(max_dphi))
         throw std::runtime_error("max|dphi| is not finite after step " + std::to_string(step - 1) +
                                  ": the simulation diverged");
-    if (max_dphi < 1e-30)
-        return current_dt;
-
-    double target = config_.time.adaptive_tolerance;
-    double ratio = target / max_dphi;
+    // tolerance / max|dphi| is +infinity when phi did not change
+    // (adaptive_tolerance > 0 is validated): dt then grows by the largest
+    // factor, 1.5, like any step far inside the tolerance.
+    const double ratio = config_.time.adaptive_tolerance / max_dphi;
     double new_dt = current_dt * std::min(1.5, std::max(0.5, 0.9 * ratio));
 
-    // CFL constraint: both thermal diffusivity D and phase-field effective
-    // diffusivity D_phi = W0^2*A_max^2/tau0 must be stable.
-    Real min_dx = std::min({config_.grid.dx, config_.grid.dy, config_.grid.dz});
-    Real inv_h2_sum = 1.0 / (min_dx * min_dx) * 3.0;
-    Real thermal_cfl = config_.time.cfl_safety / (2.0 * config_.physics.D * inv_h2_sum);
-    Real A_max = 1.0 + config_.physics.epsilon;
-    Real D_phi = config_.physics.W0 * config_.physics.W0 * A_max * A_max / config_.physics.tau0();
-    Real phi_cfl = config_.time.cfl_safety / (2.0 * D_phi * inv_h2_sum);
-    Real cfl_dt = std::min(thermal_cfl, phi_cfl);
-    new_dt = std::min(new_dt, cfl_dt);
-
+    // The stability cap is applied last, so no other bound (dt_min) can
+    // lift dt above it; validate() rejects dt_min above the cap.
     new_dt = std::clamp(new_dt, config_.time.dt_min, config_.time.dt_max);
+    new_dt = std::min(new_dt, adaptive_dt_cap_);
 
     if (std::abs(new_dt - current_dt) / current_dt > 0.1) {
         spdlog::debug("Adaptive dt: {:.6e} -> {:.6e} (max_dphi={:.6e})", current_dt, new_dt,

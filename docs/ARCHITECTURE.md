@@ -49,6 +49,7 @@ graph TB
     end
     subgraph Core["Core"]
         SC["SimulationConfig"]
+        SL["StabilityLimits"]
         GR["Grid"]
         FD["FieldData"]
         LRU["LRUCache"]
@@ -81,6 +82,8 @@ graph TB
     CIO --> FD
     CS --> SC
     CS --> GR
+    SC --> SL
+    SE --> SL
 ```
 
 ---
@@ -93,7 +96,7 @@ two test executables (`src/CMakeLists.txt`).
 ```mermaid
 graph LR
     aclog["ac_logging<br/>(spdlog wrapper)"]
-    accore["ac_core<br/>SimulationConfig.cpp,<br/>Grid.cpp, FieldData.cpp"]
+    accore["ac_core<br/>SimulationConfig.cpp,<br/>Grid.cpp, FieldData.cpp,<br/>StabilityLimits.cpp"]
     accuda["ac_cuda<br/>(SEPARABLE_COMPILATION)<br/>kernels + DeviceField +<br/>CudaSolver + MultiGPUSolver +<br/>WillmoreSolve + JacobiStopping"]
     acio["ac_io<br/>VTKWriter.cpp,<br/>CheckpointIO.cpp,<br/>core/CheckpointManager.cpp"]
     acengine["ac_engine<br/>(SEPARABLE_COMPILATION)<br/>SimulationEngine.cu"]

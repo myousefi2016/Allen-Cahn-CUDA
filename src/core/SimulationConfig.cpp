@@ -1,5 +1,7 @@
 #include "core/SimulationConfig.hpp"
 
+#include "core/StabilityLimits.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -366,21 +368,41 @@ void SimulationConfig::validate() const {
         throw std::invalid_argument("dt_max must be positive");
     if (time.dt_min >= time.dt_max)
         throw std::invalid_argument("dt_min must be < dt_max");
-    if (time.cfl_safety <= 0.0)
-        throw std::invalid_argument("cfl_safety must be positive");
+    if (!(time.cfl_safety > 0.0 && time.cfl_safety <= 1.0))
+        throw std::invalid_argument("cfl_safety must be in (0, 1]: adaptive stepping caps dt at "
+                                    "cfl_safety times the stability limit");
 
-    // CFL check (thermal diffusion + phase-field effective diffusivity)
-    Real min_dx = std::min({grid.dx, grid.dy, grid.dz});
-    Real inv_h2_sum = 3.0 / (min_dx * min_dx);
-    Real thermal_cfl = time.cfl_safety / (2.0 * physics.D * inv_h2_sum);
-    Real A_max = 1.0 + physics.epsilon;
-    Real D_phi = physics.W0 * physics.W0 * A_max * A_max / physics.tau0();
-    Real phi_cfl = time.cfl_safety / (2.0 * D_phi * inv_h2_sum);
-    Real cfl_dt = std::min(thermal_cfl, phi_cfl);
-    if (time.dt > cfl_dt && !time.adaptive) {
-        spdlog::warn("dt={:.6e} exceeds CFL limit={:.6e} (min of thermal and phase-field). "
-                     "Consider enabling adaptive time stepping.",
-                     time.dt, cfl_dt);
+    // Explicit stability limits (docs/THEORY.md 10.1): beyond them a
+    // checkerboard perturbation grows every step, so the run blows up. With
+    // adaptive stepping the first step uses time.dt and every later step is
+    // capped at cfl_safety times the limits; dt_min must not exceed that cap.
+    const double thermal_limit = thermal_dt_limit(*this);
+    const double phi_limit = phase_field_dt_limit(*this);
+    auto check_step = [&](double dt, const std::string& what, double factor) {
+        if (dt > factor * thermal_limit) {
+            throw std::invalid_argument(
+                what + " = " + std::to_string(dt) + " exceeds " +
+                (factor < 1.0 ? "cfl_safety times " : "") + "the stability limit " +
+                std::to_string(thermal_limit) + " of the explicit thermal update (dt D rho <= " +
+                std::to_string(explicit_stability_interval(time.scheme)) +
+                ", rho = " + std::to_string(thermal_spectral_radius(*this)) +
+                " for this stencil and spacing; time.scheme \"imex\" treats u implicitly; "
+                "docs/THEORY.md 10.1)");
+        }
+        if (dt > factor * phi_limit) {
+            throw std::invalid_argument(
+                what + " = " + std::to_string(dt) + " exceeds " +
+                (factor < 1.0 ? "cfl_safety times " : "") + "the stability limit " +
+                std::to_string(phi_limit) +
+                " of the explicit phase-field update, above which a checkerboard "
+                "perturbation of the liquid grows every step (docs/THEORY.md 10.1)");
+        }
+    };
+    if (time.adaptive) {
+        check_step(time.dt, "time.dt (the first adaptive step)", time.cfl_safety);
+        check_step(time.dt_min, "time.dt_min", time.cfl_safety);
+    } else {
+        check_step(time.dt, "time.dt", 1.0);
     }
 
     // Output

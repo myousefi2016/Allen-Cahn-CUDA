@@ -39,13 +39,13 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Strong anisotropy (ε > 1/15)**: the Allen–Cahn equation is ill-posed there (its solutions do not converge under grid refinement), so `physics.willmore_beta > 0` is required. It adds the Willmore regularisation, integrated linearly implicitly by the Euler and IMEX schemes: every step solves a symmetric positive-definite system by conjugate gradients with a single-precision Chebyshev polynomial preconditioner whose degree guarantees two outer iterations in exact arithmetic; at the shipped configurations' h = 0.4 every measured step took two (`docs/THEORY.md` §4.3–4.4).
 - **Two Laplacian stencils**: standard 7-point and isotropic 27-point (Patra–Karttunen weights `14·face + 3·edge + 1·corner − 128·center`, divisor `30·h²`).
 - **Per-face boundary conditions**: independent Dirichlet / Neumann / Periodic / Robin on each of the 6 faces (`x_lo`, `x_hi`, `y_lo`, `y_hi`, `z_lo`, `z_hi`); periodic identifies the two faces of an axis, so it must be set on both (`docs/DESIGN.md` §5.2).
-- **Adaptive time stepping**: CFL-bounded with target-tolerance control via parallel reduction.
+- **Adaptive time stepping**: target-tolerance control via parallel reduction, capped at `cfl_safety` times the exact explicit stability limits (`docs/THEORY.md` §10.1).
 - **Async I/O**: dedicated VTK/raw writer thread with bounded job queue, `condition_variable` backpressure, atomic temp-then-rename writes, and an LRU-cached field-statistics map.
 - **Crash-safe binary checkpointing**: 128-byte fixed header with magic `ACCHKPT`, CRC32 over field data, atomic rename + parent-directory `fsync`, and rolling retention that keeps one consistent trajectory per directory.
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 25 unit-test files, 8 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 27 unit-test files, 8 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -508,6 +508,8 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
 | Parameter             | Accepted values |
 |-----------------------|-----------------|
 | `time.scheme`         | `"euler"`, `"heun"`, `"rk4"`, `"imex"` |
+| `time.dt`             | at most the explicit stability limits of the scheme, stencil and spacing (`docs/THEORY.md` §10.1; `--validate-config` reports them); with `time.adaptive`, at most `cfl_safety` times them, like `time.dt_min` |
+| `time.cfl_safety`     | in (0, 1]: adaptive steps are capped at this fraction of the stability limits |
 | `physics.epsilon`     | anisotropy strength in [0, 1/3); above 1/15 it requires `physics.willmore_beta > 0` |
 | `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (default 0); > 0 requires `time.scheme` `"euler"` or `"imex"` |
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
@@ -684,12 +686,13 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   '
 ```
 
-### Unit tests (`tests/unit/`, 25 files)
+### Unit tests (`tests/unit/`, 27 files)
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
 | `test_Grid.cpp`               | Grid construction, indexing, spacing, validity checks                            |
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
+| `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial), `validate()` rejects a fixed dt one ulp above each limit and adaptive settings above the cap |
 | `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and denominator, finite BC parameters), defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
@@ -708,10 +711,11 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
 | `test_ImexJacobi.cu`          | IMEX thermal solve: error within 1e-10 of a long-double solution at s ≈ 17 (both stencils, every kind of u face, one GPU and three domains); NaN temperature and a tolerance below rounding throw; the stopping rule on the host |
+| `test_StabilityLimitsGpu.cu`  | The solver's explicit updates have exactly these limits: a checkerboard decays at 0.99× and grows at 1.01× (thermal: every scheme and stencil; phase field with and without a weak Willmore term) |
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; engine run |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states |
-| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt, short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks, dt after a restart |
+| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (capped at the stability limits after the dt_min clamp; growth when φ is at rest), short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks, dt after a restart |
 | `test_VTKWriter.cpp`          | Async and synchronous writes, raw / VTS output, VTS topology, write failures reported (never a published broken file), statistics cache |
 
 ### Integration tests (`tests/integration/`, 8 files)
@@ -721,7 +725,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_SphereRegression.cu`    | Dendritic growth from spherical seed reproduces reference behaviour              |
 | `test_EulerConvergence.cu`    | Forward Euler shows expected error reduction under dt refinement                 |
 | `test_EnergyConservation.cu`  | Phase-field free-energy decreases monotonically                                  |
-| `test_SchemeComparison.cu`    | Euler vs Heun vs RK4 agreement; IMEX stays finite at 3× the explicit thermal limit, where Euler overflows |
+| `test_SchemeComparison.cu`    | Euler vs Heun vs RK4 agreement; at 3× the explicit thermal limit `validate()` rejects Euler, which overflows, and IMEX stays finite |
 | `test_CheckpointRestart.cu`   | Checkpoint at midpoint then restart matches uninterrupted run                    |
 | `test_StencilComparison.cu`   | 7-point vs 27-point: bounded fields, smoother 27-pt interface, same physics      |
 | `test_AnisotropyForce.cu`     | Seed growth favours <100> increasingly with ε; grid anisotropy at ε = 0 is < 2% and vanishes under refinement |
@@ -752,7 +756,7 @@ ctest --test-dir build -R StencilComparisonTest  --output-on-failure
 ```
 Allen-Cahn-CUDA/
 ├── src/
-│   ├── core/                  # Grid, SimulationConfig, FieldData,
+│   ├── core/                  # Grid, SimulationConfig, StabilityLimits, FieldData,
 │   │                          # CheckpointManager, LRUCache, SpatialHash, ConcurrentMap
 │   ├── cuda/                  # ISolver, CudaSolver, MultiGPUSolver,
 │   │                          # AllenCahn / Thermal / Boundary / Reduction / Willmore kernels,
@@ -764,7 +768,7 @@ Allen-Cahn-CUDA/
 │   ├── main.cpp               # Entry point + signal handler
 │   └── CMakeLists.txt
 ├── tests/
-│   ├── unit/                  # 25 unit-test files
+│   ├── unit/                  # 27 unit-test files
 │   ├── integration/           # 8 integration-test files
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   └── CMakeLists.txt
