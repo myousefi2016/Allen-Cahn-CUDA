@@ -381,9 +381,13 @@ graph LR
     F0 --> T
 ```
 
-Robin BC enforces `alpha*u + beta*du/dn = gamma`. The validator forbids
-`alpha == 0 && beta == 0` for any Robin face
-(`SimulationConfig::validate`).
+Robin BC enforces `alpha*u + beta*du/dn = gamma`. The validator
+(`SimulationConfig::validate`) requires `alpha`, `beta` and `gamma` finite,
+forbids `alpha == 0 && beta == 0`, `alpha` and `beta` of opposite signs, and
+`alpha + beta/h == 0` (`h` the spacing normal to the face), so the ghost
+`(gamma + beta*u_inner/h)/(alpha + beta/h)` is defined and its factor of
+`u_inner` lies in [0, 1] (docs/THEORY.md §9.1). Dirichlet values and Neumann
+fluxes must be finite as well.
 
 ### 5.2 Periodic faces come in pairs
 

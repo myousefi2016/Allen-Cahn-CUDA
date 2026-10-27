@@ -244,6 +244,36 @@ TEST_F(BoundaryConditionsTest, RobinBCUsesAdjacentInteriorCell) {
         }
 }
 
+// A Robin face with a small denominator is still that Robin face: alpha =
+// 1e-31, beta = 0 is the Dirichlet value gamma/alpha = 2 (2e-31 is exactly
+// twice the double nearest 1e-31). SimulationConfig::validate rejects only a
+// denominator that is exactly zero, so no size threshold may change the rule.
+TEST_F(BoundaryConditionsTest, RobinWithSmallDenominatorKeepsItsValue) {
+    const int N = 6;
+    KernelParams p{};
+    p.Nx = p.Ny = p.Nz = N;
+    p.dx = p.dy = p.dz = 0.4;
+
+    std::size_t total = static_cast<std::size_t>(N) * N * N;
+    std::vector<double> field_host(total, -0.25);
+    DeviceField<double> d_field(total);
+    d_field.copy_from_host(field_host.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    launch_boundary_conditions(d_field.data(), p, BCType::Robin, 0.0, 0.0, 1e-31, 0.0, 2e-31);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    d_field.copy_to_host(field_host.data());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    for (int a = 1; a < N - 1; ++a)
+        for (int b = 1; b < N - 1; ++b)
+            for (int side : {0, N - 1}) {
+                EXPECT_EQ(field_host[(side * N + a) * N + b], 2.0) << "X face " << a << "," << b;
+                EXPECT_EQ(field_host[(a * N + side) * N + b], 2.0) << "Y face " << a << "," << b;
+                EXPECT_EQ(field_host[(a * N + b) * N + side], 2.0) << "Z face " << a << "," << b;
+            }
+}
+
 TEST_F(BoundaryConditionsTest, PerFaceMixedBC) {
     // Test per-face BCs: Dirichlet on X-lo, Neumann on X-hi
     const int N = 8;

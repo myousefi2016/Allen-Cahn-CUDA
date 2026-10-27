@@ -8,6 +8,7 @@
 #include <initializer_list>
 #include <limits>
 #include <string>
+#include <utility>
 
 using namespace ac;
 
@@ -377,4 +378,120 @@ TEST_F(SimulationConfigTest, EachWillmoreRuleRejectsOnItsOwn) {
         expect_rejected(std::string(R"({"physics": {"epsilon": 0.05, "willmore_beta": 1.0}, )") +
                             R"("time": {"scheme": ")" + scheme + R"("}})",
                         {"requires time.scheme"});
+}
+
+// Each Robin rule rejects on its own, for phi and u, uniform and on every face:
+// alpha = beta = 0, alpha and beta of opposite signs (ghost factor outside
+// [0, 1], docs/THEORY.md 9.1). Same signs, or one of them zero (also -0.0),
+// are accepted.
+TEST_F(SimulationConfigTest, RobinCoefficientsMustNotHaveOppositeSigns) {
+    static constexpr const char* face_names[] = {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"};
+    auto robin = [](const std::string& alpha, const std::string& beta) {
+        return R"({"type": "robin", "alpha": )" + alpha + R"(, "beta": )" + beta +
+               R"(, "gamma": 0.5})";
+    };
+    auto per_face = [&](int robin_face, const std::string& bc) {
+        std::string s = "{";
+        for (int i = 0; i < 6; ++i)
+            s += std::string(i ? "," : "") + "\"" + face_names[i] +
+                 "\": " + (i == robin_face ? bc : R"({"type": "neumann"})");
+        return s + "}";
+    };
+    const std::pair<const char*, const char*> opposite[] = {
+        {"-1.0", "1.0"}, {"1.0", "-0.5"}, {"-1.1", "0.4"}, {"-4.0", "1.0"}};
+    const std::pair<const char*, const char*> same[] = {
+        {"1.0", "0.5"}, {"-1.0", "-0.5"}, {"0.0", "1.0"}, {"2.0", "0.0"}, {"-0.0", "1.0"}};
+    for (const std::string field : {"phi", "u"}) {
+        auto with = [&](const std::string& bc) {
+            return R"({"boundary": {")" + field + "\": " + bc + "}}";
+        };
+        expect_rejected(with(robin("0.0", "0.0")),
+                        {"Robin BC for " + field + ":", "cannot both be zero"});
+        for (const auto& [a, b] : opposite) {
+            expect_rejected(with(robin(a, b)), {"Robin BC for " + field + ":", "opposite signs"});
+            for (int i = 0; i < 6; ++i)
+                expect_rejected(with(per_face(i, robin(a, b))),
+                                {"Robin BC for " + field + " face " + std::to_string(i) + ":",
+                                 "opposite signs"});
+        }
+        for (const auto& [a, b] : same) {
+            EXPECT_NO_THROW((void)SimulationConfig::from_json_string(with(robin(a, b))))
+                << field << " alpha " << a << " beta " << b;
+            for (int i = 0; i < 6; ++i)
+                EXPECT_NO_THROW(
+                    (void)SimulationConfig::from_json_string(with(per_face(i, robin(a, b)))))
+                    << field << " face " << i << " alpha " << a << " beta " << b;
+        }
+    }
+}
+
+// alpha + beta/h, the denominator of the ghost value, is checked as the kernel
+// computes it: alpha = 0 with the smallest subnormal beta passes the other
+// rules, but beta/h underflows to zero at h = 4 (not at h = 0.4).
+TEST_F(SimulationConfigTest, RobinDenominatorMustNotVanish) {
+    const std::string robin = R"({"type": "robin", "alpha": 0.0, "beta": 5e-324, "gamma": 0.5})";
+    for (const std::string field : {"phi", "u"}) {
+        expect_rejected(R"({"grid": {"dx": 4.0, "dy": 4.0, "dz": 4.0}, "boundary": {")" + field +
+                            "\": " + robin + "}}",
+                        {"Robin BC for " + field + ":", "alpha + beta/h is zero"});
+        EXPECT_NO_THROW((void)SimulationConfig::from_json_string(
+            R"({"grid": {"dx": 0.4, "dy": 0.4, "dz": 0.4}, "boundary": {")" + field +
+            "\": " + robin + "}}"));
+    }
+}
+
+// The parameters a BC type uses must be finite. JSON cannot express NaN or an
+// overflowing number (the parser rejects 1e400), so this guards configurations
+// built in code.
+TEST_F(SimulationConfigTest, BoundaryParametersMustBeFinite) {
+    const double bad[] = {std::numeric_limits<double>::infinity(),
+                          -std::numeric_limits<double>::infinity(),
+                          std::numeric_limits<double>::quiet_NaN()};
+    auto expect_finite_rule = [](const SimulationConfig& cfg, const std::string& what) {
+        try {
+            cfg.validate();
+            ADD_FAILURE() << "accepted non-finite " << what;
+        } catch (const std::invalid_argument& e) {
+            EXPECT_NE(std::string(e.what()).find(what + " must be finite"), std::string::npos)
+                << e.what();
+        }
+    };
+    for (double v : bad) {
+        for (bool phi : {true, false}) {
+            for (int face = -1; face < 6; ++face) {
+                SimulationConfig base;
+                base.grid.Nx = base.grid.Ny = base.grid.Nz = 10;
+                auto& bc = face < 0 ? (phi ? base.boundary.phi_bc : base.boundary.u_bc)
+                                    : (phi ? base.boundary.phi_faces : base.boundary.u_faces)
+                                          .faces[static_cast<std::size_t>(face)];
+                const BoundaryConfig ok = bc;
+                bc.type = BCType::Dirichlet;
+                bc.value = v;
+                expect_finite_rule(base, "value");
+                bc = ok;
+                bc.type = BCType::Neumann;
+                bc.flux = v;
+                expect_finite_rule(base, "flux");
+                for (const char* what : {"alpha", "beta", "gamma"}) {
+                    bc = ok;
+                    bc.type = BCType::Robin;
+                    bc.alpha = 1.0;
+                    bc.beta = 0.5;
+                    (std::string(what) == "alpha"  ? bc.alpha
+                     : std::string(what) == "beta" ? bc.beta
+                                                   : bc.gamma) = v;
+                    expect_finite_rule(base, what);
+                }
+                // A parameter the type does not use is not read.
+                bc = ok;
+                bc.type = BCType::Dirichlet;
+                bc.value = -1.0;
+                bc.flux = v;
+                bc.alpha = v;
+                bc.beta = v;
+                bc.gamma = v;
+                EXPECT_NO_THROW(base.validate());
+            }
+        }
+    }
 }

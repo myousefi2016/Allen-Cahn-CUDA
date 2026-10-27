@@ -409,20 +409,65 @@ void SimulationConfig::validate() const {
             "adaptive_tolerance must be positive when adaptive stepping is enabled");
     }
 
-    // Robin BC validation
-    auto validate_bc = [](const BoundaryConfig& bc, const std::string& name) {
-        if (bc.type == BCType::Robin) {
+    // Boundary conditions. The parameters a BC type uses must be finite. A
+    // Robin face alpha*u + beta*du/dn = gamma fills its ghost cell with
+    // (gamma + (beta/h) u_inner) / (alpha + beta/h), h the spacing normal to
+    // the face (apply_bc_face_kernel), so u_ghost = c u_inner + const with
+    // c = (beta/h) / (alpha + beta/h). alpha and beta of opposite signs are
+    // rejected: such a face feeds the field in proportion to its own value
+    // (a negative heat-transfer coefficient), and c leaves [0, 1], where the
+    // stability limit of the explicit diffusion and the convergence of the
+    // IMEX Jacobi sweeps no longer hold (docs/THEORY.md 9.1, 10.1, 10.2).
+    // With alpha*beta >= 0 the denominator vanishes only when alpha and beta
+    // do, or when beta/h underflows; it is checked as the kernel computes it.
+    const Real spacing[3] = {grid.dx, grid.dy, grid.dz};
+    auto validate_bc = [&spacing](const BoundaryConfig& bc, const std::string& name, int first_axis,
+                                  int last_axis) {
+        auto require_finite = [&](Real v, const char* what) {
+            if (!std::isfinite(v))
+                throw std::invalid_argument("BC for " + name + ": " + what + " must be finite");
+        };
+        switch (bc.type) {
+        case BCType::Dirichlet:
+            require_finite(bc.value, "value");
+            break;
+        case BCType::Neumann:
+            require_finite(bc.flux, "flux");
+            break;
+        case BCType::Periodic:
+            break;
+        case BCType::Robin:
+            require_finite(bc.alpha, "alpha");
+            require_finite(bc.beta, "beta");
+            require_finite(bc.gamma, "gamma");
             if (bc.alpha == 0.0 && bc.beta == 0.0) {
                 throw std::invalid_argument("Robin BC for " + name +
                                             ": alpha and beta cannot both be zero");
             }
+            if ((bc.alpha < 0.0 && bc.beta > 0.0) || (bc.alpha > 0.0 && bc.beta < 0.0)) {
+                throw std::invalid_argument(
+                    "Robin BC for " + name +
+                    ": alpha and beta must not have opposite signs "
+                    "(the face would feed the field in proportion to its value; the explicit "
+                    "stability limit and the IMEX Jacobi convergence assume alpha*beta >= 0, "
+                    "docs/THEORY.md 9.1)");
+            }
+            for (int axis = first_axis; axis <= last_axis; ++axis) {
+                if (bc.alpha + bc.beta / spacing[axis] == 0.0) {
+                    throw std::invalid_argument(
+                        "Robin BC for " + name +
+                        ": alpha + beta/h is zero at h = " + std::to_string(spacing[axis]));
+                }
+            }
+            break;
         }
     };
-    validate_bc(boundary.phi_bc, "phi");
-    validate_bc(boundary.u_bc, "u");
+    validate_bc(boundary.phi_bc, "phi", 0, 2);
+    validate_bc(boundary.u_bc, "u", 0, 2);
     for (std::size_t i = 0; i < 6; ++i) {
-        validate_bc(boundary.phi_faces.faces[i], "phi face " + std::to_string(i));
-        validate_bc(boundary.u_faces.faces[i], "u face " + std::to_string(i));
+        const int axis = static_cast<int>(i / 2);
+        validate_bc(boundary.phi_faces.faces[i], "phi face " + std::to_string(i), axis, axis);
+        validate_bc(boundary.u_faces.faces[i], "u face " + std::to_string(i), axis, axis);
     }
 
     // A periodic BC identifies the two faces of an axis: the ghost plane at

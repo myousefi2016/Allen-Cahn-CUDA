@@ -200,14 +200,18 @@ struct Case {
     PerFaceBoundary faces;
 };
 
-/// Grids and phi BCs covering every ghost rule: zero flux, Dirichlet,
-/// periodic (paired), Robin with c in (0, 1), c > 1 (alpha < 0) and c < 0
-/// (alpha + beta/h < 0), per-face mixes, and axes of 1 and 2 interior cells.
+/// Grids and phi BCs covering every accepted ghost rule: zero flux,
+/// Dirichlet, periodic (paired), Robin with c in (0, 1) (c = 0.56 at h = 0.4),
+/// near 1 (0.98) and near 0 (0.012), and with alpha, beta both negative,
+/// per-face mixes, and axes of 1 and 2 interior cells. (Robin c outside
+/// [0, 1] is rejected by SimulationConfig::validate; the per-axis bounds for
+/// it are tested on the host below.)
 std::vector<Case> spectrum_cases() {
     const BoundaryConfig N = bc_of(BCType::Neumann), D = bc_of(BCType::Dirichlet),
                          P = bc_of(BCType::Periodic), R = bc_of(BCType::Robin, 1.0, 0.5),
-                         R_above = bc_of(BCType::Robin, -1.0, 1.0),
-                         R_below = bc_of(BCType::Robin, -4.0, 1.0);
+                         R_near_1 = bc_of(BCType::Robin, 0.05, 1.0),
+                         R_near_0 = bc_of(BCType::Robin, 20.0, 0.1),
+                         R_negative = bc_of(BCType::Robin, -1.0, -0.5);
     auto faces = [](BoundaryConfig xl, BoundaryConfig xh, BoundaryConfig yl, BoundaryConfig yh,
                     BoundaryConfig zl, BoundaryConfig zh) {
         PerFaceBoundary f;
@@ -219,9 +223,10 @@ std::vector<Case> spectrum_cases() {
         {"dirichlet", 7, 6, 8, PerFaceBoundary::uniform(D)},
         {"periodic", 7, 6, 8, PerFaceBoundary::uniform(P)},
         {"mixed", 7, 6, 8, faces(P, P, D, N, R, N)},
-        {"robin_c_above_1", 7, 6, 8, faces(R_above, N, R_above, R_above, N, R_above)},
-        {"robin_c_below_0", 7, 6, 8, faces(R_below, N, N, R_below, R_below, D)},
-        {"thin_axes", 3, 4, 9, faces(N, R, P, P, D, R_above)},
+        {"robin_c_near_1", 7, 6, 8, faces(R_near_1, N, R_near_1, R_near_1, N, R_near_1)},
+        {"robin_c_near_0", 7, 6, 8, faces(R_near_0, N, N, R_near_0, R_near_0, D)},
+        {"robin_negative", 7, 6, 8, faces(R_negative, R, N, R_negative, D, R_negative)},
+        {"thin_axes", 3, 4, 9, faces(N, R, P, P, D, R_near_1)},
     };
 }
 
@@ -231,11 +236,14 @@ std::vector<Case> spectrum_cases() {
 
 // The Gershgorin bounds of the 1-D second-difference matrix contain its
 // exact eigenvalues for every ghost rule and every size down to one cell.
+// Robin(1e-31, 0) is a Dirichlet-like face (c = 0) whatever the size of its
+// denominator.
 TEST(WillmoreSpectrumBounds, SecondDifferenceBoundsContainTheExactSpectrum) {
     const double h = 0.4;
     const std::vector<BoundaryConfig> rules = {
-        bc_of(BCType::Neumann), bc_of(BCType::Dirichlet), bc_of(BCType::Robin, 1.0, 0.5),
-        bc_of(BCType::Robin, -1.0, 1.0), bc_of(BCType::Robin, -4.0, 1.0)};
+        bc_of(BCType::Neumann),          bc_of(BCType::Dirichlet),
+        bc_of(BCType::Robin, 1.0, 0.5),  bc_of(BCType::Robin, -1.0, 1.0),
+        bc_of(BCType::Robin, -4.0, 1.0), bc_of(BCType::Robin, 1e-31, 0.0)};
     for (int n = 1; n <= 6; ++n) {
         std::vector<std::pair<BoundaryConfig, BoundaryConfig>> pairs;
         for (const auto& lo : rules)

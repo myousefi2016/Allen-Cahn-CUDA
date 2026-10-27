@@ -500,8 +500,9 @@ Robin face (ghost = c · adjacent value) only changes an end diagonal by c, and
 a periodic axis couples its two ends in both directions (a periodic face
 without a periodic opposite face is rejected, `docs/DESIGN.md` §5.2). Their
 Gershgorin intervals therefore bound their spectra, and spec(∇²ₕ) lies in
-[ℓ, υ], the sums over the axes: [−4 Σ_d h_d⁻², 0] for zero-flux, Dirichlet
-and periodic faces, wider for a Robin face with c outside [0, 1] (α < 0).
+[ℓ, υ], the sums over the axes. For every accepted boundary condition
+(Robin c ∈ [0, 1], §9.1) that is within [−4 Σ_d h_d⁻², 0]; the bounds are
+computed from the faces' rules and also hold for c outside [0, 1].
 Then spec(B) lies in [W₀²ℓ − 2, W₀²υ − 2] and spec(L) in [L_min, L_max], the
 range of the square over that interval. For a vector v let
 `t = vᵀTv / (dt vᵀv)` and `l = vᵀLv / vᵀv`; the Rayleigh quotient of `D⁻¹A`
@@ -618,9 +619,9 @@ For comparison, an unregularised Heun step of run_dendrite takes 8.7 ms.
 
 | Test | Checks |
 |---|---|
-| `SecondDifferenceBoundsContainTheExactSpectrum` | the per-axis bounds contain the exact eigenvalues of the 1-D matrices, n = 1…6, every pair of ghost rules including Robin with c > 1 and c < 0 |
+| `SecondDifferenceBoundsContainTheExactSpectrum` | the per-axis bounds contain the exact eigenvalues of the 1-D matrices, n = 1…6, every pair of ghost rules, including Robin with c > 1 and c < 0 (which `validate()` rejects) and with a denominator of 10⁻³¹ |
 | `LowestDegreeMeetingTheBoundAndExactPolynomial` | the degree is the lowest meeting the bound; the recurrence coefficients reproduce T_k((θ − λ)/δ)/T_k(σ) |
-| `SpectrumBoundsContainEveryEigenvalue` | the eigenvalues of the assembled production operator, scaled by D, lie in [a, b] for seven grids and boundary layouts (anisotropic spacing, axes of one and two cells) |
+| `SpectrumBoundsContainEveryEigenvalue` | the eigenvalues of the assembled production operator, scaled by D, lie in [a, b] for eight grids and boundary layouts (Robin c near 0 and near 1 and with α, β < 0, anisotropic spacing, axes of one and two cells) |
 | `SinglePrecisionMatchesExactPolynomial` | the device preconditioner equals the exact polynomial to 1e-7 relative (bound k(b/a) u₃₂) |
 | `TinyRightHandSideGivesTheScaledIncrementBitwise` | the power-of-two scaling: bitwise scale equivariance down to 10⁻⁴⁵ |
 | `TrueResidualMeetsTheTolerance` | true residual ≤ 10⁻¹⁰ after a solve, including a right-hand side with ‖b‖ < 1 |
@@ -1042,9 +1043,25 @@ Wraps the domain so opposite faces are connected.
 ```
 α·φ + β·∂φ/∂n = γ
 ```
-General linear combination of Dirichlet and Neumann conditions.
-Discretized: `φ[boundary] = (γ - (β/h)·φ[interior]) / (α + β/h)`
-with guard against `|α + β/h| < 10⁻³⁰` to prevent division by zero.
+General linear combination of Dirichlet and Neumann conditions, ∂φ/∂n the
+outward normal derivative. With `∂φ/∂n ≈ (φ[boundary] − φ[interior])/h`:
+
+```
+φ[boundary] = (γ + (β/h)·φ[interior]) / (α + β/h) = c·φ[interior] + γ/(α + β/h),
+c = (β/h) / (α + β/h)
+```
+
+`validate()` requires α, β and γ finite, α and β not both zero and not of
+opposite signs (αβ ≥ 0), and α + β/h ≠ 0 as the kernel computes it. Then
+c ∈ [0, 1] (c = 0 at β = 0, Dirichlet-like; c = 1 at α = 0, Neumann-like).
+Opposite signs describe a face that feeds the field in proportion to its own
+value, a negative heat-transfer coefficient: for γ = 0 the heat equation
+gives d/dt ½∫u² = −D∫|∇u|² − D(α/β)∮u², and the boundary term is a source
+when α/β < 0. Their ghost factor c lies outside [0, 1], where the stability
+limit of §10.1 and the Jacobi bound of §10.2 fail: a 32³ run (h = 0.4,
+D = 2) with one u face α = −1.1, β = 0.4 (c = −10) reaches NaN within 100
+steps under Euler and under IMEX at Δt = 0.01, below the explicit limit
+0.0133 of §10.1; with α = +1.1 (c = 0.48) both run normally.
 
 ### 9.2 Per-Face Configuration
 

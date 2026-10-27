@@ -512,6 +512,7 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
 | `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (default 0); > 0 requires `time.scheme` `"euler"` or `"imex"` |
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
 | `boundary.*.type`     | `"dirichlet"`, `"neumann"`, `"periodic"` (on both faces of an axis), `"robin"` |
+| `boundary.*` robin    | `alpha·u + beta·∂u/∂n = gamma`: `alpha`, `beta` not both zero and not of opposite signs (`docs/THEORY.md` §9.1) |
 | `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary) |
 | `output.async_io`     | `true`: write snapshots in the background; `false`: each output step waits until its file is on disk |
 
@@ -689,7 +690,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 |-------------------------------|----------------------------------------------------------------------------------|
 | `test_Grid.cpp`               | Grid construction, indexing, spacing, validity checks                            |
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
-| `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, per-face all-six rule), validation, defaults, derived quantities |
+| `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and denominator, finite BC parameters), defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
 | `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32                        |
@@ -702,7 +703,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_Laplacian.cu`           | 7- and 27-point isotropic Laplacian on analytic quadratic / linear / constant fields |
 | `test_Gradient.cu`            | 2nd- and 4th-order central-difference gradient kernels                           |
 | `test_Anisotropy.cu`          | A(n), dFunc, dF/dphi; face flux = ∂f/∂∇φ; ∇·F second-order (all ε) and = W₀²·7-point Laplacian at ε = 0 |
-| `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin, per-face mixed, interior unchanged          |
+| `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin (also with a tiny denominator), per-face mixed, interior unchanged |
 | `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions                                |
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
@@ -730,7 +731,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | File              | What it covers                                                                  |
 |-------------------|----------------------------------------------------------------------------------|
 | `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at |
-| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config`; a misspelled key is rejected |
+| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config`; a misspelled key and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs) are rejected |
 
 ### Run a single test
 

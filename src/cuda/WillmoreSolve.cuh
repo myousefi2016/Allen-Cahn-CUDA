@@ -38,8 +38,8 @@ enum class WillmoreBuffer {
 //   D = T/dt + beta d_L I,
 // d_L being the interior diagonal of L. docs/THEORY.md section 4.4 derives:
 //  * spec(Lap_h) lies in [lap_min, lap_max], the sums over the axes of
-//    Gershgorin bounds of each axis' 1-D second-difference matrix (every
-//    accepted BC makes it symmetric, including Robin with any coefficients);
+//    Gershgorin bounds of each axis' 1-D second-difference matrix (symmetric
+//    for every BC rule, including Robin with any ghost coefficient c);
 //  * spec(B) then lies in [W0^2 lap_min - 2, W0^2 lap_max - 2] and spec(L) in
 //    [L_min, L_max] (the squares; L_min = 0 if that interval contains 0);
 //  * with t = v.Tv / (dt v.v) in [tau_min/dt, tau_max/dt] and
@@ -56,10 +56,10 @@ struct WillmoreSpectrum {
     double kappa_A = 0.0;                ///< bound of cond(A)
 };
 
-/// Ghost coefficient of the homogeneous form of a Robin face, exactly as
+/// Ghost coefficient of the homogeneous form of a Robin face, as
 /// apply_bc_face_kernel fills it: ghost = c * inner with
-/// c = (beta/ds) / (alpha + beta/ds), or ghost = inner when
-/// |alpha + beta/ds| <= 1e-30 (that kernel's fallback).
+/// c = (beta/ds) / (alpha + beta/ds). SimulationConfig::validate accepts only
+/// alpha*beta >= 0 with a nonzero denominator, so c lies in [0, 1].
 [[nodiscard]] double robin_ghost_coefficient(double alpha, double beta, double ds);
 
 /// Bounds of the 1-D second-difference matrix (unit spacing) of n interior

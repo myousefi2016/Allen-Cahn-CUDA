@@ -145,13 +145,9 @@ __global__ void __launch_bounds__(256)
         }
         double u_inner = field[idx3d(nx, ny, nz, Ny, Nz)];
         // alpha*u_bnd + beta*(u_bnd - u_inner)/ds = gamma
-        // (see Neumann case for the sign-free du/dn derivation)
-        double denom = bc_alpha + bc_beta / ds;
-        if (fabs(denom) > 1e-30) {
-            field[c] = (bc_gamma + bc_beta * u_inner / ds) / denom;
-        } else {
-            field[c] = u_inner;
-        }
+        // (see Neumann case for the sign-free du/dn derivation).
+        // SimulationConfig::validate rejects alpha + beta/ds == 0.
+        field[c] = (bc_gamma + bc_beta * u_inner / ds) / (bc_alpha + bc_beta / ds);
         break;
     }
     default:

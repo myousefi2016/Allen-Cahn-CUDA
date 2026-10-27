@@ -9,9 +9,10 @@ Runs `allen-cahn-cuda --validate-config FILE` (no GPU needed) on:
   * every ```json example in README.md and docs/*.md
 and, as controls, requires these copies of shipped configurations to be
 REJECTED, each with its own message: one with a misspelled key (rejected by
-the parser), and four that parse but break a rule of SimulationConfig::validate()
+the parser), and five that parse but break a rule of SimulationConfig::validate()
 (epsilon > 1/15 without willmore_beta, willmore_beta with a fully explicit
-scheme, a negative willmore_beta, a periodic face opposite a non-periodic one).
+scheme, a negative willmore_beta, a periodic face opposite a non-periodic one,
+a Robin face whose alpha and beta have opposite signs).
 So neither a validator that accepts anything nor a loader that parses without
 validating can pass.
 
@@ -111,6 +112,9 @@ def main() -> int:
             faces["x_lo"] = {"type": "periodic"}
             cfg["boundary"]["phi"] = faces
 
+        def robin_opposite_signs(cfg):
+            cfg["boundary"]["u"] = {"type": "robin", "alpha": -1.1, "beta": 0.4, "gamma": 0.0}
+
         controls = [
             ("misspelled key 'epsilom'", mutated("default.json", misspell), "epsilom"),
             ("eps > 1/15 without willmore_beta", mutated("run_dendrite.json", no_beta),
@@ -121,6 +125,8 @@ def main() -> int:
              "willmore_beta must be >= 0"),
             ("periodic x_lo opposite a non-periodic x_hi",
              mutated("run_dendrite.json", one_sided_periodic), "periodic BC must be set on both faces"),
+            ("Robin u with alpha < 0 < beta", mutated("default.json", robin_opposite_signs),
+             "must not have opposite signs"),
         ]
         for what, text, needle in controls:
             out = validate("control", text)

@@ -13,11 +13,10 @@ namespace ac::cuda {
 // ── Spectral bounds ────────────────────────────────────────────────────────
 
 double robin_ghost_coefficient(double alpha, double beta, double ds) {
-    // apply_bc_face_kernel: denom = alpha + beta/ds; ghost = (gamma + beta *
-    // inner / ds) / denom if |denom| > 1e-30, else ghost = inner. gamma = 0 in
-    // the homogeneous form.
-    const double denom = alpha + beta / ds;
-    return std::fabs(denom) > 1e-30 ? (beta / ds) / denom : 1.0;
+    // apply_bc_face_kernel: ghost = (gamma + beta * inner / ds) / (alpha +
+    // beta/ds), gamma = 0 in the homogeneous form. SimulationConfig::validate
+    // rejects a zero denominator.
+    return (beta / ds) / (alpha + beta / ds);
 }
 
 namespace {
