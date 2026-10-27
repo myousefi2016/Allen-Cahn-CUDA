@@ -75,11 +75,11 @@ TEST_F(AnisotropyTest, AlongAxis) {
     }
 }
 
-// Test: An along diagonal should equal 1 - 5/3 * epsilon
-// When gradient is (1,1,1)/sqrt(3): qrt/sq^2 = 3*(1/3)^4 / (3*(1/3)^2)^2 = 3/81 / (9/9) = 1/27
-// Wait, let me recalculate:
-// phix=phiy=phiz=1/sqrt(3), sq = 1, qrt = 3*(1/3)^2 = 3/9 = 1/3
-// qrt/sq^2 = 1/3
+// Test: An along diagonal should equal 1 - 5/3 * epsilon, the minimum of An
+// (qrt/sq^2 >= 1/3 for every nonzero gradient, by Cauchy-Schwarz; the
+// zero-gradient value 1 - 3/5 * epsilon is larger)
+// When gradient is (1,1,1)/sqrt(3): phix=phiy=phiz=1/sqrt(3), sq = 1,
+// qrt = 3*(1/3)^2 = 3/9 = 1/3, qrt/sq^2 = 1/3
 // An = (1-3*eps)*(1 + 4*eps/(1-3*eps) * 1/3) = (1-3*eps) + 4/3*eps = 1 - 5/3*eps
 TEST_F(AnisotropyTest, AlongDiagonal) {
     double epsilon = 0.07;

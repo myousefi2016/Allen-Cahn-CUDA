@@ -243,7 +243,7 @@ return is the average of `A(n̂)` over the unit sphere. Using
            = 1 − 3ε/5
 ```
 
-The code implements exactly this value at `Kernels.cuh:162`:
+The code implements exactly this value in `compute_An` (`Kernels.cuh`):
 
 ```cpp
 return 1.0 - 3.0 * epsilon / 5.0;
@@ -326,21 +326,42 @@ scale of the new grid. In the converging cases the two maxima agree within
 `SimulationConfig::validate()` therefore rejects ε > 1/15 unless
 `physics.willmore_beta > 0`.
 
-**Regularised model.** With `h(φ) = φ − φ³` and
-`ω = W₀²∇²φ + h(φ)` (ω ≡ 0 on the planar equilibrium profile, so flat
-interfaces and the calibrated kinetics are unchanged), the free energy gains
-`(β/2)∫ω²` (Wheeler 2006 [10]; Torabi et al. 2009 [11]) and the equation becomes
+**Regularised model.** With `h(φ) = φ − φ³` and `ω = W₀²∇²φ + h(φ)`, the
+free energy gains `(β/2)∫ω²` (Wheeler 2006 [10]; Torabi et al. 2009 [11]) and
+the equation becomes
 
 ```
 τ(n̂) ∂φ/∂t = ∇·F(∇φ) + h(φ) − λu(1−φ²)² − β M(φ),
 M = W₀²∇²ω + h'(φ) ω,     h'(φ) = 1 − 3φ².
 ```
 
-Linearised about a flat front, the fourth-order term bounds the growth
-rate of the backward-diffusing modes, which restores well-posedness: a
-perturbation of wavenumber k along a ⟨100⟩ front grows at a rate
-∝ |S|W₀²k² − βW₀⁴k⁴, so only k < 1/ℓ grow, and corners are rounded on the
-length `ℓ = W₀√(β/|S|)`. S is the most negative eigenvalue of the Hessian
+**Flat interfaces.** ω uses the isotropic Laplacian; the gradient energy does
+not. `A` has degree 0 in `p`, so along a fixed normal n̂ (coordinate s)
+`∇·F = W₀²A(n̂)²φ''`, and the planar equilibrium profile of the unregularised
+equation (u = 0) is `φ₀ = −tanh(s/(√2 W₀A(n̂)))`, of width `W₀A(n̂)`. On it
+`ω = (1 − A(n̂)⁻²) h(φ₀)`, which vanishes only where `A(n̂) = 1` (ε = 0, or
+`Σ n̂ᵢ⁴ = 3/4`); `A` is `1 + ε`, `1 − ε` and `1 − 5ε/3` along ⟨100⟩, ⟨110⟩
+and ⟨111⟩. For ε > 0 the Willmore term therefore also changes every flat
+interface with `A(n̂) ≠ 1`, by an amount that depends on its orientation. At
+ε = 0.12, β = 0.25 (`run_dendrite.json`), `max|βM(φ₀)|` is 0.033, 0.084 and
+0.20 along ⟨100⟩, ⟨110⟩ and ⟨111⟩, against `max|h(φ₀)| = 0.385`, and the
+stationary flat profile of the regularised equation (u = 0, solved in 1D by
+Newton's method) differs from φ₀ by 0.0125, 0.0200 and 0.0390 in the max
+norm, with `∫φ'²` changed by +2.7 %, −4.2 % and −8.0 %. The thin-interface
+constants a₁ and a₂ in λ and τ₀ (§5) come from the analysis of the
+unregularised equation, whose flat interface is φ₀.
+
+Linearised about a flat ⟨100⟩ front, the fourth-order term bounds the growth
+rate of the backward-diffusing modes, which restores well-posedness: to first
+order in β a perturbation of wavenumber k grows at a rate
+∝ (|S| + (4/5)β(1 − A⁻²))W₀²k² − βW₀⁴k⁴ with A = 1 + ε (the term in
+(1 − A⁻²) comes from ω ≠ 0 on the flat profile), so only k below a band edge
+k_c grow, and corners are rounded on the length `ℓ = W₀√(β/|S|)`, which is
+1/k_c without that term. The band edge of the linearisation about the
+stationary regularised profile (the zero of the largest eigenvalue of the 1D
+operator) is 1/k_c = 0.5206, 0.5188, 0.5189 and 0.5180 W₀ at the shipped
+(ε, β) = (0.07, 0.0149), (0.10, 0.153), (0.12, 0.25) and (0.15, 0.401),
+1.4–1.9 % below ℓ. S is the most negative eigenvalue of the Hessian
 above, always along ⟨100⟩, where it equals `(1 + ε)(1 − 15ε)` (the scan
 gives −0.0535, −0.55, −0.896 and −1.4375 at ε = 0.07, 0.10, 0.12 and 0.15).
 
@@ -366,14 +387,17 @@ dt, so this includes the part of the time error that grows with β), against
 a spatial error of 0.028 (4.3e-4) of the unregularised solution there; the
 solid fraction at t = 15 drops from 4.25 % to 4.16, 3.93 and 3.26 %.
 
-**Choice of β.** The rule, fixed before the β = 0.25 and β = 4 ladders were
-run: the smallest tested ℓ at ε = 0.12 whose ladder has a ratio above 2 in
-both norms (each halving of h removes more than half of the difference,
+**Choice of β.** The rule, fixed before the β = 0.25 ladder was run and
+before the β = 4 ladder finished (its h = 0.8 and 0.4 legs were complete;
+the h = 0.2 leg, which its ratio needs, was still running): the smallest
+tested ℓ at ε = 0.12 whose ladder has a ratio above 2 in both norms (each
+halving of h removes more than half of the difference,
 closer to the formal order 2 than to stagnation). That is β = 0.25,
 ℓ* = 0.528 W₀, which is also the one that converges best and changes the
 solution least. The shipped configurations keep this corner length at every
-ε, `β(ε) = |S(ε)| ℓ*²/W₀²`, so the band of growing modes (k < 1/ℓ*) is
-resolved by the same margin at every ε:
+ε, `β(ε) = |S(ε)| ℓ*²/W₀²`, so the band of growing modes is resolved by the
+same margin at every ε to within 0.5 % (its edge k_c, above, lies between
+1/(0.5206 W₀) and 1/(0.5180 W₀)):
 
 | ε | S(ε) | β (3 significant digits) |
 |---|---|---|
@@ -407,18 +431,20 @@ explicit and are rejected).
 
 | Test | Result |
 |---|---|
-| `LinearisedAmplificationMatchesAnalyticSymbol` — one step of a Fourier mode on φ = −1 vs `g = 1 + dt(−W₀²s − 2 − βL_k)/(τ₀ + dt βL_k)` | agreement to ~5e-9 relative for modes (1,0,0), (3,2,1), (8,8,7); the last is −0.0104 where explicit Euler gives −326.8; the solve takes 2 outer iterations |
+| `LinearisedAmplificationMatchesAnalyticSymbol` — one step of a Fourier mode on φ = −1 vs `g = 1 + dt(−W₀²s − 2 − βL_k)/(τ₀ + dt βL_k)` (W₀ = 1.3, β = 1.5, a different spacing per axis) | asserts \|measured − g\| ≤ 1e-7 (1 + \|g\|) and \|g\| < 1 for modes (1,0,0), (3,2,1), (8,8,7); the printed values differ by 2.5e-9, 2.1e-9 and 4e-10, g is −0.00554 for the last where explicit Euler gives −436.8, and every solve took 2 outer iterations (printed, not asserted) |
 | `VanishingBetaReducesToExplicitEuler` (β = 1e-13) | equal to the unregularised solver within 1e-12 |
-| `FirstOrderConvergenceInTime` | observed order 0.68, 0.82, 0.91, 0.95, 0.97 as dt halves from 0.02; explicit Euler at the same ε = 0.05, β = 0 blows up at dt = 0.02 and has order 0.999 below it |
+| `FirstOrderConvergenceInTime` (ε = 0.12, β = 1, 24³ at h = 0.4, max-norm differences of successive dt halvings at t = 0.4) | asserts observed orders above 0.9 from dt = 0.0025 and from 0.00125, the second also below 1.1 (printed: 0.951, 0.974). From dt = 0.02 the orders are 0.68, 0.82, 0.91, 0.95, 0.97 (0.74, 0.86, 0.92, 0.96, 0.98 at ε = 0.05, β = 1); explicit Euler (β = 0, run at ε = 0.05 because ε > 1/15 needs β > 0) blows up at dt = 0.02 and has order 0.999–1.000 below it. dt = 0.02 exceeds Euler's thermal limit 0.01333 (§10.1), which `validate()` enforces; the regularised runs stay bounded over their 20 steps |
 | `MultiGPUEquivalence/*_Willmore` | multi-GPU (2, 3 domains; uniform, per-face, periodic X) bit-identical to single GPU for Euler and IMEX |
 | `RegularisedConvergesUnregularisedDoesNot` (integration; the refinement ladder above in a box of 18.4, 24³/47³/93³, t = 7.5, both differences on the 24³ nodes) | ratios 0.889 (max) and 0.406 (mean) without the Willmore term, 3.56 and 3.90 with β = 0.25; red when the solver ignores β |
 
-The linearly implicit step has a larger first-order error constant than
-explicit Euler (at dt = 0.00125: 4.0e-3 vs 6.1e-5 in max norm at t = 0.4),
-the splitting error of freezing `L`; `dt` must be chosen with that in mind.
+With β = 1 the linearly implicit step has a larger first-order error
+constant than explicit Euler has without the Willmore term: in the setup of
+`FirstOrderConvergenceInTime`, ‖φ(dt = 0.00125) − φ(dt = 0.000625)‖∞ at
+t = 0.4 is 2.6e-3 at ε = 0.05 and 4.0e-3 at ε = 0.12, against 6.1e-5 for
+explicit Euler (β = 0) at ε = 0.05. `dt` must be chosen with that in mind.
 
 **Choice of dt for the shipped configurations.** The rule, fixed before any
-spatial error was measured: dt is the largest of 0.02, 0.01, 0.005, 0.0025,
+configuration's spatial error e_s was measured: dt is the largest of 0.02, 0.01, 0.005, 0.0025,
 0.00125, … (these divide the end time of every configuration, so the output,
 checkpoint and saturation-check intervals keep their times) whose time
 error does not exceed the spatial error of h = 0.4, in the max norm and in
@@ -473,9 +499,9 @@ over 200 steps, no other process on the GPU):
 | `run_dendrite_long.json` (192³) | 14.4, 46 198 | 20.3, 64 862 | Euler, dt = 0.0003125 |
 
 (ranges: four interleaved repetitions). For `cuda-run-vtk` Euler was
-cheaper in all four repetitions, by 0.4–0.7 %, and also needs 13 % less
+cheaper in all four repetitions, by 0.4–1.0 %, and also needs 13 % less
 memory. The 600³ configurations (`default.json`, the k8s base and the README
-example) use Euler, dt = 0.0025: with β > 0 IMEX needs 24.9 GiB there, more
+example) use Euler, dt = 0.0025: with β > 0 the IMEX fields alone take 24.9 GiB there, more
 than a 24 GB GPU has (Appendix C). The k8s dev overlay is by its own
 description the base with a smaller grid and fewer steps, so it keeps the
 base's scheme and dt. Two outer iterations in every step of every run above.
@@ -510,8 +536,11 @@ is `g(t, l) = (t + βl) / (t + β d_L)`, monotone in t and in l, so
 spec(D⁻¹A) lies in [a, b], the extremes of g over t ∈ {τ_min/dt, τ_max/dt}
 and l ∈ {L_min, L_max}. τ_min and τ_max are the exact minimum and maximum of
 τ over the interior cells, reduced on the GPU at every step, so the bounds
-hold for the operator that is actually solved. For run_dendrite (β = 1,
-h = 0.4, dt = 0.005, ε = 0.12): [a, b] = [0.0409, 3.214], b/a = 78.5.
+hold for the operator that is actually solved. The benchmark case of this
+section is the run_dendrite grid (160³, h = 0.4, zero-flux φ) at β = 1,
+dt = 0.005, ε = 0.12: [a, b] = [0.0409, 3.214], b/a = 78.5. The shipped
+`run_dendrite.json` (β = 0.25, dt = 0.000625) gives [a, b] = [0.5645, 2.006],
+b/a = 3.55.
 
 **Preconditioner.** `M = p_k(D⁻¹A) D⁻¹`, p_k the Chebyshev polynomial of
 degree k on [a, b]: the spectrum of `MA` lies in [1 − e_k, 1 + e_k],
@@ -539,9 +568,12 @@ plus a constant, so the inner work j·k_j hardly depends on j, while every
 outer iteration adds one double-precision operator application and four
 reductions: two is the cheapest possible count. The solver takes the lowest
 degree with `2 q² √κ_A ≤ tol` (closed form, then checked exactly at k and
-k − 1): 58 for run_dendrite. The same bound predicts three iterations at
-degree 48 and two from 57 on; a prototype sweep of the same polynomial
-measured three at 48 and two at 56 and 64. Rounding in the single-precision
+k − 1): 58 for the benchmark case, 11 for the shipped `run_dendrite.json`.
+At degree 48 the bound guarantees that three iterations meet the tolerance,
+but not two: `2 q³ √κ_A ≤ tol` holds from degree 39 on, `2 q² √κ_A ≤ tol`
+only from 58 on. A single-precision prototype of the same preconditioner, on
+the interval [0.0409, 3.2138], measured three outer iterations at degree 48
+and two at 56 and 64. Rounding in the single-precision
 polynomial can only add outer iterations; it cannot loosen the result,
 because the stopping test is in double precision.
 
@@ -565,24 +597,35 @@ h = 0.2 in all 180 000 steps of the shipped-β space ladders (dt ≤ 0.00125).
 For the κ_A of h = 0.2 and β ≥ 1, a
 lower degree aiming at three iterations would do less work; the degree rule
 stays with the exact-arithmetic guarantee because no rigorous a priori bound
-of the single-precision error is available to choose between the two.
+of the single-precision error is available to choose between the two. For
+the same reason the cap of 1000 outer iterations, after which a solve throws
+(`kWillmoreCgMaxIterations`), is a backstop, not derived from a bound.
 
 **Outer iteration.** The single-precision polynomial is symmetric only up to
-rounding (it matches the exact polynomial to about 1e-7 relative,
-`SinglePrecisionMatchesExactPolynomial`), so the outer loop is flexible
-conjugate gradients: `β_j = −α_j z_{j+1}·Ap_j / (z_j·r_j)`, the
+rounding (in `SinglePrecisionMatchesExactPolynomial` it differs from the same
+polynomial applied in double precision by 6.2–9.0 · 10⁻⁸ relative), so the
+outer loop is flexible conjugate gradients:
+`β_j = −α_j z_{j+1}·Ap_j / (z_j·r_j)`, the
 Polak–Ribière form, which keeps the convergence of CG when the preconditioner
 varies slightly between iterations (Notay [13]; Golub & Ye [14]). The
 stopping test is unchanged (‖r‖ ≤ 10⁻¹⁰ ‖b‖ in double precision); the true
-residual recomputed after a solve is 3–10 · 10⁻¹² (`TrueResidualMeetsTheTolerance`).
-After 100 run_dendrite steps the phase field differs from the one computed
-with the Jacobi-preconditioned CG it replaces by at most 1.3 · 10⁻¹².
+residual recomputed after a solve is 4.1–7.9 · 10⁻¹² in the nine cases of
+`TrueResidualMeetsTheTolerance`.
+After 100 steps of the benchmark case the phase field differs from the one
+computed with the Jacobi-preconditioned CG it replaces by at most 1.3 · 10⁻¹².
 
-**Range.** Before the polynomial, r is scaled by 2⁻ᵉ, e = ⌊log₂‖r‖⌋, so
-‖2⁻ᵉ r‖ lies in [1, 2): no component overflows or underflows in single
-precision, and the scaling is exact both ways. A step whose right-hand side
-is of order 10⁻⁴⁵, below the smallest single-precision subnormal, gives the
-same bits as one of order 10⁻¹², scaled by 2¹¹⁰
+**Range.** Before the polynomial, r is scaled by 2⁻ᵉ, e = ⌊log₂‖r‖⌋ (‖r‖ as
+computed in double precision), so 2⁻ᵉ‖r‖ lies in [1, 2) and no component
+overflows in single precision. The norm does not bound the components from
+below: those under 2⁻¹²⁶ in magnitude (single precision's smallest normal
+number) are rounded to multiples of 2⁻¹⁴⁹, to 0 at 2⁻¹⁵⁰ and below, an
+absolute error of at most 2⁻¹⁵⁰ each (with the default build flags;
+`AC_CUDA_FAST_MATH` flushes subnormals to 0). The scaling adds no rounding
+of its own, so the preconditioned vector is the same bits for r and 2ᵐr, up
+to 2ᵐ, as long as no squared component of either underflows in double
+precision. A step from φ = 2⁻¹⁵⁰ψ (ψ of order 1), whose right-hand side
+(‖b‖ = 4.8 · 10⁻⁴²) lies entirely below single precision's normal range,
+gives the same bits as one from φ = 2⁻⁴⁰ψ (‖b‖ = 6.2 · 10⁻⁹), scaled by 2¹¹⁰
 (`TinyRightHandSideGivesTheScaledIncrementBitwise`).
 
 **Double-precision stencils.** The double-precision Willmore stencils multiply
@@ -591,8 +634,8 @@ a reduced double-precision rate these stencils are bound by double-precision
 throughput (RTX 4090: their time equals their instruction count at the
 measured rate within 1.4 %, and grows linearly with the number of divisions
 at fixed memory traffic), and each division compiles to a reciprocal estimate
-refined by eight double-precision instructions. A regularised run_dendrite
-step drops from 17.33 to 15.9 ms.
+refined by eight double-precision instructions. A step of the benchmark case
+drops from 17.33 to 15.9 ms.
 
 **Multi-GPU.** The single-precision iterate and its Laplacian are exchanged
 between domains like the double-precision fields (their boundary cells
@@ -613,7 +656,8 @@ CG this section replaces):
 | 253³, h = 0.2, dt = 0.001875, ε = 0.12 | 1102.9 | 184.9 | 145 | 2 (2.48 on average over 8000 steps) |
 | 384³, h = 0.4, dt = 0.005, ε = 0.10 (run_dendrite_large grid) | 2010.9 | 288.2 | 55 | 2 |
 
-For comparison, an unregularised Heun step of run_dendrite takes 8.7 ms.
+For comparison, an unregularised (β = 0) Heun step on the run_dendrite grid
+at dt = 0.005, ε = 0.12 takes 8.7 ms.
 
 **Evidence** (`tests/unit/test_WillmorePreconditioner.cu`):
 
@@ -622,9 +666,9 @@ For comparison, an unregularised Heun step of run_dendrite takes 8.7 ms.
 | `SecondDifferenceBoundsContainTheExactSpectrum` | the per-axis bounds contain the exact eigenvalues of the 1-D matrices, n = 1…6, every pair of ghost rules, including Robin with c > 1 and c < 0 (which `validate()` rejects) and with a denominator of 10⁻³¹ |
 | `LowestDegreeMeetingTheBoundAndExactPolynomial` | the degree is the lowest meeting the bound; the recurrence coefficients reproduce T_k((θ − λ)/δ)/T_k(σ) |
 | `SpectrumBoundsContainEveryEigenvalue` | the eigenvalues of the assembled production operator, scaled by D, lie in [a, b] for eight grids and boundary layouts (Robin c near 0 and near 1 and with α, β < 0, anisotropic spacing, axes of one and two cells) |
-| `SinglePrecisionMatchesExactPolynomial` | the device preconditioner equals the exact polynomial to 1e-7 relative (bound k(b/a) u₃₂) |
-| `TinyRightHandSideGivesTheScaledIncrementBitwise` | the power-of-two scaling: bitwise scale equivariance down to 10⁻⁴⁵ |
-| `TrueResidualMeetsTheTolerance` | true residual ≤ 10⁻¹⁰ after a solve, including a right-hand side with ‖b‖ < 1 |
+| `SinglePrecisionMatchesExactPolynomial` | z = M r from the device (single precision) is within k(b/a) u₃₂ relative of the same polynomial applied in double precision to the assembled operator, for the eight grids above and a dt other than the configuration's; that tolerance is a first-order rounding estimate, not a proven bound, and is 8.3 · 10⁻⁶ to 3.9 · 10⁻⁵ there; the printed differences are 6.2 · 10⁻⁸ to 9.0 · 10⁻⁸ |
+| `TinyRightHandSideGivesTheScaledIncrementBitwise` | the power-of-two scaling: bitwise scale equivariance down to a phase field of order 10⁻⁴⁵ (right-hand side ‖b‖ = 4.8 · 10⁻⁴²) |
+| `TrueResidualMeetsTheTolerance` | true relative residual after a solve ≤ 10⁻¹⁰ plus the recursive residual's rounding drift, 16 u₆₄ κ_A per iteration, for the eight grids above and a right-hand side with ‖b‖ < 1; printed 4.1 · 10⁻¹² to 7.9 · 10⁻¹² |
 | `EveryStepUsesThePlanOfItsOwnTimeStep` | with dt changing between steps (adaptive stepping), every solve uses the bounds and degree of its own dt |
 | `NonFiniteStateThrows` | a NaN or infinite phase field makes the step throw instead of looping |
 
@@ -649,8 +693,8 @@ Karma–Rappel (1998) thin-interface formulation, with the capillary length
 | `λ`  | `W₀ · a₁ / d₀` | Coupling strength |
 | `τ₀` | `(W₀³ · a₁ · a₂) / (d₀ · D) + (W₀² · β₀) / d₀` | Relaxation time |
 
-These derived quantities are computed by `SimulationConfig::lambda()` and
-`SimulationConfig::tau0()` (`src/core/SimulationConfig.hpp:35-41`):
+These derived quantities are computed by `PhysicsParams::lambda()` and
+`PhysicsParams::tau0()` (`src/core/SimulationConfig.hpp`):
 
 ```cpp
 Real a1 = 1.25 / std::sqrt(2.0);
@@ -668,7 +712,7 @@ kinetic-undercooling correction, active when `β₀ ≠ 0`.
 ### 5.1 Initial conditions
 
 The seed is initialised as a smooth `tanh` profile centred at the domain
-midpoint (`SimulationEngine.cu:73-98`):
+midpoint (`SimulationEngine::initialize_fields` in `SimulationEngine.cu`):
 
 ```
 φ(x) = − tanh( (r − r₀) / (√2 · W₀) )      with r = ||x − x_c||
@@ -676,8 +720,8 @@ u(x) = − δ                                  everywhere (uniform undercooling)
 ```
 
 This yields `φ ≈ +1` (solid) inside the seed and `φ ≈ −1` (liquid) outside,
-with the equilibrium-width interface profile that matches the Karma–Rappel
-free-energy minimiser.
+with the planar equilibrium profile of the isotropic (ε = 0) model; for ε > 0
+the planar equilibrium along n̂ has width `W₀A(n̂)` (§4.3).
 
 ---
 
@@ -743,7 +787,7 @@ where:
 
 **Weight verification:** `6×14 + 12×3 + 8×1 = 84 + 36 + 8 = 128 = |center weight|` ✓ (consistent discrete Laplacian).
 
-These exact weights are implemented at `Kernels.cuh:137-138`:
+These exact weights are implemented in `laplacian_27pt` (`Kernels.cuh`):
 
 ```cpp
 // Patra-Karttunen weights (2nd-order accurate, improved isotropy):
@@ -751,9 +795,9 @@ These exact weights are implemented at `Kernels.cuh:137-138`:
 return (14.0 * face + 3.0 * edge + 1.0 * corner - 128.0 * center) / (30.0 * h * h);
 ```
 
-The configuration validator refuses this stencil unless `dx = dy = dz`
-(`SimulationConfig.cpp:248-253`), since the 27-point isotropy assumes
-cubic spacing.
+The configuration validator refuses this stencil unless `dy` and `dz` equal
+`dx` to within 1e-14 (`SimulationConfig::validate` in `SimulationConfig.cpp`),
+since the 27-point isotropy assumes cubic spacing.
 
 ```mermaid
 graph TD
@@ -914,10 +958,9 @@ k₄ = f(tₙ + Δt, yₙ + Δt·k₃)
 y_{n+1} = yₙ + (Δt/6)·(k₁ + 2k₂ + 2k₃ + k₄)
 ```
 
-After RK4 combination, latent heat is added:
-```
-u^{n+1} += 0.5·(φ^{n+1} - φ^n)
-```
+The latent heat enters through the thermal rate of every stage,
+`k_u = D·∇²u + ½·k_φ` (`thermal_rhs_kernel`); no latent-heat step follows the
+combination.
 
 **Butcher Tableau:**
 ```
@@ -933,7 +976,7 @@ u^{n+1} += 0.5·(φ^{n+1} - φ^n)
 flowchart TD
     A["Start: φ^n, u^n"] --> S1
     subgraph "Stage 1"
-        S1["k₁_φ = f_φ(φ^n, u^n)<br/>k₁_u = D·∇²u^n"]
+        S1["k₁_φ = f_φ(φ^n, u^n)<br/>k₁_u = D·∇²u^n + ½k₁_φ"]
     end
     S1 --> S2
     subgraph "Stage 2"
@@ -948,17 +991,19 @@ flowchart TD
         S4["φ_tmp = φ^n + Δt·k₃_φ<br/>u_tmp = u^n + Δt·k₃_u<br/>k₄ = f(φ_tmp, u_tmp)"]
     end
     S4 --> CMB["Combine:<br/>y^{n+1} = y^n + (Δt/6)(k₁+2k₂+2k₃+k₄)"]
-    CMB --> LH["Add latent heat:<br/>u^{n+1} += ½(φ^{n+1} - φ^n)"]
-    LH --> BC["Apply BCs, Swap"]
+    CMB --> BC["Apply BCs, Swap"]
     style S1 fill:#fcc
     style S2 fill:#cfc
     style S3 fill:#ccf
     style S4 fill:#fcf
 ```
 
-**Note:** The RK4 implementation uses the non-fused kernel path with separate
-`Fx`, `Fy`, `Fz` force arrays, since each stage needs to evaluate the RHS at
-intermediate points where precomputed forces are needed for efficiency.
+**Note:** Each stage evaluates the Allen–Cahn rate with
+`allen_cahn_rhs_kernel`, which calls the same `allen_cahn_rate` as the Euler
+kernel (§11), and the thermal rate with `thermal_rhs_kernel`. Besides the
+four solution fields only the stage state (`phi_tmp_`, `u_tmp_`) and the
+rates `k1..k4` of φ and u are stored: 14 double fields and no force arrays
+(Appendix C).
 
 ### 8.4 IMEX (Implicit-Explicit)
 
@@ -1508,7 +1553,7 @@ graph TD
 | `δ` | Dimensionless undercooling | `0.1–0.8` |
 | `D` | Thermal diffusivity | `1.0–10.0` |
 | `ε` | Anisotropy strength | `0.0–0.33` |
-| `A(n̂)` | Anisotropy function | `[1-3ε, 1+ε]` |
+| `A(n̂)` | Anisotropy function | `[1-5ε/3, 1+ε]` |
 | `h` | Grid spacing | Problem-dependent |
 | `Δt` | Time step | CFL-limited |
 
@@ -1535,9 +1580,12 @@ them by measured cost per unit of simulated time (§4.3).
 
 ## Appendix C: GPU Memory Budget (600³ Grid)
 
-Measured with `cudaMemGetInfo` around the construction of `CudaSolver`
-(256³ grid, RTX 4090), per cell and scaled to 600³ = 2.16 × 10⁸ cells; one
-double-precision field is 1.61 GiB there.
+Bytes per cell measured with `cudaMemGetInfo` around the construction of
+`CudaSolver` (256³ grid, RTX 4090). The 600³ column is the fields alone,
+8 bytes per cell for each double-precision and 4 for each single-precision
+field times 600³ = 2.16 × 10⁸ cells; one double-precision field is 1.61 GiB
+there. The rest, 0.125 bytes per cell at 256³, is reduction scratch and
+allocation granularity: 2 to 7 MiB on grids from 128³ to 384³.
 
 | Scheme | Double / single fields | Bytes per cell | 600³ |
 |---|---|---|---|

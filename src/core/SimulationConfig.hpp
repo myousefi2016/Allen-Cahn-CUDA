@@ -36,8 +36,12 @@ struct PhysicsParams {
     Real a2 = 0.64;
     /// Willmore regularisation strength beta >= 0 (dimensionless): adds
     /// (beta/2) * int omega^2, omega = W0^2 lap(phi) + phi - phi^3, to the free
-    /// energy. omega vanishes on the planar equilibrium profile, so only curved
-    /// interfaces and corners are affected (radius ~ W0 sqrt(beta / |stiffness|)).
+    /// energy. omega uses the isotropic Laplacian, so on the planar equilibrium
+    /// profile (width W0 A(n)) it is (1 - A(n)^-2)(phi - phi^3), zero only
+    /// where A(n) = 1: for epsilon > 0 flat interfaces with A(n) != 1 change
+    /// too, not only curved interfaces and corners (corner length
+    /// W0 sqrt(beta / |S|), S the most negative gradient-energy stiffness;
+    /// docs/THEORY.md section 4.3).
     /// Required (> 0) when epsilon > 1/15, where the gradient energy is not
     /// convex and the unregularised equation is ill-posed.
     Real willmore_beta = 0.0;

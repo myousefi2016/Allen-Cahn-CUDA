@@ -293,10 +293,10 @@ cuda-run-dendrite: CONFIG=config/run_dendrite.json
 cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, beta=0.25, euler, dt=0.000625, t/tau0=31) -> VTS
 
 # ── Long resumable dendrite run (with crash-safe checkpointing) ──────────
-# A 192^3 run at eps = 0.15 until the saturation guard stops it (measured on
-# an RTX 4090: step 113600, t = 35.5, 27 minutes of compute). Checkpoints
-# every 48000 steps (11.6 minutes of compute), keep_last=3, so an interrupt
-# loses at most that much.
+# A 192^3 run at eps = 0.15 until the saturation guard stops it (measured:
+# step 113600, t = 35.5; at 14.4 ms per step on an RTX 4090 that is 27
+# minutes of compute). Checkpoints every 48000 steps (11.5 minutes of
+# compute), keep_last=3, so an interrupt loses at most that much.
 #
 # Backgrounding (mandatory for runs longer than your terminal session):
 #   tmux new -s dendrite 'make cuda-run-dendrite-long'
@@ -311,7 +311,7 @@ cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, be
 # config/run_dendrite_long_resume.json, and restarts the binary.
 cuda-run-dendrite-long: cuda-build ## (docker) Long 192^3 dendrite run (eps=0.15) until saturation, with checkpoints
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
-	@echo "==> LONG dendrite run on 192^3 until saturation (RTX 4090: 27 min of compute, 1.0 GB VTK output)."
+	@echo "==> LONG dendrite run on 192^3 until saturation (RTX 4090: 27 min of compute, 1.06 GB VTK output)."
 	@echo "    Background it so it survives terminal disconnect:"
 	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-long'"
 	@echo "       # OR"
@@ -346,8 +346,8 @@ cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest int
 
 # ── Large-box dendrite run (384^3, until saturation) ──────────────────────
 # Tanh initial condition, eps = 0.10 with willmore_beta. Measured on an RTX
-# 4090: 5.70 GiB of GPU memory; the saturation guard stops it at step 91200
-# (t = 114) after 179 minutes of compute.
+# 4090: 5.70 GiB of GPU memory and 118 ms per step. The saturation guard
+# stops it at step 91200 (t = 114): 179 minutes of compute at that rate.
 # Backgrounding:
 #   tmux new -s dendrite 'make cuda-run-dendrite-large'
 #   nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &

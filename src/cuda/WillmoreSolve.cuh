@@ -116,16 +116,25 @@ struct WillmoreSolveStats {
 /// below the discretisation error of any step.
 inline constexpr double kWillmoreCgTolerance = 1e-10;
 /// A solve that has not met the tolerance after this many outer iterations
-/// is reported as a failure. The preconditioner is built so that two
-/// iterations suffice in exact arithmetic; rounding in its single-precision
-/// application adds at most a few (docs/THEORY.md section 4.4).
+/// throws instead of iterating on. The number is a backstop, not derived
+/// from a bound: the preconditioner is built so that two iterations suffice
+/// in exact arithmetic, rounding in its single-precision application can add
+/// iterations, and no a priori bound of that rounding is available; the
+/// measured solves took two or three (docs/THEORY.md section 4.4). Any count
+/// up to the cap is accepted; it is returned in
+/// WillmoreSolveStats::iterations, which the engine does not log.
 inline constexpr int kWillmoreCgMaxIterations = 1000;
 
 /// z = M r in every domain (CudaSolver::CgVector::R -> Z), M the Chebyshev
 /// preconditioner of `plan`, applied in single precision after scaling r by
 /// the power of two 2^-e, e = ilogb(sqrt(rr)), rr = r.r > 0 over all domains:
-/// the scaled r has norm in [1, 2), so it neither overflows nor underflows in
-/// single precision, and z is the same bits for r and 2^m r (up to 2^m).
+/// the scaled r has norm sqrt(rr) 2^-e in [1, 2), so no component overflows
+/// in single precision. The norm does not bound components from below: those
+/// under 2^-126 (FLT_MIN) in magnitude are rounded to multiples of 2^-149, to
+/// 0 at 2^-150 and below, an absolute error of at most 2^-150 each
+/// (AC_CUDA_FAST_MATH builds flush subnormals to 0 instead). z is the same
+/// bits for r and 2^m r (up to 2^m) as long as no r_c^2 of either underflows
+/// in double precision.
 /// Requires willmore_rhs_init() to have run in every domain (it computes
 /// tau/dt in single precision). exchange() as for solve_willmore_step.
 void apply_willmore_preconditioner(const std::vector<WillmoreDomain>& domains,

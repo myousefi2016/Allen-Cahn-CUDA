@@ -21,7 +21,8 @@ static void print_usage(const char* prog) {
               << "Usage: " << prog << " [config.json]\n"
               << "       " << prog << " --validate-config config.json\n"
               << "\n"
-              << "If no config file is given, uses default parameters.\n"
+              << "If no config file is given, loads config/default.json or\n"
+              << "../config/default.json if one exists, else uses compiled-in defaults.\n"
               << "--validate-config parses and validates the file (unknown keys,\n"
               << "ranges, stability rules) without touching the GPU; exit 0 if valid.\n"
               << "See config/default.json for an example configuration.\n";

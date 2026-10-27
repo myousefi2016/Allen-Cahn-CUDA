@@ -1,5 +1,5 @@
 {
-    "_comment_physics": "Large-box dendrite. epsilon = 0.10 gives A_max/A_min = 1.10/0.833 = 1.32; it is above 1/15, where the unregularised equation is ill-posed, so willmore_beta > 0 is required: willmore_beta = 0.153 = |S| l*^2 with S = (1 + eps)(1 - 15 eps) = -0.55 and the corner length l* = 0.528 W0 (docs/THEORY.md section 4.3). delta = 0.65. Seed uses equilibrium tanh profile with uniform u = -delta (Karma & Rappel 1998).",
+    "_comment_physics": "Large-box dendrite. epsilon = 0.10 gives A_max/A_min = 1.10/0.833 = 1.32; it is above 1/15, where the unregularised equation is ill-posed, so willmore_beta > 0 is required: willmore_beta = 0.153 = |S| l*^2 with S = (1 + eps)(1 - 15 eps) = -0.55 and the corner length l* = 0.528 W0 (docs/THEORY.md section 4.3). delta = 0.65. Seed uses a tanh profile with uniform u = -delta (Karma & Rappel 1998).",
     "physics": {
         "delta": 0.65,
         "epsilon": 0.10,
@@ -9,7 +9,7 @@
         "d0": 0.5,
         "willmore_beta": 0.153
     },
-    "_comment_grid": "384^3 = 56.6M cells, box 153.2 W0. dx = 0.4 resolves the tanh interface over ~10 grid points (|phi| < 0.9 band spans ~4.2 W0/dx = 10.4 cells). Measured on an RTX 4090: 5.70 GiB of GPU memory (108.1 bytes per cell with willmore_beta > 0), 906 MB per checkpoint, up to 630 MB per .vts.",
+    "_comment_grid": "384^3 = 56.6M cells, box 153.2 W0. At dx = 0.4 the |phi| < 0.9 band of the tanh profile, 2 sqrt(2) atanh(0.9) W0 = 4.16 W0 wide, spans 10.4 cells. Measured on an RTX 4090: the solver allocates 5.70 GiB of GPU memory (108 bytes per cell of fields with willmore_beta > 0, plus 2 MiB), 906 MB per checkpoint, up to 630 MB per .vts.",
     "grid": {
         "Nx": 384,
         "Ny": 384,
@@ -18,7 +18,7 @@
         "dy": 0.4,
         "dz": 0.4
     },
-    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.00125 is the largest dt whose time error does not exceed the spatial error at h = 0.4 (docs/THEORY.md section 4.3); the explicit thermal update is stable below 0.0261. max_steps = 160000 (t = 200) is an upper bound: the saturation guard stops the run cleanly when the crystal reaches the walls (measured: step 91200, t = 114; six <100> arms with concave faces between them by then). 118 ms per step on an RTX 4090: 179 minutes to saturation.",
+    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.00125 is the largest of the candidates 0.02, 0.01, 0.005, ... (each half the previous) whose time error does not exceed the spatial error of h = 0.4 in the max norm and in the mean, both measured with this configuration's physics in a box of side 50.4 up to t = 15 (docs/THEORY.md section 4.3). The explicit thermal update is stable for dt <= 0.026087 (27-point stencil, h = 0.4, D = 2; docs/THEORY.md section 10.1). max_steps = 160000 (t = 200) is an upper bound: the saturation guard stops the run cleanly when the crystal reaches the walls (measured: step 91200, t = 114; six <100> arms with concave faces between them by then). A step takes 118 ms on an RTX 4090 (median of 200 steps), so the 91200 steps to saturation are 179 minutes of compute at that rate.",
     "time": {
         "dt": 0.00125,
         "dt_min": 1e-6,
@@ -39,7 +39,7 @@
         "format": "vts",
         "async_io": true
     },
-    "_comment_checkpoint": "Checkpoint every 8000 steps (10 time units, 15.7 minutes of compute on an RTX 4090). 906 MB per checkpoint, keep_last = 3: 2.7 GB.",
+    "_comment_checkpoint": "Checkpoint every 8000 steps (10 time units, 15.7 minutes of compute at 118 ms per step on an RTX 4090). 906 MB per checkpoint, keep_last = 3: 2.7 GB.",
     "checkpoint": {
         "frequency": 8000,
         "checkpoint_dir": "./checkpoints/run_dendrite_large",
@@ -49,7 +49,7 @@
         "device_ids": [0],
         "multi_gpu": false
     },
-    "_comment_initial": "r0=10 cells = 4.0 W0, well above critical radius R_c = 2*d0/delta = 1.54 = 3.85 cells. Tanh initial profile avoids spurious interface-relaxation transient.",
+    "_comment_initial": "r0 = 10 cells = 4.0 W0, 2.6 times the critical radius R_c = 2*d0/delta = 1.54 W0 = 3.85 cells. The tanh profile has width W0, the planar equilibrium width only where A(n) = 1 (it is W0 A(n), 0.833 to 1.10 W0 at epsilon = 0.10; docs/THEORY.md section 4.3).",
     "initial": {
         "seed_radius": 4.0
     },

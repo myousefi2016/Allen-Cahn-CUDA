@@ -23,8 +23,9 @@ where `F` is the anisotropic gradient flux assembled by the kernel as
 F_i = wn^2 * phi_i  +  16 * W0 * wn * eps * dFunc_i      (i = x, y, z)
 ```
 
-(see `src/cuda/AllenCahnKernels.cu:40-43` for the fused single-pass form,
-and `src/cuda/Kernels.cuh` for the helpers).
+(see `allen_cahn_fused_kernel` in `src/cuda/AllenCahnKernels.cu` for the
+fused single-pass form, and `anisotropic_flux` / `anisotropic_divergence` in
+`src/cuda/Kernels.cuh` for the helpers).
 
 - `tau(n) = tau0 * A(n)^2` — orientation-dependent relaxation time.
 - `wn = W0 * A(n)` — orientation-dependent interface width.
@@ -36,14 +37,14 @@ and `src/cuda/Kernels.cuh` for the helpers).
 
   with `sq = sum(phi_i^2)` and `qrt = sum(phi_i^4)`. For the degenerate
   `|grad phi|^2 <= 1e-30` case the kernel returns the **spherical average**
-  `1 - 3*eps/5` (`Kernels.cuh:153-163`). This is the average of A over the
-  unit sphere using `<n_i^4> = 1/5`, giving `<sum n_i^4> = 3/5`. The earlier
-  value `1 - 5*eps/3` was a bug, now fixed.
+  `1 - 3*eps/5` (`compute_An` in `Kernels.cuh`). This is the average of A
+  over the unit sphere using `<n_i^4> = 1/5`, giving `<sum n_i^4> = 3/5`.
+  The earlier value `1 - 5*eps/3` was a bug, now fixed.
 
 - `dFunc(l, m, n) = (l^3 (m^2 + n^2) - l (m^4 + n^4)) / (l^2 + m^2 + n^2)^2`
-  (`Kernels.cuh:166-172`).
+  (`dFunc` in `Kernels.cuh`).
 - `dF/dphi = -phi*(1 - phi^2) + lambda * u * (1 - phi^2)^2`
-  (`Kernels.cuh:175-179`).
+  (`dF_dphi` in `Kernels.cuh`).
 
 ### 1.2 Thermal-diffusion equation
 
@@ -53,7 +54,7 @@ du/dt = D * Laplacian(u) + 0.5 * dphi/dt
 
 The kernel discretises the latent-heat term as `0.5 * (phi_new - phi_old)`,
 which is `0.5 * dt * dphi/dt` to leading order in `dt`
-(`src/cuda/ThermalKernels.cu:25-28`):
+(`thermal_equation_kernel` in `src/cuda/ThermalKernels.cu`):
 
 ```cpp
 double lap_u       = laplacian(u_old, x, y, z, p);
@@ -61,13 +62,14 @@ double latent_heat = 0.5 * (phi_new[c] - phi_old[c]);
 u_new[c] = u_old[c] + latent_heat + p.dt * p.D * lap_u;
 ```
 
-For the higher-order RK paths, `thermal_rhs_kernel` evaluates the right-hand
+For RK4, `thermal_rhs_kernel` (`ThermalKernels.cu`) evaluates the right-hand
 side at each stage as `D * Lap(u) + 0.5 * k_phi`, where `k_phi` is the
-Allen–Cahn RHS for that stage (`ThermalKernels.cu:36-54`).
+Allen–Cahn RHS for that stage. Heun's two stages are Euler steps and use
+`thermal_equation_kernel`.
 
 ### 1.3 Karma–Rappel parameter relations
 
-Defined in `src/core/SimulationConfig.hpp:35-41`:
+Members of `PhysicsParams` in `src/core/SimulationConfig.hpp`:
 
 ```cpp
 Real a1 = 1.25 / std::sqrt(2.0);   // ≈ 0.8839
@@ -86,7 +88,7 @@ The `beta0` term is the kinetic-coefficient contribution (defaults to 0).
 ### 2.1 7-point standard Laplacian
 
 Second-order central differences on the 6 face neighbours
-(`src/cuda/Kernels.cuh:95-108`):
+(`laplacian_7pt` in `src/cuda/Kernels.cuh`):
 
 ```
 Lap(phi) = (phi[x+1] + phi[x-1] - 2*phi[c]) / dx^2
@@ -104,7 +106,7 @@ graph LR
 ### 2.2 27-point isotropic Laplacian (Patra–Karttunen)
 
 Improved-isotropy 2nd-order stencil over all 26 neighbours, requires
-`dx = dy = dz = h` (`Kernels.cuh:110-138`):
+`dx = dy = dz = h` (`laplacian_27pt` in `Kernels.cuh`):
 
 ```
 Lap(phi) = (14*sum_face + 3*sum_edge + 1*sum_corner - 128*phi_center) / (30*h^2)
@@ -118,20 +120,20 @@ Lap(phi) = (14*sum_face + 3*sum_edge + 1*sum_corner - 128*phi_center) / (30*h^2)
 | Center         | 1     | −128/30              | −128/30 |
 
 Consistency check: `84 + 36 + 8 = 128`. The configuration parser refuses
-the 27-point stencil when grid spacings differ
-(`SimulationConfig.cpp:248-253`).
+the 27-point stencil when `dy` or `dz` differs from `dx` by more than 1e-14
+(`SimulationConfig::validate` in `SimulationConfig.cpp`).
 
 ### 2.3 Gradient stencils
 
 **2nd-order central** (used in production kernels,
-`Kernels.cuh:53-67`):
+`gradient_x` / `gradient_y` / `gradient_z` in `Kernels.cuh`):
 
 ```
 grad_x phi = (phi[x+1] - phi[x-1]) / (2*dx)
 ```
 
 **4th-order central** (available, used in tests,
-`Kernels.cuh:71-91`):
+`gradient_x_4th` / `gradient_y_4th` / `gradient_z_4th` in `Kernels.cuh`):
 
 ```
 grad_x phi = (-phi[x+2] + 8*phi[x+1] - 8*phi[x-1] + phi[x-2]) / (12*dx)
@@ -139,8 +141,8 @@ grad_x phi = (-phi[x+2] + 8*phi[x+1] - 8*phi[x-1] + phi[x-2]) / (12*dx)
 
 ### 2.4 Memory layout
 
-Row-major XYZ, identical on host (`FieldData.hpp:38-40`) and device
-(`Kernels.cuh:40-42`):
+Row-major XYZ, identical on host (`FieldData::linear_index` in
+`FieldData.hpp`) and device (`idx3d` in `Kernels.cuh`):
 
 ```
 index(x, y, z) = x * Ny * Nz + y * Nz + z
@@ -164,12 +166,13 @@ u_new   = u_old + 0.5*(phi_new - phi_old) + dt*D*Lap(u_old)   # thermal_equation
 
 Then `swap(phi_old, phi_new); swap(u_old, u_new)` (O(1) pointer swap).
 Boundary conditions are applied to `phi_new` and `u_new` between the
-two updates and at the end (`CudaSolver.cu:195-215`).
+two updates and at the end (`CudaSolver::advance_phi` and
+`CudaSolver::euler_thermal_and_swap` in `CudaSolver.cu`).
 
 ### 3.2 Heun (RK2)
 
 Two-stage predictor–corrector
-(`CudaSolver.cu:233-276`):
+(`CudaSolver::step_heun_stage1` and `step_heun_stage2` in `CudaSolver.cu`):
 
 ```
 # Stage 1 (predictor)
@@ -187,7 +190,7 @@ u_new   = 0.5 * (u_old   + u_new)
 
 The `average_kernel` writes back into `phi_new`/`u_new` and intentionally
 allows aliasing of input and output for that operand
-(`CudaSolver.cu:223-231`).
+(`CudaSolver.cu`).
 
 ### 3.3 Classical RK4
 
@@ -255,7 +258,7 @@ exchanges:
 | Constant | Value | Where |
 |---|---|---|
 | `kWillmoreCgTolerance` | 1e-10 (relative residual) | `WillmoreSolve.cuh` |
-| `kWillmoreCgMaxIterations` | 1000 outer iterations, then throw | `WillmoreSolve.cuh` |
+| `kWillmoreCgMaxIterations` | 1000 outer iterations, then throw (a backstop, not derived from a bound; measured solves take 2 or 3, `docs/THEORY.md` §4.4) | `WillmoreSolve.cuh` |
 | Chebyshev degree | lowest that guarantees 2 outer iterations in exact arithmetic (11 for run_dendrite: β = 0.25, dt = 0.000625) | `chebyshev_plan` |
 
 The single-precision kernels (`WillmoreKernels.cu`) cover the interior with a
@@ -323,11 +326,12 @@ the JSON examples in the docs).
 Periodic, Robin — applied per face. Each face is launched as a 2D kernel
 covering its surface; corners and edges follow an explicit ownership rule
 to avoid double writes (X faces own their full plane, Y excludes
-X-edges, Z excludes both — see `BoundaryKernels.cu:44-52`).
+X-edges, Z excludes both — see `apply_bc_face_kernel` in `BoundaryKernels.cu`).
 
 The six faces are launched in **Z, Y, X** order so periodic / coupled
 faces see the values written by the others before reading
-(`BoundaryKernels.cu:200-208`).
+(`launch_boundary_conditions` and `launch_boundary_conditions_per_face` in
+`BoundaryKernels.cu`).
 
 ### 5.1 Per-face BC system
 
@@ -337,16 +341,16 @@ faces see the values written by the others before reading
 struct PerFaceBoundary {
     std::array<BoundaryConfig, 6> faces;   // x_lo, x_hi, y_lo, y_hi, z_lo, z_hi
 };
-struct AllBoundaryConfig {
+struct BoundaryParams {
     BoundaryConfig    phi_bc, u_bc;        // uniform fallback
     PerFaceBoundary   phi_faces, u_faces;  // per-face overrides
     bool              per_face = false;    // selector
 };
 ```
 
-`CudaSolver::apply_bc_per_face` dispatches to the per-face launcher when
-`per_face == true`, else to the uniform launcher
-(`CudaSolver.cu:478-482`).
+`CudaSolver::apply_phi_bc` and `CudaSolver::apply_u_bc` (`CudaSolver.cu`)
+dispatch to the per-face launcher (`apply_bc_per_face`) when
+`per_face == true`, else to the uniform launcher (`apply_bc`).
 
 ```mermaid
 graph LR
@@ -521,7 +525,7 @@ sequenceDiagram
 
 ### 8.1 On-disk format
 
-Defined in `src/io/CheckpointIO.hpp:18-33`:
+`CheckpointIO::Header`, defined in `src/io/CheckpointIO.hpp`:
 
 ```cpp
 #pragma pack(push, 1)
@@ -543,11 +547,11 @@ static_assert(sizeof(Header) == 128, ...);
 Layout on disk: `[Header][phi_data][u_data]`. The CRC32 covers the
 concatenated field bytes; the table is generated once in
 `CheckpointIO::compute_crc32` and reused by both writer and reader
-(`CheckpointIO.cpp:14-30`).
+(`CheckpointIO.cpp`).
 
 ### 8.2 Write protocol (crash-safe)
 
-`CheckpointIO::write` (`CheckpointIO.cpp:32-118`) does:
+`CheckpointIO::write` (`CheckpointIO.cpp`) does:
 
 1. `open` `path.tmp` with `O_WRONLY | O_CREAT | O_TRUNC`.
 2. Compute CRC32 over `[phi || u]`.
@@ -629,17 +633,19 @@ sequenceDiagram
 Key invariants:
 
 - `stop_` is read+modified under `queue_mutex_`; the destructor sets it
-  and `notify_all()`-s before joining the thread (`VTKWriter.cpp:30-39`).
+  and `notify_all()`-s before joining the thread (`VTKWriter::~VTKWriter`
+  in `VTKWriter.cpp`).
 - The producer (`write_async`) blocks via `queue_cv_.wait()` when the
   queue depth + in-flight jobs would exceed `max_queue_depth_`,
-  providing backpressure (`VTKWriter.cpp:41-56`).
+  providing backpressure (`VTKWriter.cpp`).
 - VTK output uses an atomic temp-file + `std::filesystem::rename` so a
-  crash mid-write never leaves a corrupted `.vts` (`VTKWriter.cpp:113-166`).
-- Raw output uses POSIX `write()` + atomic rename for the same reason
-  (`VTKWriter.cpp:168-190`).
+  crash mid-write never leaves a corrupted `.vts`
+  (`VTKWriter::write_vtk_file`).
+- Raw output uses `std::ofstream` + atomic rename for the same reason
+  (`VTKWriter::write_raw_file`).
 - Field statistics (min, max, mean, L2-norm) are cached by
   `step:fieldname` in an `LRUCache<string, FieldStatistics>`
-  (`VTKWriter.cpp:192-224`).
+  (`VTKWriter::compute_statistics`).
 
 ---
 
@@ -651,9 +657,9 @@ Key invariants:
 | `ConcurrentMap<K,V>` | `src/core/ConcurrentMap.hpp` | 16 `std::shared_mutex` shards (lock striping) | Future high-contention shared state |
 | `SpatialHash<V>`  | `src/core/SpatialHash.hpp`    | None — build-then-query                | 3D bucketing of field coordinates (FNV-1a hash) |
 
-`ConcurrentMap` shard count is fixed at 16 (`ConcurrentMap.hpp:22`),
-chosen to roughly match common GPU host CPU counts. The shard index is
-`std::hash(key) % NUM_SHARDS`.
+`ConcurrentMap`'s shard count is the template parameter `NumStripes`,
+default 16 (`ConcurrentMap.hpp`). The shard index is
+`Hash{}(key) % NumStripes`, with `Hash` defaulting to `std::hash<Key>`.
 
 ---
 
@@ -663,7 +669,7 @@ chosen to roughly match common GPU host CPU counts. The shard index is
 graph TB
     subgraph Targets["CMake targets"]
         L["ac_logging (STATIC)"]
-        C["ac_core (STATIC)<br/>SimulationConfig, Grid, FieldData"]
+        C["ac_core (STATIC)<br/>SimulationConfig, Grid, FieldData,<br/>StabilityLimits"]
         Cu["ac_cuda (STATIC, CUDA SEPARABLE)<br/>kernels + DeviceField + Solvers"]
         I["ac_io (STATIC)<br/>VTKWriter, CheckpointIO,<br/>core/CheckpointManager.cpp"]
         E["ac_engine (STATIC, CUDA SEPARABLE)<br/>SimulationEngine"]
@@ -700,7 +706,7 @@ graph TB
 
 `CheckpointManager.cpp` lives under `src/core/` but is compiled into
 `ac_io` because `CheckpointManager.hpp` includes `io/CheckpointIO.hpp`
-(`src/CMakeLists.txt:40-46`).
+(`src/CMakeLists.txt`).
 
 ---
 
@@ -712,10 +718,10 @@ to your hardware should be done with `make cuda-run-default` against
 
 | Optimisation | Where | Rationale |
 |--------------|-------|-----------|
-| Fused Allen–Cahn kernel | `AllenCahnKernels.cu:10-99` | Eliminates `Fx`/`Fy`/`Fz` global arrays; trades extra arithmetic for ~3× memory-bandwidth reduction on this kernel. |
+| Fused Allen–Cahn kernel | `allen_cahn_fused_kernel` (`AllenCahnKernels.cu`), `anisotropic_divergence` (`Kernels.cuh`) | No `Fx`/`Fy`/`Fz` global arrays: each cell computes its six face fluxes on the fly, so a face flux between two interior cells is computed by both of them. |
 | O(1) field swap | `DeviceField.cuh` (friend `swap`) | Pointer swap replaces `cudaMemcpy` of full fields per step. |
-| Pre-allocated reduction scratch | `CudaSolver.cu:127-134` | Avoids per-call `cudaMalloc` in the reduction launcher. |
+| Pre-allocated reduction scratch | `reduction_scratch_` (`CudaSolver.cu`, constructor) | Avoids per-call `cudaMalloc` in the reduction launcher. |
 | Grid-stride reduction kernels | `ReductionKernels.cu` | Reductions correctly cover all elements even when scratch is undersized — no silent loss. |
-| Atomic file writes | `VTKWriter.cpp:151-160`, `CheckpointIO.cpp:99-113` | `tmp + rename` (+ parent dir `fsync` for checkpoints) makes crash-mid-write recoverable. |
-| Boundary-only saturation reduction | `CudaSolver.cu:498-565` | O(N²) instead of O(N³); avoids full host transfer. |
+| Atomic file writes | `VTKWriter::write_vtk_file` / `write_raw_file` (`VTKWriter.cpp`), `CheckpointIO::write` (`CheckpointIO.cpp`) | `tmp + rename` (+ parent dir `fsync` for checkpoints) makes crash-mid-write recoverable. |
+| Boundary-only saturation reduction | `boundary_max_kernel` (`CudaSolver.cu`) | O(N²) instead of O(N³); avoids full host transfer. |
 | `__launch_bounds__(256)` on hot kernels | various `.cu` files | Bounds register pressure for predictable occupancy. |

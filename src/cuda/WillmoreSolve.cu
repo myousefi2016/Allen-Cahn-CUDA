@@ -247,9 +247,12 @@ void apply_willmore_preconditioner(const std::vector<WillmoreDomain>& domains,
                                    const std::function<void(WillmoreBuffer)>& exchange) {
     if (!(rr > 0.0) || !std::isfinite(rr))
         throw std::invalid_argument("apply_willmore_preconditioner: needs 0 < r.r < inf");
-    // Power-of-two scaling into single precision: ||2^-e r|| lies in [1, 2),
-    // so no component overflows or underflows, and the scaling is exact both
-    // ways (the result is the same bits for r and 2^m r, up to 2^m).
+    // Power-of-two scaling into single precision: sqrt(rr) 2^-e lies in
+    // [1, 2), so no component overflows; components below 2^-126 in
+    // magnitude are rounded to multiples of 2^-149 (see the header). The
+    // scaling adds no rounding of its own, so the result is the same bits for
+    // r and 2^m r, up to 2^m, as long as no r_c^2 underflows in double
+    // precision.
     const int e = std::ilogb(std::sqrt(rr));
     const double scale = std::ldexp(1.0, -e), inv_scale = std::ldexp(1.0, e);
     const int steps = plan.degree - 1;

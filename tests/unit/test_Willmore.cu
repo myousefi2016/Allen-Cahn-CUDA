@@ -267,9 +267,8 @@ TEST(WillmoreConfig, StrongAnisotropyRequiresRegularisation) {
 // The linearly implicit step is first-order consistent in time: on a fixed
 // grid, a strongly anisotropic regularised seed advanced to t = 0.4 has
 // successive max-norm differences shrinking by ~2 per halving of dt. The
-// order approaches 1 from below as dt shrinks (the bulk linearisation L is
-// frozen, so the splitting error has a large constant): measured on an RTX
-// 4090 from dt = 0.02 it is 0.68, 0.82, 0.91, 0.95, 0.97, so the test uses the
+// order approaches 1 from below as dt shrinks: measured on an RTX 4090 from
+// dt = 0.02 it is 0.68, 0.82, 0.91, 0.95, 0.97, so the test uses the
 // asymptotic range dt = 0.0025 ... 0.0003125.
 TEST_F(WillmoreTest, FirstOrderConvergenceInTime) {
     const int N = 24;

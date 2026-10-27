@@ -127,12 +127,12 @@ graph LR
 A few non-obvious facts about the build graph:
 
 - **`ac_core` is intentionally minimal.** It only compiles
-  `SimulationConfig.cpp`, `Grid.cpp`, and `FieldData.cpp`
-  (`src/CMakeLists.txt:9-13`). `LRUCache`, `SpatialHash`, and
+  `SimulationConfig.cpp`, `Grid.cpp`, `FieldData.cpp` and
+  `StabilityLimits.cpp` (`src/CMakeLists.txt`). `LRUCache`, `SpatialHash`, and
   `ConcurrentMap` are header-only utilities included by downstream
   libraries; they have no `.cpp`.
 - **`CheckpointManager.cpp` lives under `src/core/` but compiles into
-  `ac_io`** (`src/CMakeLists.txt:40-44`). It is grouped there because
+  `ac_io`** (`src/CMakeLists.txt`). It is grouped there because
   `CheckpointManager.hpp` includes `io/CheckpointIO.hpp`, so the only
   acyclic placement is in the I/O library that already depends on core.
 - **CUDA separable compilation** is enabled on `ac_cuda` and `ac_engine`
@@ -197,8 +197,8 @@ sequenceDiagram
     Eng->>VTK: flush()
 ```
 
-`run()` is the top-level method (`SimulationEngine.cu:43-71`); the time
-loop itself is `time_loop()` (`SimulationEngine.cu:113-179`).
+`SimulationEngine::run()` is the top-level method; the time loop itself is
+`SimulationEngine::time_loop()` (both in `SimulationEngine.cu`).
 
 ---
 
@@ -374,14 +374,14 @@ sequenceDiagram
 
 Implementation: `src/io/VTKWriter.cpp`. The writer thread is owned by
 the `VTKWriter` instance and joined in the destructor with `stop_` set
-under the mutex (`VTKWriter.cpp:30-39`).
+under the mutex (`VTKWriter::~VTKWriter` in `VTKWriter.cpp`).
 
 Backpressure: producers wait on `queue_cv_` when the queue depth plus
 in-flight jobs would exceed `max_queue_depth_`
-(`VTKWriter.cpp:48-55`).
+(`VTKWriter::write_async` in `VTKWriter.cpp`).
 
 Crash-safety: every write goes to `<file>.tmp` first and is renamed
-atomically. Raw writes use POSIX `write()` with `EINTR` handling.
+atomically. Raw writes use `std::ofstream` (`VTKWriter::write_raw_file`).
 
 ---
 
@@ -412,16 +412,19 @@ graph LR
     F --> T
 ```
 
-`AllBoundaryConfig` (in `SimulationConfig.hpp`) holds **both** a uniform
+`BoundaryParams` (in `SimulationConfig.hpp`) holds **both** a uniform
 `BoundaryConfig` (`phi_bc`, `u_bc`) and a `PerFaceBoundary`
-(`phi_faces`, `u_faces`); the boolean `per_face` selects which path
-`CudaSolver::apply_bc_per_face` takes (`CudaSolver.cu:478-482`).
+(`phi_faces`, `u_faces`); `CudaSolver::apply_phi_bc` and
+`CudaSolver::apply_u_bc` (`CudaSolver.cu`) apply the per-face set through
+`apply_bc_per_face` when the boolean `per_face` is true and the uniform one
+through `apply_bc` otherwise.
 
 Each face is launched as a 2D kernel covering its surface; the launch
 order is **Z, Y, X** so that periodic faces see the latest values
-(`BoundaryKernels.cu:200-208`). Corner / edge ownership is explicit
+(`launch_boundary_conditions` and `launch_boundary_conditions_per_face` in
+`BoundaryKernels.cu`). Corner / edge ownership is explicit
 (X owns full plane, Y excludes X-edges, Z excludes both X- and Y-edges
-— `BoundaryKernels.cu:44-52`).
+— `apply_bc_face_kernel` in `BoundaryKernels.cu`).
 
 ---
 
@@ -437,9 +440,10 @@ order is **Z, Y, X** so that periodic faces see the latest values
 | `MultiGPUSolver` | Per-domain streams + CUDA events           | Every halo stream waits on every domain's compute event; host syncs halo streams |
 | Signal handling  | `std::atomic<bool> ac::g_shutdown_requested` | `sigaction` with `SA_RESTART`               |
 
-`g_shutdown_requested` is defined in `src/core/SimulationEngine.cu:14`
-inside `namespace ac`, declared `extern` in `SimulationEngine.hpp:19`,
-and signalled from `main.cpp:14-17` via a `sigaction`-installed handler.
+`g_shutdown_requested` is defined in `src/core/SimulationEngine.cu`
+inside `namespace ac`, declared `extern` in `SimulationEngine.hpp`,
+and signalled from `signal_handler` in `main.cpp`, a `sigaction`-installed
+handler.
 
 ---
 

@@ -77,7 +77,7 @@ static double expected_phi(const SimulationConfig& cfg, int x, int y, int z) {
     return -std::tanh((r - cfg.initial.seed_radius) / (std::sqrt(2.0) * cfg.physics.W0));
 }
 
-/// Every interior cell holds the equilibrium profile -tanh((r - r0)/(sqrt(2) W0))
+/// Every interior cell holds the isotropic equilibrium profile -tanh((r - r0)/(sqrt(2) W0))
 /// with r measured in physical units (grid spacing 0.4, so 2.5 cells per W0).
 TEST_F(InitialConditionTest, PhiMatchesEquilibriumProfile) {
     auto cfg = make_config();

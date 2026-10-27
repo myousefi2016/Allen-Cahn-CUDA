@@ -11,9 +11,9 @@
 # resume of a long simulation that was interrupted (Ctrl-C, container kill,
 # host suspend, etc.).
 #
-# Why we need this: SimulationEngine.cu:50 only restarts when
-# CheckpointManager::has_restart_file() returns true, which (per
-# CheckpointManager.cpp:96-101) only checks the explicit `restart_file`
+# Why we need this: SimulationEngine::run (SimulationEngine.cu) only
+# restarts when CheckpointManager::restart_requested() returns true, which
+# (per CheckpointManager.cpp) only checks the explicit `restart_file`
 # field — it does NOT auto-discover by directory. So we have to set that
 # field ourselves before invoking the binary.
 #
@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# File names written by CheckpointManager::save (CheckpointManager.cpp:50).
+# File names written by CheckpointManager::save (CheckpointManager.cpp).
 CHECKPOINT_RE = re.compile(r"checkpoint_(\d+)\.acbin")
 
 # CheckpointIO::Header (src/io/CheckpointIO.hpp), #pragma pack(1), in the

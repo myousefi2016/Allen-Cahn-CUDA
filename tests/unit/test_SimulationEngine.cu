@@ -81,7 +81,7 @@ TEST_F(SimulationEngineTest, Construction) {
     });
 }
 
-// The initial condition is the Karma-Rappel equilibrium profile
+// The initial condition is the isotropic (A = 1) equilibrium profile
 // phi = -tanh((r - r0) / (sqrt(2) W0)) in physical distance r from the domain
 // midpoint, with u = -delta. run() with zero steps returns the fields after
 // the solver applied the BCs, so interior cells must equal the profile and

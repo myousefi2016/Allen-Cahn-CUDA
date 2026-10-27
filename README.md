@@ -177,9 +177,11 @@ gradients in double precision with a Chebyshev polynomial preconditioner in
 single precision (`src/cuda/WillmoreSolve.cu`, `docs/THEORY.md` §4.4). Heun
 and RK4 are fully explicit and reject β > 0. The shipped configurations set
 β = |S(ε)| ℓ*² with the corner length ℓ* = 0.528 W₀ (S(ε) = (1+ε)(1−15ε),
-the most negative gradient-energy stiffness) and the largest dt whose time
-error does not exceed the spatial error at h = 0.4; both were measured per
-configuration (`docs/THEORY.md` §4.3).
+the most negative gradient-energy stiffness) and, as dt, the largest of
+0.02, 0.01, 0.005, … (each half the previous) whose time error does not
+exceed the spatial error at h = 0.4 in the max norm and in the mean; both
+errors were measured per configuration, with its physics in a box of side
+50.4 at t = 15 (`docs/THEORY.md` §4.3).
 
 ## Multi-GPU Domain Decomposition
 
@@ -300,14 +302,15 @@ make cuda-image-rebuild          # force-rebuild the dev image (after apt-pkg ch
 `cuda-run-dendrite-long` grows a 192³ crystal at ε = 0.15 (β = 0.401, Euler,
 dt = 0.0003125) until the saturation guard stops it. Measured on an RTX 4090:
 the guard fires at step 113 600 (t = 35.5, 63 τ₀), when the six ⟨100⟩ tips
-reach the walls, after 27 minutes of compute (14.4 ms per step), with 16
-frames (1.0 GB). The crystal is a convex octahedron with rounded ⟨100⟩
+reach the walls, with 16 frames (1.06 GB), and a step takes 14.4 ms (median
+of 200 steps), so the run needs 113 600 × 14.4 ms = 27 minutes of compute.
+The crystal is a convex octahedron with rounded ⟨100⟩
 corners at t = 17.5 and has grown six ⟨100⟩ tips with concave faces between
 them by the end. `cuda-run-dendrite` (160³, ε = 0.12) ends at t = 17.5
 (31 τ₀).
 
 Crash safety:
-- Checkpoints every 48 000 steps (15 time units, 11.6 minutes of compute on an RTX 4090, the most lost on `SIGKILL` / suspend).
+- Checkpoints every 48 000 steps (15 time units, 11.5 minutes of compute at 14.4 ms per step on an RTX 4090, the most lost on `SIGKILL` / suspend).
 - `keep_last = 3` (340 MB on disk for 192³).
 - `cuda-resume-dendrite` finds the highest-numbered intact checkpoint
   (the 128-byte header must match the config's grid, the file size must be
@@ -492,8 +495,20 @@ Full CLI: `python3 scripts/visualize_dendrite.py --help`.
 
 ## Configuration
 
-All parameters are specified in JSON. See `config/default.json` for defaults
-and `config/run_dendrite*.json` for dendrite-friendly presets.
+All parameters are specified in JSON. Started without a file, the binary
+loads `config/default.json` (or `../config/default.json`); the example below
+is equivalent to it. `config/run_dendrite*.json` are dendrite-friendly
+presets. A key that a file leaves out takes its compiled-in value
+(`src/core/SimulationConfig.hpp`; a per-face boundary object must still name
+all six faces, see below), and with neither file present the binary runs on
+the compiled-in values alone. The compiled-in values differ from
+`config/default.json` in `physics.epsilon` (0.05), `physics.willmore_beta`
+(0), `time.dt` (0.01), `time.max_steps` (6000),
+`time.saturation_check_freq` (100), `output.frequency` (100),
+`output.output_dir` (`./out`), `checkpoint.frequency` (500),
+`checkpoint.checkpoint_dir` (`./checkpoints`) and the `u` boundary value
+(-1.0). The dt rule of `docs/THEORY.md` §4.3 was applied to the shipped
+configurations, not to the compiled-in values.
 
 ```json
 {
@@ -520,7 +535,7 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
 | `time.dt`             | at most the explicit stability limits of the scheme, stencil and spacing (`docs/THEORY.md` §10.1; `--validate-config` reports them); with `time.adaptive`, at most `cfl_safety` times them, like `time.dt_min` |
 | `time.cfl_safety`     | in (0, 1]: adaptive steps are capped at this fraction of the stability limits |
 | `physics.epsilon`     | anisotropy strength in [0, 1/3); above 1/15 it requires `physics.willmore_beta > 0` |
-| `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (default 0); > 0 requires `time.scheme` `"euler"` or `"imex"` |
+| `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (0 when omitted); > 0 requires `time.scheme` `"euler"` or `"imex"` |
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
 | `boundary.*.type`     | `"dirichlet"`, `"neumann"`, `"periodic"` (on both faces of an axis), `"robin"` |
 | `boundary.*` robin    | `alpha·u + beta·∂u/∂n = gamma`: `alpha`, `beta` not both zero and not of opposite signs (`docs/THEORY.md` §9.1) |
@@ -560,10 +575,11 @@ object must name all six faces (a missing face is an error, not a default):
 
 Device memory allocated by `CudaSolver`, measured with `cudaMemGetInfo`
 around its construction on a 256³ grid (RTX 4090), per grid cell, and the
-total for 600³ = 2.16 × 10⁸ cells (GiB = 2³⁰ bytes). Every double-precision
-field costs 8 bytes per cell and every single-precision one 4; the rest
-(0.125 bytes per cell at 256³) is reduction scratch and allocation
-granularity. The fused Allen–Cahn kernel stores no flux or index arrays.
+fields' total for 600³ = 2.16 × 10⁸ cells (GiB = 2³⁰ bytes). Every
+double-precision field costs 8 bytes per cell and every single-precision
+one 4; the rest (0.125 bytes per cell at 256³, 2 to 7 MiB on grids from
+128³ to 384³) is reduction scratch and allocation granularity and is not in
+the 600³ column. The fused Allen–Cahn kernel stores no flux or index arrays.
 
 | Scheme | Fields | Bytes per cell | 600³ |
 |---|---|---|---|

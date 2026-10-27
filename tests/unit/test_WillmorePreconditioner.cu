@@ -416,10 +416,10 @@ TEST_F(WillmorePreconditionerTest, SpectrumBoundsContainEveryEigenvalue) {
 // residual, a relative (b/a) u_32 for the D-scaled operator. k (b/a) u_32 is
 // that first-order size of the accumulated difference. It leaves out the
 // number of roundings per step, so it is a tolerance, not a proven bound: the
-// measured differences (printed, 6e-8 to 1e-7) lie more than 100 times below
-// it, and an implementation error (a wrong ghost rule, coefficient, stencil or
-// step size) shows as O(1). The solve uses a dt other than the
-// configuration's, as adaptive stepping does.
+// measured differences (printed, 6.2e-8 to 9.0e-8 on an RTX 4090) lie more
+// than 100 times below it, and an implementation error (a wrong ghost rule,
+// coefficient, stencil or step size) shows as O(1). The solve uses a dt other
+// than the configuration's, as adaptive stepping does.
 TEST_F(WillmorePreconditionerTest, SinglePrecisionMatchesExactPolynomial) {
     for (const Case& cs : spectrum_cases()) {
         SCOPED_TRACE(cs.name);
@@ -500,8 +500,9 @@ TEST_F(WillmorePreconditionerTest, SinglePrecisionMatchesExactPolynomial) {
 // and |phi| <= 2^-40 the step is exactly linear in phi in double precision
 // (phi^3 and every other nonlinear term are below one ulp of the linear
 // ones), so the increments for phi = 2^-150 psi and 2^-40 psi must be the
-// same bits up to 2^-110. Without the scaling, 2^-150 psi (~1e-45) rounds to
-// zero or a subnormal in single precision and the solve breaks down.
+// same bits up to 2^-110. Without the scaling, the right-hand side for
+// 2^-150 psi (components 3.4e-47 to 8.1e-43) rounds to zero or to
+// subnormals in single precision and the solve breaks down.
 TEST_F(WillmorePreconditionerTest, TinyRightHandSideGivesTheScaledIncrementBitwise) {
     const int N = 14;
     SimulationConfig cfg;
