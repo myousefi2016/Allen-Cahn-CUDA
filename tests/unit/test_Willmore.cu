@@ -254,6 +254,9 @@ TEST_F(WillmoreTest, RequiresEulerOrImex) {
 TEST(WillmoreConfig, StrongAnisotropyRequiresRegularisation) {
     SimulationConfig cfg;
     cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 10;
+    // Below the explicit phase-field limit at eps = 1/15 (0.0096, THEORY 10.1),
+    // so only the regularisation rule decides.
+    cfg.time.dt = 0.005;
     cfg.physics.epsilon = 1.0 / 15.0;
     EXPECT_NO_THROW(cfg.validate());
     cfg.physics.epsilon = 0.0667;

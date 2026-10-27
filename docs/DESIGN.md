@@ -295,8 +295,11 @@ The limits (`core/StabilityLimits.hpp`, docs/THEORY.md §10.1) are exact for
 a checkerboard mode: the explicit thermal update of Euler, Heun and RK4,
 `dt * D * rho <= r` (rho = 4 sum_d h_d^-2 for the 7-point, 184/(30 h^2) for
 the 27-point stencil; r = 2, or 2.785293563405282 for RK4; none for IMEX),
-and the explicit phase-field update in the liquid,
-`dt (Lam - beta Lcb) <= r tau_cb` (none when beta Lcb >= Lam).
+and, as a necessary condition, the explicit phase-field update in the
+liquid: `dt (Lam_S - beta L_S) <= r tau` for the checkerboards over every
+subset S of the axes, of the uniform liquid and of a liquid with a small
+gradient along n (tau = tau0 A(n)^2, the gradient energy's Hessian H_dd(n)
+in Lam_S), minimised over S and n (THEORY 10.1).
 `SimulationConfig::validate` rejects a fixed dt above either limit, and with
 adaptive stepping a time.dt or dt_min above the cap and `cfl_safety`
 outside (0, 1]. The engine computes the cap once, in its constructor.

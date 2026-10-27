@@ -1055,10 +1055,10 @@ flowchart TD
 27-point stencil, §10.1) which can be very restrictive for fine grids.
 Making it implicit removes this constraint while keeping the nonlinear
 Allen-Cahn term explicit (where implicit treatment would require a nonlinear
-solver). The explicit phase-field update keeps its own limit (§10.1), close
-to the thermal one when W₀²(1+ε)²/τ₀ ≈ D (0.012570 against 0.013333 at the
-default physics); the Willmore term (β > 0) removes it for the checkerboard
-of the liquid when βL_cb ≥ Λ, as in every shipped configuration.
+solver). The explicit phase-field update keeps its own limit (§10.1), below
+the thermal one at the default physics (0.010626 against 0.013333); the
+Willmore term (β > 0) raises it, to 0.0316 at the shipped ε = 0.07,
+β = 0.0149, and removes it at the larger β of the dendrite configurations.
 
 ---
 
@@ -1184,54 +1184,83 @@ above, at the checkerboard vertex (−2, −2, −2). On a periodic grid with an
 even number of interior cells per axis the checkerboard is an exact mode and
 ρ is attained; otherwise the largest eigenvalue is within O(1/N²) of ρ.
 
-**Phase field.** In the liquid (φ = −1) a checkerboard perturbation
-η(−1)^{x+y+z} has at every face a gradient along the face normal only (the
-tangential averages of central differences vanish) and at every cell a zero
-central-difference gradient. So A = 1 + ε at every face and
-τ = τ₀(1 − 3ε/5)² at every cell (the spherical average the kernel uses for a
-zero gradient), and the face-flux divergence (§11, whatever `stencil` says)
-acts on the mode as W₀²(1 + ε)² times the 7-point Laplacian. With the
-reaction's derivative 2 at φ = −1 (independent of u), one explicit step
-multiplies η by R(−Δt·Λ/τ_cb), with
+**Phase field.** In the liquid (φ = −1) a checkerboard perturbation over a
+non-empty subset S of the axes, η(−1)^{Σ_{d∈S} x_d}, has at every face
+normal to an axis of S a gradient along the face normal only (the
+tangential averages of central differences vanish), zero gradient on the
+other faces, and a zero central-difference gradient at every cell. So
+A = 1 + ε on those faces and τ = τ₀(1 − 3ε/5)² at every cell (the spherical
+average the kernel uses for a zero gradient), and the face-flux divergence
+(§11, whatever `stencil` says) acts on the mode as W₀²(1 + ε)² times the
+7-point Laplacian, eigenvalue −μ_S. With the reaction's derivative 2 at
+φ = −1 (independent of u), one explicit step multiplies η by
+R(−Δt·Λ_S/τ_cb), with
 
 ```
-Λ = W₀²(1 + ε)² ρ₇ + 2,   τ_cb = τ₀(1 − 3ε/5)²,   ρ₇ = 4 Σ_d h_d⁻²
+Λ_S = W₀²(1 + ε)² μ_S + 2,   τ_cb = τ₀(1 − 3ε/5)²,   μ_S = 4 Σ_{d∈S} h_d⁻²
 ```
 
 With the Willmore term (Euler and IMEX, β > 0, §4.4) the step solves
-(τ/Δt + βL)δφ = rhs, and at this mode L = (W₀²ρ₇ + 2)² =: L_cb and
-rhs = −(Λ + βL_cb)η:
+(τ/Δt + βL)δφ = rhs, and at this mode L = (W₀²μ_S + 2)² =: L_S and
+rhs = −(Λ_S + βL_S)η:
 
 ```
-g = 1 − Δt (Λ + β L_cb) / (τ_cb + Δt β L_cb),    |g| ≤ 1  ⟺  Δt (Λ − β L_cb) ≤ 2 τ_cb
+g = 1 − Δt (Λ_S + β L_S) / (τ_cb + Δt β L_S),    |g| ≤ 1  ⟺  Δt (Λ_S − β L_S) ≤ 2 τ_cb
 ```
 
-When βL_cb ≥ Λ the mode decays at every Δt; every shipped configuration is
-in this case (at ε = 0.07, β = 0.0149, h = 0.4: βL_cb = 88.3, Λ = 87.9).
-Above the limit the checkerboard of the liquid grows every step, so the
-limit is necessary; it is not shown to be sufficient, since no closed form
-bounds the anisotropic update at an interface (its linearisation is not
-symmetric for ε > 0).
+Without the Willmore term the full checkerboard (S = all axes) binds; with
+it, Λ_S − βL_S is concave in μ_S and a 1-D or 2-D checkerboard can bind
+where the full one decays at every Δt (at ε = 0.07, β = 0.0149, h = 0.4:
+the full one has βL_S = 88.3 > Λ_S = 87.9, the 1-D one a limit of 0.0525).
+
+A liquid that is not exactly uniform has a small smooth gradient along some
+direction n (the tail of an interface). The checkerboard then leaves the
+cell gradients unchanged, so τ = τ₀A(n)², and changes the normal flux on a
+face normal to d by H_dd(n) times its normal gradient, H the Hessian of the
+gradient energy ½W₀²A²|p|², which depends on the direction only
+(`gradient_energy_hessian_diagonal`; (1 + ε)² along an axis, S(ε) across
+it). With `Λ_S(n) = W₀² Σ_{d∈S} H_dd(n) 4/h_d² + 2` and τ = τ₀A(n)² in
+place of Λ_S and τ_cb, the same g applies, frozen at the gradient's
+direction. On a cubic grid without the Willmore term it is lowest along
+⟨111⟩ at ε = 0.05 and 1/15 (`PhaseFieldLimitClosedForms`): at ε = 0.05 the
+limit is 0.010626 against 0.012570 for the uniform liquid (default physics,
+h = 0.4).
+
+`phase_field_dt_limit` returns the smallest limit over the seven subsets S,
+the uniform liquid and the gradient directions n of a 1° grid on the
+octant plus the exact ⟨110⟩ and ⟨111⟩, each refined to the bottom of its
+basin. Every case is a necessary condition on its own (exact for the
+uniform liquid; for a gradient, the frozen-coefficient condition, which an
+explicit scheme must meet), so their minimum is too. It is not shown to be
+sufficient: at an interface the anisotropic update has no closed form (its
+linearisation is not symmetric for ε > 0). For the shipped configurations
+it is 0.0316 at ε = 0.07, β = 0.0149 (`default.json`, `benchmark_small.json`,
+the Makefile's `run_vtk.json`, the k8s payloads; their dt are 0.0025 and
+0.005) and +∞ for the large-β dendrite configurations.
 
 **Measured** (`StabilityLimitsGpuTest`, periodic 18³, h = 0.4, D = 2, the
-checkerboard over 40 steps): at 0.99 and 1.01 times each limit the factor
+perturbation over 40 steps): at 0.99 and 1.01 times each limit the factor
 per step is 0.9800 / 1.0200 (Euler), 0.9802 / 1.0202 (Heun) and 0.9588 /
 1.0428 (RK4) for both stencils, as R predicts to 10⁻⁹; for the phase field
-(IMEX) 0.980 / 1.020 at ε = 0 and 0.05 with β = 0, 0.981 / 1.019 with
-β = 5·10⁻⁴, and below 1 at ten times the β = 0 limit with β = 0.0149. The
-runs of §4.3 bracket the thermal limits on the shipped grids: 7-point stable
-at 0.0125 and blown up at 0.014, 27-point stable at 0.025 and blown up at
-0.027.
+(IMEX) of the uniform liquid 0.980 / 1.020 for the full checkerboard at
+ε = 0 and 0.05 with β = 0, and 0.990 / 1.009 (1-D) and 0.996 / 1.004 (2-D)
+at ε = 0.07, β = 0.0149, where at Δt = 0.06 the full checkerboard decays
+(0.817) and the 1-D one grows (1.126); for a liquid with a ⟨111⟩ gradient
+of 10⁻⁶ at ε = 0.05, 0.982 / 1.007 at its limit 0.010626, and 1.204 at 0.99
+times the uniform liquid's limit. The runs of §4.3 bracket the thermal
+limits on the shipped grids: 7-point stable at 0.0125 and blown up at
+0.014, 27-point stable at 0.025 and blown up at 0.027.
 
 **Validation** (`core/StabilityLimits.hpp`, `SimulationConfig::validate`):
 a fixed Δt above either limit is rejected, with the configured stencil,
-spacing per axis and scheme (IMEX has no thermal limit). With adaptive
-stepping every step after the first is capped at `cfl_safety` times the
-smaller limit (§10.3), so `cfl_safety` must lie in (0, 1] and time.dt (the
-first step) and dt_min must not exceed that cap. At h = 0.4, D = 2 and the
-default physics (ε = 0.05, d₀ = 0.5) the limits are 0.013333 (thermal,
-Euler and Heun, 7-point), 0.026087 (27-point), 0.018569 (RK4, 7-point) and
-0.012570 (phase field).
+spacing per axis and scheme (IMEX has no thermal limit); the message gives
+Δt and the limit to 17 significant digits. With adaptive stepping every
+step after the first, and the first after a restart, is capped at
+`cfl_safety` times the smaller limit (§10.3), so `cfl_safety` must lie in
+(0, 1] and time.dt (the first step) and dt_min must not exceed that cap. At
+h = 0.4, D = 2 and the default physics (ε = 0.05, d₀ = 0.5) the limits are
+0.013333 (thermal, Euler and Heun, 7-point), 0.026087 (27-point), 0.018569
+(RK4, 7-point) and 0.010626 (phase field).
 
 ### 10.2 Jacobi Iteration Convergence
 
@@ -1566,12 +1595,12 @@ graph TD
 | GPU memory, bytes per cell (measured, Appendix C) | 32.1 | 48.1 | 112.1 | 48.1 |
 | … with `willmore_beta > 0` | 108.1 | rejected | rejected | 124.1 |
 | Explicit thermal update stable for (§10.1) | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2.785 | any Δt (u implicit) |
-| Checkerboard of the liquid does not grow for (§10.1) | Δt(Λ − βL_cb) ≤ 2τ_cb | Δt·Λ ≤ 2τ_cb | Δt·Λ ≤ 2.785τ_cb | Δt(Λ − βL_cb) ≤ 2τ_cb |
+| Checkerboards of the liquid do not grow only if (§10.1; minimum over S and the gradient direction) | Δt(Λ_S − βL_S) ≤ 2τ | Δt·Λ_S ≤ 2τ | Δt·Λ_S ≤ 2.785τ | Δt(Λ_S − βL_S) ≤ 2τ |
 | ms per step, 160³, h = 0.4, dt = 0.005, ε = 0.05, β = 0 | 4.27 | 8.77 | 18.05 | 10.99 |
 | ms per step, same grid, ε = 0.12, β = 0.25 | 10.80 | rejected | rejected | 17.33 |
 
 ρ is the largest eigenvalue of −∇²ₕ: 4 Σ_d h_d⁻² (7-point), 184/(30h²)
-(27-point); Λ, τ_cb and L_cb are those of §10.1 (with the 7-point ρ₇ for
+(27-point); Λ_S, τ and L_S are those of §10.1 (with the 7-point μ_S for
 either stencil). Costs measured on an RTX 4090 (CUDA 13.2, median over 200 steps
 after 220 from the seed, no other process on the GPU) with the physics of
 `run_dendrite.json`. With β > 0 the Euler and IMEX φ update is the linearly

@@ -441,6 +441,33 @@ TEST_F(SimulationEngineTest, AdaptiveDtGrowsToTheCapWhenPhiIsAtRest) {
     EXPECT_EQ(expected, cap) << "the run is too short to reach the cap";
 }
 
+// The first step after an adaptive restart obeys the same bounds as every
+// adapted step: the checkpoint's dt is clamped to [dt_min, dt_max] and then
+// capped at cfl_safety times the stability limits (a checkpoint written with
+// another configuration's dt, here 1.0, would otherwise run unchecked).
+TEST_F(SimulationEngineTest, AdaptiveRestartIsCappedLikeEveryAdaptedStep) {
+    auto cfg = make_config(8, 11);
+    cfg.time.adaptive = true;
+    cfg.checkpoint.frequency = 11;
+    std::filesystem::create_directories(cfg.checkpoint.checkpoint_dir);
+    Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    phi.fill(-1.0);
+    u.fill(-0.8);
+    const auto file = test_dir_ / "foreign_dt.acbin";
+    CheckpointIO::write(file, 10, 0.1, 1.0, grid, phi, u);
+    cfg.checkpoint.restart_file = file;
+    const double cap =
+        cfg.time.cfl_safety * std::min(thermal_dt_limit(cfg), phase_field_dt_limit(cfg));
+    ASSERT_LT(cap, cfg.time.dt_max);
+
+    SimulationEngine engine(cfg);
+    engine.run();
+    const auto next = CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_11.acbin");
+    EXPECT_EQ(next.dt, cap);
+    EXPECT_EQ(next.time, 0.1 + cap);
+}
+
 TEST_F(SimulationEngineTest, ConfigValidationRejectsInvalid) {
     auto cfg = make_config(8, 10);
     cfg.output.format = "invalid_format";

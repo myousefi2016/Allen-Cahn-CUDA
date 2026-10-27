@@ -70,8 +70,10 @@ private:
     double start_time_ = 0.0;
     int last_phi_d2h_step_ = -1;
     int last_u_d2h_step_ = -1;
-    /// Adaptive steps never exceed cfl_safety times the explicit stability
-    /// limits (docs/THEORY.md 10.1); +infinity when neither applies.
+    /// Adaptive steps, the first after a restart included, never exceed
+    /// cfl_safety times the explicit stability limits (docs/THEORY.md 10.1);
+    /// +infinity when neither applies. The first step of a fresh run uses
+    /// time.dt, which validate() requires to be below this cap.
     double adaptive_dt_cap_;
 };
 

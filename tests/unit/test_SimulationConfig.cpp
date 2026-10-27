@@ -54,7 +54,7 @@ TEST_F(SimulationConfigTest, ParseFromJsonString) {
             "dx": 0.2, "dy": 0.2, "dz": 0.2
         },
         "time": {
-            "dt": 0.005,
+            "dt": 0.004,
             "max_steps": 100,
             "scheme": "rk4",
             "adaptive": true
@@ -82,7 +82,7 @@ TEST_F(SimulationConfigTest, ParseFromJsonString) {
     EXPECT_DOUBLE_EQ(cfg.physics.D, 3.0);
     EXPECT_EQ(cfg.grid.Nx, 64);
     EXPECT_DOUBLE_EQ(cfg.grid.dx, 0.2);
-    EXPECT_DOUBLE_EQ(cfg.time.dt, 0.005);
+    EXPECT_DOUBLE_EQ(cfg.time.dt, 0.004);
     EXPECT_EQ(cfg.time.max_steps, 100);
     EXPECT_EQ(cfg.time.scheme, TimeScheme::RK4);
     EXPECT_TRUE(cfg.time.adaptive);

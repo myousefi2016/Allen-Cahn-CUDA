@@ -1,5 +1,7 @@
 #include "core/StabilityLimits.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace ac {
@@ -22,20 +24,102 @@ double thermal_dt_limit(const SimulationConfig& config) {
            (config.physics.D * thermal_spectral_radius(config));
 }
 
+double gradient_energy_hessian_diagonal(const double n[3], double epsilon, int i) {
+    const double s =
+        n[0] * n[0] * n[0] * n[0] + n[1] * n[1] * n[1] * n[1] + n[2] * n[2] * n[2] * n[2];
+    const double a = 1.0 - 3.0 * epsilon + 4.0 * epsilon * s;
+    const double ni = n[i], ni2 = ni * ni;
+    const double d = ni2 * ni - s * ni;
+    const double dd = 3.0 * ni2 - 6.0 * ni2 * ni2 - s + 4.0 * s * ni2;
+    return a * a + 32.0 * epsilon * a * d * ni + 16.0 * epsilon * (16.0 * epsilon * d * d + a * dd);
+}
+
+namespace {
+
+/// The phase-field limit of one axis subset (bit d of `axes` set: axis d in
+/// S) for a liquid with gradient direction n, given its Willmore damping.
+double subset_limit_for_direction(const double n[3], int axes, const double inv_h2[3],
+                                  double epsilon, double w2, double tau0, double r,
+                                  double damping) {
+    double sum = 0.0;
+    for (int d = 0; d < 3; ++d)
+        if ((axes >> d) & 1)
+            sum += gradient_energy_hessian_diagonal(n, epsilon, d) * 4.0 * inv_h2[d];
+    const double lam = w2 * sum + 2.0;
+    if (!(lam > damping))
+        return std::numeric_limits<double>::infinity();
+    const double s =
+        n[0] * n[0] * n[0] * n[0] + n[1] * n[1] * n[1] * n[1] + n[2] * n[2] * n[2] * n[2];
+    const double a = 1.0 - 3.0 * epsilon + 4.0 * epsilon * s;
+    return r * tau0 * a * a / (lam - damping);
+}
+
+} // namespace
+
 double phase_field_dt_limit(const SimulationConfig& config) {
     const GridParams& g = config.grid;
     const PhysicsParams& p = config.physics;
-    const double rho7 = 4.0 * (1.0 / (g.dx * g.dx) + 1.0 / (g.dy * g.dy) + 1.0 / (g.dz * g.dz));
+    const double inv_h2[3] = {1.0 / (g.dx * g.dx), 1.0 / (g.dy * g.dy), 1.0 / (g.dz * g.dz)};
     const double w2 = p.W0 * p.W0;
-    const double a_axis = 1.0 + p.epsilon;
+    const double r = explicit_stability_interval(config.time.scheme);
+    const double tau0 = p.tau0();
     const double a_iso = 1.0 - 3.0 * p.epsilon / 5.0;
-    const double lam = w2 * a_axis * a_axis * rho7 + 2.0;
-    const double tau_cb = p.tau0() * a_iso * a_iso;
-    const double b = w2 * rho7 + 2.0;
-    const double damping = p.willmore_beta * b * b;
-    if (damping >= lam)
-        return std::numeric_limits<double>::infinity();
-    return explicit_stability_interval(config.time.scheme) * tau_cb / (lam - damping);
+    const double pi = 3.14159265358979323846;
+    const double degree = pi / 180.0;
+    double limit = std::numeric_limits<double>::infinity();
+    for (int axes = 1; axes < 8; ++axes) {
+        double mu = 0.0;
+        for (int d = 0; d < 3; ++d)
+            if ((axes >> d) & 1)
+                mu += 4.0 * inv_h2[d];
+        const double b = w2 * mu + 2.0;
+        const double damping = p.willmore_beta * b * b;
+        // The uniform liquid: axial face gradients (A = 1 + eps), zero cell
+        // gradients (the kernel's spherical average 1 - 3 eps/5).
+        const double lam_uniform = w2 * (1.0 + p.epsilon) * (1.0 + p.epsilon) * mu + 2.0;
+        if (lam_uniform > damping)
+            limit = std::min(limit, r * tau0 * a_iso * a_iso / (lam_uniform - damping));
+        // A small smooth gradient along n (the octant suffices: H_dd and A
+        // are even in every component).
+        auto at = [&](double theta, double phi) {
+            const double n[3] = {std::sin(theta) * std::cos(phi), std::sin(theta) * std::sin(phi),
+                                 std::cos(theta)};
+            return subset_limit_for_direction(n, axes, inv_h2, p.epsilon, w2, tau0, r, damping);
+        };
+        double best = std::numeric_limits<double>::infinity(), best_theta = 0.0, best_phi = 0.0;
+        auto consider = [&](double theta, double phi) {
+            const double v = at(theta, phi);
+            if (v < best) {
+                best = v;
+                best_theta = theta;
+                best_phi = phi;
+            }
+        };
+        for (int it = 0; it <= 90; ++it)
+            for (int ip = 0; ip <= 90; ++ip)
+                consider(it * degree, ip * degree);
+        consider(std::acos(1.0 / std::sqrt(3.0)), pi / 4.0); // <111>
+        consider(pi / 2.0, pi / 4.0);                        // <110>
+        consider(pi / 4.0, 0.0);                             // <101>
+        consider(pi / 4.0, pi / 2.0);                        // <011>
+        // Refine to the bottom of the best point's basin: move to the best of
+        // the eight neighbours at the current step, or halve the step; stop
+        // below 1e-8 rad, where the value of a smooth minimum changes by a
+        // relative 1e-16, the double-precision rounding.
+        if (std::isfinite(best)) {
+            for (double step = degree; step > 1e-8;) {
+                const double t0 = best_theta, p0 = best_phi;
+                for (int i = -1; i <= 1; ++i)
+                    for (int j = -1; j <= 1; ++j)
+                        if (i != 0 || j != 0)
+                            consider(t0 + i * step, p0 + j * step);
+                if (best_theta == t0 && best_phi == p0)
+                    step *= 0.5;
+            }
+        }
+        limit = std::min(limit, best);
+    }
+    return limit;
 }
 
 } // namespace ac

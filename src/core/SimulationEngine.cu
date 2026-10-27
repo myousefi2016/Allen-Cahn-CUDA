@@ -179,9 +179,17 @@ void SimulationEngine::initialize_from_checkpoint() {
     // A fixed-dt run continues with the configured dt: it is the step the
     // configuration chose and validate() checked, and the output, checkpoint
     // and saturation-check frequencies count steps of it. An adaptive run
-    // continues from the step it had adapted to when the checkpoint was written.
+    // continues from the step it had adapted to when the checkpoint was
+    // written, within the bounds every adaptive step obeys (adapt_time_step):
+    // [dt_min, dt_max], then the stability cap.
     if (config_.time.adaptive) {
-        config_.time.dt = data.dt;
+        config_.time.dt = std::min(std::clamp(data.dt, config_.time.dt_min, config_.time.dt_max),
+                                   adaptive_dt_cap_);
+        if (config_.time.dt != data.dt) {
+            spdlog::warn("The checkpoint was written with dt={:.17g}, outside [dt_min, dt_max] or "
+                         "above the stability cap {:.17g}; continuing with dt={:.17g}",
+                         data.dt, adaptive_dt_cap_, config_.time.dt);
+        }
     } else if (data.dt != config_.time.dt) {
         spdlog::warn("The checkpoint was written with dt={:.6e}; continuing with the configured "
                      "dt={:.6e} (time.adaptive is false)",

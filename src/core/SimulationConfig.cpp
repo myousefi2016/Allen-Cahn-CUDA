@@ -6,9 +6,11 @@
 #include <cmath>
 #include <fstream>
 #include <initializer_list>
+#include <iomanip>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -61,6 +63,13 @@ static void require_object(const json& obj, const std::string& section) {
 /// Throws if `obj` has a key that is neither in `allowed` nor a comment (a key
 /// starting with '_'). A silently ignored key is a setting the user believes
 /// is in effect but is not (a typo, a removed option, a misplaced key).
+/// v with 17 significant digits: two different doubles never print alike.
+static std::string digits17(double v) {
+    std::ostringstream os;
+    os << std::setprecision(17) << v;
+    return os.str();
+}
+
 static void require_known_keys(const json& obj, const std::string& section,
                                std::initializer_list<std::string_view> allowed) {
     require_object(obj, section);
@@ -373,7 +382,9 @@ void SimulationConfig::validate() const {
                                     "cfl_safety times the stability limit");
 
     // Explicit stability limits (docs/THEORY.md 10.1): beyond them a
-    // checkerboard perturbation grows every step, so the run blows up. With
+    // checkerboard perturbation (of the liquid, for the phase field) grows
+    // every step. They are printed with 17 significant digits, so a rejected
+    // dt never shows as equal to its limit. With
     // adaptive stepping the first step uses time.dt and every later step is
     // capped at cfl_safety times the limits; dt_min must not exceed that cap.
     const double thermal_limit = thermal_dt_limit(*this);
@@ -381,19 +392,19 @@ void SimulationConfig::validate() const {
     auto check_step = [&](double dt, const std::string& what, double factor) {
         if (dt > factor * thermal_limit) {
             throw std::invalid_argument(
-                what + " = " + std::to_string(dt) + " exceeds " +
+                what + " = " + digits17(dt) + " exceeds " +
                 (factor < 1.0 ? "cfl_safety times " : "") + "the stability limit " +
-                std::to_string(thermal_limit) + " of the explicit thermal update (dt D rho <= " +
-                std::to_string(explicit_stability_interval(time.scheme)) +
-                ", rho = " + std::to_string(thermal_spectral_radius(*this)) +
+                digits17(thermal_limit) + " of the explicit thermal update (dt D rho <= " +
+                digits17(explicit_stability_interval(time.scheme)) +
+                ", rho = " + digits17(thermal_spectral_radius(*this)) +
                 " for this stencil and spacing; time.scheme \"imex\" treats u implicitly; "
                 "docs/THEORY.md 10.1)");
         }
         if (dt > factor * phi_limit) {
             throw std::invalid_argument(
-                what + " = " + std::to_string(dt) + " exceeds " +
+                what + " = " + digits17(dt) + " exceeds " +
                 (factor < 1.0 ? "cfl_safety times " : "") + "the stability limit " +
-                std::to_string(phi_limit) +
+                digits17(phi_limit) +
                 " of the explicit phase-field update, above which a checkerboard "
                 "perturbation of the liquid grows every step (docs/THEORY.md 10.1)");
         }
