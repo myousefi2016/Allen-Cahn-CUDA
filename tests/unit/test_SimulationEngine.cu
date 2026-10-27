@@ -317,6 +317,55 @@ TEST_F(SimulationEngineTest, RestoreRejectsDifferentGridSpacing) {
     }
 }
 
+// A fixed-dt run continues with its configured dt, whatever dt the checkpoint
+// was written with (a checkpoint of an earlier configuration, or the same run
+// after time.dt was changed): the configured dt is the one validate() checked
+// and the frequencies count. The next checkpoint records the dt that was used.
+TEST_F(SimulationEngineTest, FixedDtRestartUsesTheConfiguredDt) {
+    auto cfg = make_config(8, 15);
+    cfg.checkpoint.frequency = 5;
+    std::filesystem::create_directories(cfg.checkpoint.checkpoint_dir);
+    Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    phi.fill(-1.0);
+    u.fill(-0.8);
+    const auto file = test_dir_ / "earlier.acbin";
+    CheckpointIO::write(file, 10, 0.1, 0.01, grid, phi, u);
+    cfg.checkpoint.restart_file = file;
+    ASSERT_EQ(cfg.time.dt, 0.001);
+
+    SimulationEngine engine(cfg);
+    engine.run();
+    const auto next = CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_15.acbin");
+    double time = 0.1;
+    for (int s = 0; s < 5; ++s)
+        time += 0.001;
+    EXPECT_EQ(next.dt, 0.001);
+    EXPECT_EQ(next.time, time);
+}
+
+// An adaptive run continues from the dt it had adapted to: the first step
+// after the restart uses the checkpoint's dt.
+TEST_F(SimulationEngineTest, AdaptiveRestartContinuesFromTheCheckpointDt) {
+    auto cfg = make_config(8, 11);
+    cfg.time.adaptive = true;
+    cfg.checkpoint.frequency = 11;
+    std::filesystem::create_directories(cfg.checkpoint.checkpoint_dir);
+    Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    phi.fill(-1.0);
+    u.fill(-0.8);
+    const auto file = test_dir_ / "adapted.acbin";
+    CheckpointIO::write(file, 10, 0.1, 0.0005, grid, phi, u);
+    cfg.checkpoint.restart_file = file;
+
+    SimulationEngine engine(cfg);
+    engine.run();
+    const auto next = CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_11.acbin");
+    EXPECT_EQ(next.dt, 0.0005);
+    EXPECT_EQ(next.time, 0.1 + 0.0005);
+}
+
 TEST_F(SimulationEngineTest, ConfigValidationRejectsInvalid) {
     auto cfg = make_config(8, 10);
     cfg.output.format = "invalid_format";

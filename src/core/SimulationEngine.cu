@@ -173,9 +173,20 @@ void SimulationEngine::initialize_from_checkpoint() {
     u_host_ = std::move(data.u);
     start_step_ = data.step;
     start_time_ = data.time;
-    config_.time.dt = data.dt;
+    // A fixed-dt run continues with the configured dt: it is the step the
+    // configuration chose and validate() checked, and the output, checkpoint
+    // and saturation-check frequencies count steps of it. An adaptive run
+    // continues from the step it had adapted to when the checkpoint was written.
+    if (config_.time.adaptive) {
+        config_.time.dt = data.dt;
+    } else if (data.dt != config_.time.dt) {
+        spdlog::warn("The checkpoint was written with dt={:.6e}; continuing with the configured "
+                     "dt={:.6e} (time.adaptive is false)",
+                     data.dt, config_.time.dt);
+    }
 
-    spdlog::info("Restarted from checkpoint: step={}, time={:.4f}", start_step_, start_time_);
+    spdlog::info("Restarted from checkpoint: step={}, time={:.4f}, dt={:.6e}", start_step_,
+                 start_time_, config_.time.dt);
 }
 
 int SimulationEngine::time_loop() {

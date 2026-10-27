@@ -155,7 +155,7 @@ sequenceDiagram
     alt Restart from checkpoint
         Eng->>Mgr: restore()
         Mgr-->>Eng: phi, u, step, time, dt, grid
-        Eng->>Eng: validate dim match config
+        Eng->>Eng: check grid and spacing match config<br/>(fixed dt: configured dt; adaptive: checkpoint dt)
     else Fresh start
         Eng->>Eng: initialize_fields()<br/>(tanh seed)
     end

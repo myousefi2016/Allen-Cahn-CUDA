@@ -563,7 +563,12 @@ concatenated field bytes; the table is generated once in
 grid spacing, the exact file size and the CRC32 if present.
 `SimulationEngine::initialize_from_checkpoint` additionally rejects a
 checkpoint whose grid dimensions or spacing differ from the current
-config, and one holding a non-finite value. A restart is requested iff
+config, and one holding a non-finite value. It restores step and time; a
+fixed-dt run (`time.adaptive` false) continues with the configured dt,
+with a warning if the checkpoint was written with another one (the
+configured dt is the one `validate()` checked and the step-counted
+frequencies assume), and an adaptive run continues from the checkpoint's
+dt. A restart is requested iff
 `checkpoint.restart_file` is set; if that file does not exist the run
 fails (`CheckpointManager::restore`) instead of cold-starting, which
 would otherwise overwrite and rotate away the real checkpoints.

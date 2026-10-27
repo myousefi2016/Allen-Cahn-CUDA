@@ -708,7 +708,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; engine run |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states |
-| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt, short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks |
+| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt, short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks, dt after a restart |
 | `test_VTKWriter.cpp`          | Async and synchronous writes, raw / VTS output, VTS topology, write failures reported (never a published broken file), statistics cache |
 
 ### Integration tests (`tests/integration/`, 8 files)
