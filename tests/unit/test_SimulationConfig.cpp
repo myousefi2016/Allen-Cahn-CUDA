@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <initializer_list>
+#include <limits>
 #include <string>
 
 using namespace ac;
@@ -352,4 +353,28 @@ TEST_F(SimulationConfigTest, ParsesWillmoreBeta) {
         R"({"physics": {"epsilon": 0.12, "willmore_beta": 1.5}, "time": {"scheme": "euler"}})");
     EXPECT_DOUBLE_EQ(cfg.physics.willmore_beta, 1.5);
     EXPECT_DOUBLE_EQ(cfg.physics.epsilon, 0.12);
+}
+
+// Each Willmore rule rejects on its own, with its own message: a negative (or
+// NaN) willmore_beta at an epsilon where the epsilon rule cannot fire,
+// epsilon > 1/15 without willmore_beta, and willmore_beta > 0 with a fully
+// explicit scheme.
+TEST_F(SimulationConfigTest, EachWillmoreRuleRejectsOnItsOwn) {
+    expect_rejected(R"({"physics": {"epsilon": 0.05, "willmore_beta": -0.5}})",
+                    {"willmore_beta must be >= 0"});
+    SimulationConfig nan_beta;
+    nan_beta.physics.epsilon = 0.05;
+    nan_beta.physics.willmore_beta = std::numeric_limits<double>::quiet_NaN();
+    try {
+        nan_beta.validate();
+        ADD_FAILURE() << "NaN willmore_beta accepted";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_NE(std::string(e.what()).find("willmore_beta must be >= 0"), std::string::npos)
+            << e.what();
+    }
+    expect_rejected(R"({"physics": {"epsilon": 0.12}})", {"exceeds 1/15", "willmore_beta"});
+    for (const char* scheme : {"heun", "rk4"})
+        expect_rejected(std::string(R"({"physics": {"epsilon": 0.05, "willmore_beta": 1.0}, )") +
+                            R"("time": {"scheme": ")" + scheme + R"("}})",
+                        {"requires time.scheme"});
 }

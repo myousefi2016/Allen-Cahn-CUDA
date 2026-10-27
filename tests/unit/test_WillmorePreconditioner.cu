@@ -403,11 +403,15 @@ TEST_F(WillmorePreconditionerTest, SpectrumBoundsContainEveryEigenvalue) {
 // is no gap between a recursively updated and the true residual, and for a
 // real spectrum the recurrence multiplies earlier local errors by factors of
 // modulus below 1 (Gutknecht & Roellin, Parallel Comput. 28 (2002) 263-283,
-// Algorithm 2 and Theorem 2). Each of the k steps therefore adds at most its
-// own rounding, which for the D-scaled operator is at most (b/a) u_32 relative
-// (the explicit residual cancels to that level): k (b/a) u_32 bounds the
-// difference. An implementation error (a wrong ghost rule, coefficient or
-// stencil) shows as O(1).
+// Algorithm 2 and Theorem 2). Each of the k steps therefore contributes its
+// own rounding once; its leading part is the cancellation in the explicit
+// residual, a relative (b/a) u_32 for the D-scaled operator. k (b/a) u_32 is
+// that first-order size of the accumulated difference. It leaves out the
+// number of roundings per step, so it is a tolerance, not a proven bound: the
+// measured differences (printed, 6e-8 to 1e-7) lie more than 100 times below
+// it, and an implementation error (a wrong ghost rule, coefficient, stencil or
+// step size) shows as O(1). The solve uses a dt other than the
+// configuration's, as adaptive stepping does.
 TEST_F(WillmorePreconditionerTest, SinglePrecisionMatchesExactPolynomial) {
     for (const Case& cs : spectrum_cases()) {
         SCOPED_TRACE(cs.name);
@@ -417,12 +421,15 @@ TEST_F(WillmorePreconditionerTest, SinglePrecisionMatchesExactPolynomial) {
         random_state(phi, u, 11);
         CudaSolver solver(cfg);
         solver.initialize(phi, u);
-        solver.mutable_params().dt = cfg.time.dt;
+        // A step size other than the configuration's: the single-precision
+        // operator must use the step's own dt (tau/dt), as A does.
+        const double dt = cfg.time.dt / 4.0;
+        solver.mutable_params().dt = dt;
         solver.willmore_omega();
         solver.willmore_rhs_init();
         const auto [tau_min, tau_max] = solver.willmore_tau_range();
         const WillmoreSpectrum sp =
-            willmore_spectrum(cfg, cfg.boundary.phi_faces, cfg.time.dt, tau_min, tau_max);
+            willmore_spectrum(cfg, cfg.boundary.phi_faces, dt, tau_min, tau_max);
         const ChebyshevPlan plan = chebyshev_plan(sp, kWillmoreCgTolerance);
         const std::vector<double> tau = solver.willmore_download(V::Tau);
         const std::vector<int> cells = interior_cells(cfg);
@@ -440,7 +447,7 @@ TEST_F(WillmorePreconditionerTest, SinglePrecisionMatchesExactPolynomial) {
             rv[static_cast<std::size_t>(i)] = r[c];
             rr += r[c] * r[c];
             Dinv[static_cast<std::size_t>(i)] =
-                1.0 / (tau[c] / cfg.time.dt + cfg.physics.willmore_beta * sp.d_L);
+                1.0 / (tau[c] / dt + cfg.physics.willmore_beta * sp.d_L);
         }
         solver.willmore_upload(V::R, r);
         apply_willmore_preconditioner({WillmoreDomain{&solver, 0, 1, cfg.grid.Nx - 1, 1}}, plan, rr,
@@ -577,10 +584,13 @@ TEST_F(WillmorePreconditionerTest, TrueResidualMeetsTheTolerance) {
 }
 
 // The bounds and the polynomial depend on dt, which adaptive stepping changes
-// from step to step: every solve must rebuild them for its own dt (a plan
-// kept from an earlier step would be a polynomial for another operator).
-// Consecutive steps with dt = 0.004, 0.001, 0.004 use exactly the degree
-// chebyshev_plan gives for their dt and the tau range of their own state.
+// from step to step, and on the tau range of the state: every solve must
+// rebuild them for its own dt and state (a plan kept from an earlier step
+// would be a polynomial for another operator). Consecutive steps with
+// dt = 0.004, 0.001, 0.004 report exactly the minimum and maximum of tau over
+// the interior cells of the state each step starts from (computed here on the
+// host from the downloaded tau), and the degree and bounds chebyshev_plan
+// gives for that range and their dt.
 TEST_F(WillmorePreconditionerTest, EveryStepUsesThePlanOfItsOwnTimeStep) {
     const SimulationConfig cfg =
         small_config(7, 6, 8, PerFaceBoundary::uniform(bc_of(BCType::Neumann)));
@@ -589,15 +599,29 @@ TEST_F(WillmorePreconditionerTest, EveryStepUsesThePlanOfItsOwnTimeStep) {
     random_state(phi, u, 9);
     CudaSolver solver(cfg);
     solver.initialize(phi, u);
+    const std::vector<int> cells = interior_cells(cfg);
     int previous_degree = 0;
     for (double dt : {0.004, 0.001, 0.004}) {
+        // tau of the state this step starts from (the step recomputes it).
+        solver.mutable_params().dt = dt;
+        solver.willmore_omega();
+        solver.willmore_rhs_init();
+        const std::vector<double> tau = solver.willmore_download(V::Tau);
+        double tau_min = std::numeric_limits<double>::infinity(), tau_max = 0.0;
+        for (int c : cells) {
+            tau_min = std::min(tau_min, tau[static_cast<std::size_t>(c)]);
+            tau_max = std::max(tau_max, tau[static_cast<std::size_t>(c)]);
+        }
         solver.step(dt);
         const WillmoreSolveStats& st = solver.last_willmore_stats();
+        EXPECT_EQ(st.tau_min, tau_min) << "dt=" << dt;
+        EXPECT_EQ(st.tau_max, tau_max) << "dt=" << dt;
         const WillmoreSpectrum expected =
-            willmore_spectrum(cfg, cfg.boundary.phi_faces, dt, st.tau_min, st.tau_max);
+            willmore_spectrum(cfg, cfg.boundary.phi_faces, dt, tau_min, tau_max);
         EXPECT_EQ(st.chebyshev_degree, chebyshev_plan(expected, kWillmoreCgTolerance).degree)
             << "dt=" << dt;
-        EXPECT_DOUBLE_EQ(st.spectrum.b, expected.b) << "dt=" << dt;
+        EXPECT_EQ(st.spectrum.a, expected.a) << "dt=" << dt;
+        EXPECT_EQ(st.spectrum.b, expected.b) << "dt=" << dt;
         EXPECT_NE(st.chebyshev_degree, previous_degree) << "dt=" << dt;
         previous_degree = st.chebyshev_degree;
     }

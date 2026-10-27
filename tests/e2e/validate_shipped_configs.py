@@ -7,8 +7,13 @@ Runs `allen-cahn-cuda --validate-config FILE` (no GPU needed) on:
     payload patched into it by k8s/overlays/*/kustomization.yaml
   * the config/run_vtk.json that `make cuda-run-vtk` writes (printf in Makefile)
   * every ```json example in README.md and docs/*.md
-and, as a control, requires a copy of config/default.json with one misspelled
-key to be REJECTED (so a validator that accepts anything cannot pass).
+and, as controls, requires these copies of shipped configurations to be
+REJECTED, each with its own message: one with a misspelled key (rejected by
+the parser), and four that parse but break a rule of SimulationConfig::validate()
+(epsilon > 1/15 without willmore_beta, willmore_beta with a fully explicit
+scheme, a negative willmore_beta, a periodic face opposite a non-periodic one).
+So neither a validator that accepts anything nor a loader that parses without
+validating can pass.
 
 Usage: validate_shipped_configs.py BINARY REPO_ROOT   (exit 0 = all valid)
 """
@@ -82,14 +87,53 @@ def main() -> int:
             if not ok:
                 print("     " + (out.stdout + out.stderr).strip().replace("\n", "\n     "))
 
-        control = json.loads((root / "config/default.json").read_text())
-        control["physics"]["epsilom"] = control["physics"].pop("epsilon")
-        out = validate("control", json.dumps(control))
-        if out.returncode == 0:
-            print("FAIL control: a config with the misspelled key 'epsilom' was accepted")
-            failures += 1
-        else:
-            print("ok   control: misspelled key rejected")
+        def mutated(name, change):
+            cfg = json.loads((root / "config" / name).read_text())
+            change(cfg)
+            return json.dumps(cfg)
+
+        def misspell(cfg):
+            cfg["physics"]["epsilom"] = cfg["physics"].pop("epsilon")
+
+        def no_beta(cfg):
+            del cfg["physics"]["willmore_beta"]
+
+        def heun(cfg):
+            cfg["time"]["scheme"] = "heun"
+
+        def negative_beta(cfg):
+            cfg["physics"]["epsilon"] = 0.05
+            cfg["physics"]["willmore_beta"] = -0.5
+
+        def one_sided_periodic(cfg):
+            faces = {f: {"type": "neumann", "flux": 0.0}
+                     for f in ("x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi")}
+            faces["x_lo"] = {"type": "periodic"}
+            cfg["boundary"]["phi"] = faces
+
+        controls = [
+            ("misspelled key 'epsilom'", mutated("default.json", misspell), "epsilom"),
+            ("eps > 1/15 without willmore_beta", mutated("run_dendrite.json", no_beta),
+             "exceeds 1/15"),
+            ("willmore_beta with scheme heun", mutated("run_dendrite.json", heun),
+             "requires time.scheme"),
+            ("negative willmore_beta", mutated("default.json", negative_beta),
+             "willmore_beta must be >= 0"),
+            ("periodic x_lo opposite a non-periodic x_hi",
+             mutated("run_dendrite.json", one_sided_periodic), "periodic BC must be set on both faces"),
+        ]
+        for what, text, needle in controls:
+            out = validate("control", text)
+            message = out.stdout + out.stderr
+            if out.returncode == 0:
+                print(f"FAIL control: {what}: accepted")
+                failures += 1
+            elif needle not in message:
+                print(f"FAIL control: {what}: rejected without \"{needle}\"")
+                print("     " + message.strip().replace("\n", "\n     "))
+                failures += 1
+            else:
+                print(f"ok   control: {what}: rejected")
 
     print(f"{len(cases)} shipped configurations, {failures} failure(s)")
     return 1 if failures else 0

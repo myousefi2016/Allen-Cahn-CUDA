@@ -19,12 +19,15 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-SimulationConfig periodic_config(int N, double h, double beta, double dt) {
+SimulationConfig periodic_config(int N, double h, double beta, double dt, double W0 = 1.0,
+                                 double dy = 0.0, double dz = 0.0) {
     SimulationConfig cfg;
     cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = N;
-    cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = h;
+    cfg.grid.dx = h;
+    cfg.grid.dy = dy > 0.0 ? dy : h;
+    cfg.grid.dz = dz > 0.0 ? dz : h;
     cfg.physics.epsilon = 0.0;
-    cfg.physics.W0 = 1.0;
+    cfg.physics.W0 = W0;
     cfg.physics.willmore_beta = beta;
     cfg.time.dt = dt;
     cfg.time.scheme = TimeScheme::Euler;
@@ -49,15 +52,17 @@ protected:
 // Linearised about the liquid bulk phi = -1 with u = 0 and eps = 0, one
 // Willmore step multiplies a Fourier mode of amplitude a by
 //   g = 1 + dt (-W0^2 s - 2 - beta L) / (tau0 + dt beta L),
-//   s = sum_d (4/h^2) sin^2(k_d h / 2)  (7-point symbol),
-//   L = W0^4 s^2 + 4 W0^2 s + 4          (symbol of the implicit operator,
-//                                          which equals M's linearisation here).
+//   s = sum_d (4/h_d^2) sin^2(k_d h_d / 2)  (7-point symbol),
+//   L = W0^4 s^2 + 4 W0^2 s + 4              (symbol of the implicit operator,
+//                                              which equals M's linearisation here).
 // This checks omega, M, the implicit operator, the CG solve and the update
 // against an independent formula; the near-Nyquist mode also shows the step
-// is stable where explicit Euler is not (explicit factor < -100).
+// is stable where explicit Euler is not (explicit factor < -100). W0 != 1 and
+// a different spacing on each axis make every power of W0 and every axis's
+// 1/h_d^2 visible (tau0 = a1 a2 W0^3 / (d0 D) is taken from the config).
 TEST_F(WillmoreTest, LinearisedAmplificationMatchesAnalyticSymbol) {
     const int N = 18, P = N - 2; // periodic ring of P interior cells
-    const double h = 0.5, beta = 1.5, amp = 1e-4;
+    const double h[3] = {0.5, 0.42, 0.61}, W0 = 1.3, beta = 1.5, amp = 1e-4;
     struct Mode {
         int m[3];
         double dt;
@@ -67,7 +72,7 @@ TEST_F(WillmoreTest, LinearisedAmplificationMatchesAnalyticSymbol) {
     for (const auto& mode : modes) {
         SCOPED_TRACE("mode " + std::to_string(mode.m[0]) + "," + std::to_string(mode.m[1]) + "," +
                      std::to_string(mode.m[2]));
-        auto cfg = periodic_config(N, h, beta, mode.dt);
+        auto cfg = periodic_config(N, h[0], beta, mode.dt, W0, h[1], h[2]);
         Grid grid = cfg.make_grid();
         FieldData phi(grid, "phi"), u(grid, "u");
         auto shape = [&](int x, int y, int z) {
@@ -97,9 +102,9 @@ TEST_F(WillmoreTest, LinearisedAmplificationMatchesAnalyticSymbol) {
         double s = 0.0;
         for (int d = 0; d < 3; ++d) {
             const double sn = std::sin(kPi * mode.m[d] / P);
-            s += 4.0 / (h * h) * sn * sn;
+            s += 4.0 / (h[d] * h[d]) * sn * sn;
         }
-        const double W2 = 1.0, L = W2 * W2 * s * s + 4.0 * W2 * s + 4.0;
+        const double W2 = W0 * W0, L = W2 * W2 * s * s + 4.0 * W2 * s + 4.0;
         const double tau0 = cfg.physics.tau0();
         const double g = 1.0 + mode.dt * (-W2 * s - 2.0 - beta * L) / (tau0 + mode.dt * beta * L);
         const double g_explicit = 1.0 + mode.dt * (-W2 * s - 2.0 - beta * L) / tau0;
@@ -167,6 +172,70 @@ TEST_F(WillmoreTest, VanishingBetaReducesToExplicitEuler) {
 
 // The fourth-order term is only integrated by the Euler / IMEX phase-field
 // update; the explicit multi-stage schemes must refuse it.
+// The Willmore right-hand side takes omega's boundary cells from the
+// homogeneous form of phi's boundary conditions: the discrete energy
+// (beta/2)|omega_h|^2, omega_h = W0^2 (lap_0 phi + c) + h(phi) with lap_0 the
+// Laplacian under the homogeneous ghost rule and c the walls' constant part,
+// has the gradient beta (W0^2 lap_0 omega + h'(phi) omega). The two rules
+// differ only on inhomogeneous walls. phi = -1, u = 0 is an exact equilibrium
+// of every term (h(-1) = 0, (1 - phi^2)^2 = 0, omega = 0) inside walls whose
+// rule holds phi = -1: Dirichlet -1, and Robin alpha phi + beta dphi/dn =
+// gamma with gamma = -alpha (ghost (gamma - beta/h)/(alpha + beta/h) = -1
+// exactly). So every step must leave phi exactly -1. The inhomogeneous rule
+// on omega would put omega = -1 (Dirichlet) or gamma/(alpha + beta/h)
+// (Robin) into the ghost cells and a source next to every wall.
+TEST_F(WillmoreTest, UniformLiquidInsideInhomogeneousWallsStaysExact) {
+    auto bc = [](BCType type, double value, double alpha, double beta, double gamma) {
+        BoundaryConfig b;
+        b.type = type;
+        b.value = value;
+        b.alpha = alpha;
+        b.beta = beta;
+        b.gamma = gamma;
+        return b;
+    };
+    const BoundaryConfig dirichlet = bc(BCType::Dirichlet, -1.0, 0.0, 0.0, 0.0),
+                         robin_a = bc(BCType::Robin, 0.0, 1.0, 0.5, -1.0),
+                         robin_b = bc(BCType::Robin, 0.0, 2.0, 0.3, -2.0);
+    for (TimeScheme scheme : {TimeScheme::Euler, TimeScheme::IMEX}) {
+        SCOPED_TRACE(scheme == TimeScheme::Euler ? "euler" : "imex");
+        SimulationConfig cfg;
+        cfg.grid.Nx = 8;
+        cfg.grid.Ny = 7;
+        cfg.grid.Nz = 9;
+        cfg.grid.dx = 0.4;
+        cfg.grid.dy = 0.5;
+        cfg.grid.dz = 0.3;
+        cfg.physics.epsilon = 0.12;
+        cfg.physics.W0 = 1.3;
+        cfg.physics.willmore_beta = 1.0;
+        cfg.time.dt = 0.005;
+        cfg.time.scheme = scheme;
+        cfg.stencil = StencilType::Standard7Point;
+        cfg.boundary.per_face = true;
+        cfg.boundary.phi_faces.faces = {dirichlet, dirichlet, robin_a, robin_a, dirichlet, robin_b};
+        BoundaryConfig zero_flux;
+        zero_flux.type = BCType::Neumann;
+        cfg.boundary.u_faces = PerFaceBoundary::uniform(zero_flux);
+        cfg.validate();
+        const Grid grid = cfg.make_grid();
+        FieldData phi(grid, "phi"), u(grid, "u");
+        for (std::size_t i = 0; i < phi.size(); ++i) {
+            phi.data()[i] = -1.0;
+            u.data()[i] = 0.0;
+        }
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        for (int s = 0; s < 3; ++s)
+            solver.step(cfg.time.dt);
+        solver.copy_phi_to_host(phi);
+        int changed = 0;
+        for (std::size_t i = 0; i < phi.size(); ++i)
+            changed += phi.data()[i] != -1.0;
+        EXPECT_EQ(changed, 0);
+    }
+}
+
 TEST_F(WillmoreTest, RequiresEulerOrImex) {
     for (TimeScheme s : {TimeScheme::Heun, TimeScheme::RK4}) {
         auto cfg = periodic_config(8, 0.5, 1.0, 0.01);

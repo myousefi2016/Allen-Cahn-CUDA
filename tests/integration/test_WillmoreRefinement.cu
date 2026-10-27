@@ -109,12 +109,15 @@ protected:
 } // namespace
 
 // At eps = 0.12 > 1/15 the gradient energy is not convex and the Allen-Cahn
-// equation is ill-posed (docs/THEORY.md section 4.3): halving h moves phi
-// further than the previous halving did, so the differences between
-// successive levels grow (ratio d(0.8, 0.4) / d(0.4, 0.2) below 1). With the
+// equation is ill-posed (docs/THEORY.md section 4.3): refinement does not
+// converge, and the mean difference between successive levels grows
+// (ratio d(0.8, 0.4) / d(0.4, 0.2) of the mean |.| below 1). With the
 // Willmore term at the shipped strength for this eps (beta = 0.25, corner
-// length 0.528 W0) the same ladder converges: the differences shrink (ratio
-// above 1). The ratio 1 is the boundary between the two behaviours.
+// length 0.528 W0) the ladder converges by the criterion of section 4.3: a
+// ratio above 2 in both norms, i.e. each halving of h removes more than half
+// of the difference. The unregularised max-norm ratio is not asserted: on the
+// common nodes it depends on where the grid-scale structure falls (0.889
+// here, 2.61 in the larger box of section 4.3).
 // Both differences are taken on the interior nodes of the h = 0.8 grid.
 // Measured on an RTX 4090: unregularised 0.889 (max norm) and 0.406 (mean),
 // regularised 3.56 and 3.90.
@@ -131,10 +134,9 @@ TEST_F(WillmoreRefinementTest, RegularisedConvergesUnregularisedDoesNot) {
                     "(ratio %.3f)\n",
                     beta, d1.max_norm, d2.max_norm, r_max, d1.mean_abs, d2.mean_abs, r_mean);
         if (beta > 0.0) {
-            EXPECT_GT(r_max, 1.0);
-            EXPECT_GT(r_mean, 1.0);
+            EXPECT_GT(r_max, 2.0);
+            EXPECT_GT(r_mean, 2.0);
         } else {
-            EXPECT_LT(r_max, 1.0);
             EXPECT_LT(r_mean, 1.0);
         }
     }
