@@ -545,12 +545,15 @@ configurations, not to the compiled-in values.
 | `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (0 when omitted); > 0 requires `time.scheme` `"euler"` or `"imex"` |
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
 | `boundary.*.type`     | `"dirichlet"`, `"neumann"`, `"periodic"` (on both faces of an axis), `"robin"` |
-| `boundary.*` robin    | `alpha·u + beta·∂u/∂n = gamma`: `alpha`, `beta` not both zero and not of opposite signs (`docs/THEORY.md` §9.1) |
+| `boundary.*` robin    | `alpha·u + beta·∂u/∂n = gamma`: `alpha`, `beta` not both zero and not of opposite signs, `gamma/(alpha + beta/h)` within the double range (`docs/THEORY.md` §9.1) |
 | `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary) |
 | `output.async_io`     | `true`: write snapshots in the background; `false`: each output step waits until its file is on disk |
 
 Unknown keys are errors (keys starting with `_` are comments), so a typo
-cannot silently fall back to a default. Check a file without a GPU:
+cannot silently fall back to a default, and an integer field (`Nx`,
+`max_steps`, a frequency, `keep_last`, a device id) takes only a JSON
+integer in the range of `int`: `64.5`, `1e2` or `true` is an error, not a
+conversion. Check a file without a GPU:
 
 ```bash
 ./build/release/src/allen-cahn-cuda --validate-config config/run_dendrite.json
@@ -725,7 +728,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_Grid.cpp`               | Grid construction, indexing, spacing, validity checks                            |
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
 | `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the gradient energy's Hessian diagonal, the phase-field limit over the axis subsets and gradient directions), `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap |
-| `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters), defaults, derived quantities |
+| `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, integer fields only ints in the range of `int`, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters), defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
 | `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32, exact file size (trailing or missing bytes rejected, long axes accepted, overflowing headers rejected) |
@@ -768,7 +771,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | File              | What it covers                                                                  |
 |-------------------|----------------------------------------------------------------------------------|
 | `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at |
-| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config`; a misspelled key and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs) are rejected; the runs from the repository root use their own output and checkpoint directories |
+| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config`; a misspelled key, integer fields that are not ints (64.5 cells, 4294967297 steps) and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs, `saturation_check_freq` 0) are rejected; the runs from the repository root use their own output and checkpoint directories |
 
 ### Run a single test
 

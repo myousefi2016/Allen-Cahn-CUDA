@@ -111,6 +111,25 @@ static void require_known_keys(const json& obj, const std::string& section,
     }
 }
 
+/// The int at j, which must be a JSON integer (no fraction or exponent, not a
+/// boolean or string) in the range of int. nlohmann's get<int>() converts
+/// without a check: 3.9 became 3, 4294967300 became 4 and true became 1.
+static int read_int(const json& j, const std::string& key) {
+    constexpr int lo = std::numeric_limits<int>::min(), hi = std::numeric_limits<int>::max();
+    if (j.is_number_unsigned()) {
+        const auto v = j.get<json::number_unsigned_t>();
+        if (v <= static_cast<json::number_unsigned_t>(hi))
+            return static_cast<int>(v);
+    } else if (j.is_number_integer()) {
+        const auto v = j.get<json::number_integer_t>();
+        if (v >= lo && v <= hi)
+            return static_cast<int>(v);
+    }
+    throw std::invalid_argument("config: " + key + " must be an integer from " +
+                                std::to_string(lo) + " to " + std::to_string(hi) + ", got " +
+                                j.dump());
+}
+
 static BoundaryConfig parse_boundary_config(const json& j, const std::string& section) {
     require_known_keys(j, section, {"type", "value", "flux", "alpha", "beta", "gamma"});
     BoundaryConfig bc;
@@ -199,11 +218,11 @@ static SimulationConfig parse_config(const json& j) {
         const auto& g = j["grid"];
         require_known_keys(g, "grid", {"Nx", "Ny", "Nz", "dx", "dy", "dz"});
         if (g.contains("Nx"))
-            cfg.grid.Nx = g["Nx"].get<int>();
+            cfg.grid.Nx = read_int(g["Nx"], "grid.Nx");
         if (g.contains("Ny"))
-            cfg.grid.Ny = g["Ny"].get<int>();
+            cfg.grid.Ny = read_int(g["Ny"], "grid.Ny");
         if (g.contains("Nz"))
-            cfg.grid.Nz = g["Nz"].get<int>();
+            cfg.grid.Nz = read_int(g["Nz"], "grid.Nz");
         if (g.contains("dx"))
             cfg.grid.dx = g["dx"].get<Real>();
         if (g.contains("dy"))
@@ -226,7 +245,7 @@ static SimulationConfig parse_config(const json& j) {
         if (t.contains("dt_max"))
             cfg.time.dt_max = t["dt_max"].get<Real>();
         if (t.contains("max_steps"))
-            cfg.time.max_steps = t["max_steps"].get<int>();
+            cfg.time.max_steps = read_int(t["max_steps"], "time.max_steps");
         if (t.contains("scheme"))
             cfg.time.scheme = parse_time_scheme(t["scheme"].get<std::string>());
         if (t.contains("adaptive"))
@@ -240,7 +259,8 @@ static SimulationConfig parse_config(const json& j) {
         if (t.contains("saturation_threshold"))
             cfg.time.saturation_threshold = t["saturation_threshold"].get<Real>();
         if (t.contains("saturation_check_freq"))
-            cfg.time.saturation_check_freq = t["saturation_check_freq"].get<int>();
+            cfg.time.saturation_check_freq =
+                read_int(t["saturation_check_freq"], "time.saturation_check_freq");
     }
 
     // Stencil
@@ -253,7 +273,7 @@ static SimulationConfig parse_config(const json& j) {
         const auto& o = j["output"];
         require_known_keys(o, "output", {"frequency", "output_dir", "format", "async_io"});
         if (o.contains("frequency"))
-            cfg.output.frequency = o["frequency"].get<int>();
+            cfg.output.frequency = read_int(o["frequency"], "output.frequency");
         if (o.contains("output_dir"))
             cfg.output.output_dir = o["output_dir"].get<std::string>();
         if (o.contains("format"))
@@ -268,11 +288,11 @@ static SimulationConfig parse_config(const json& j) {
         require_known_keys(c, "checkpoint",
                            {"frequency", "checkpoint_dir", "keep_last", "restart_file"});
         if (c.contains("frequency"))
-            cfg.checkpoint.frequency = c["frequency"].get<int>();
+            cfg.checkpoint.frequency = read_int(c["frequency"], "checkpoint.frequency");
         if (c.contains("checkpoint_dir"))
             cfg.checkpoint.checkpoint_dir = c["checkpoint_dir"].get<std::string>();
         if (c.contains("keep_last"))
-            cfg.checkpoint.keep_last = c["keep_last"].get<int>();
+            cfg.checkpoint.keep_last = read_int(c["keep_last"], "checkpoint.keep_last");
         if (c.contains("restart_file"))
             cfg.checkpoint.restart_file = c["restart_file"].get<std::string>();
     }
@@ -281,8 +301,16 @@ static SimulationConfig parse_config(const json& j) {
     if (j.contains("gpu")) {
         const auto& g = j["gpu"];
         require_known_keys(g, "gpu", {"device_ids", "multi_gpu"});
-        if (g.contains("device_ids"))
-            cfg.gpu.device_ids = g["device_ids"].get<std::vector<int>>();
+        if (g.contains("device_ids")) {
+            const auto& ids = g["device_ids"];
+            if (!ids.is_array())
+                throw std::invalid_argument(
+                    "config: gpu.device_ids must be an array of integers, got " + ids.dump());
+            cfg.gpu.device_ids.clear();
+            for (std::size_t i = 0; i < ids.size(); ++i)
+                cfg.gpu.device_ids.push_back(
+                    read_int(ids[i], "gpu.device_ids[" + std::to_string(i) + "]"));
+        }
         if (g.contains("multi_gpu"))
             cfg.gpu.multi_gpu = g["multi_gpu"].get<bool>();
     }
@@ -391,6 +419,8 @@ void SimulationConfig::validate() const {
         throw std::invalid_argument("dt must be positive");
     if (time.max_steps < 1)
         throw std::invalid_argument("max_steps must be >= 1");
+    if (time.saturation_check_freq < 1)
+        throw std::invalid_argument("saturation_check_freq must be >= 1");
     if (time.dt_min <= 0.0)
         throw std::invalid_argument("dt_min must be positive");
     if (time.dt_max <= 0.0)
@@ -562,6 +592,10 @@ void SimulationConfig::validate() const {
     // GPU
     if (gpu.device_ids.empty())
         throw std::invalid_argument("At least one GPU device required");
+    for (const int id : gpu.device_ids) {
+        if (id < 0)
+            throw std::invalid_argument("gpu.device_ids must be >= 0, got " + std::to_string(id));
+    }
 
     spdlog::info("Configuration validated: {}x{}x{} grid, dt={}, {} scheme, {} stencil", grid.Nx,
                  grid.Ny, grid.Nz, time.dt,

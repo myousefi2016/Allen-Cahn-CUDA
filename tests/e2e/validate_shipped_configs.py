@@ -8,11 +8,13 @@ Runs `allen-cahn-cuda --validate-config FILE` (no GPU needed) on:
   * the config/run_vtk.json that `make cuda-run-vtk` writes (printf in Makefile)
   * every ```json example in README.md and docs/*.md
 and, as controls, requires these copies of shipped configurations to be
-REJECTED, each with its own message: one with a misspelled key (rejected by
-the parser), and five that parse but break a rule of SimulationConfig::validate()
-(epsilon > 1/15 without willmore_beta, willmore_beta with a fully explicit
-scheme, a negative willmore_beta, a periodic face opposite a non-periodic one,
-a Robin face whose alpha and beta have opposite signs).
+REJECTED, each with its own message: one with a misspelled key and two with
+an integer field that is not an int (64.5 cells; 4294967297 steps, which the
+old parser wrapped to 1), rejected by the parser, and six that parse but
+break a rule of SimulationConfig::validate() (epsilon > 1/15 without
+willmore_beta, willmore_beta with a fully explicit scheme, a negative
+willmore_beta, a periodic face opposite a non-periodic one, a Robin face
+whose alpha and beta have opposite signs, a saturation_check_freq of 0).
 So neither a validator that accepts anything nor a loader that parses without
 validating can pass.
 
@@ -135,6 +137,15 @@ def main() -> int:
         def robin_opposite_signs(cfg):
             cfg["boundary"]["u"] = {"type": "robin", "alpha": -1.1, "beta": 0.4, "gamma": 0.0}
 
+        def fractional_cells(cfg):
+            cfg["grid"]["Nx"] = 64.5
+
+        def steps_beyond_int(cfg):
+            cfg["time"]["max_steps"] = 4294967297
+
+        def no_saturation_interval(cfg):
+            cfg["time"]["saturation_check_freq"] = 0
+
         controls = [
             ("misspelled key 'epsilom'", mutated("default.json", misspell), "epsilom"),
             ("eps > 1/15 without willmore_beta", mutated("run_dendrite.json", no_beta),
@@ -147,6 +158,12 @@ def main() -> int:
              mutated("run_dendrite.json", one_sided_periodic), "periodic BC must be set on both faces"),
             ("Robin u with alpha < 0 < beta", mutated("default.json", robin_opposite_signs),
              "must not have opposite signs"),
+            ("grid.Nx 64.5", mutated("default.json", fractional_cells),
+             "grid.Nx must be an integer"),
+            ("time.max_steps 4294967297", mutated("default.json", steps_beyond_int),
+             "time.max_steps must be an integer"),
+            ("saturation_check_freq 0", mutated("default.json", no_saturation_interval),
+             "saturation_check_freq must be >= 1"),
         ]
         for what, text, needle in controls:
             out = validate("control", text)

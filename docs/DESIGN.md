@@ -307,13 +307,17 @@ outside (0, 1]. The engine computes the cap once, in its constructor.
 The validator also rejects:
 - `time.adaptive_tolerance <= 0` when `time.adaptive == true`.
 - `output.format` other than `"vts"` or `"raw"`.
-- `checkpoint.keep_last < 1`, an empty `checkpoint.restart_file`,
+- `checkpoint.keep_last < 1`, `time.saturation_check_freq < 1`, a negative
+  entry of `gpu.device_ids`, an empty `checkpoint.restart_file`,
   `initial.seed_radius <= 0`, `epsilon` outside `[0, 1/3)`, etc.
 - more than 2^31 − 1 grid points (kernels index cells with 32-bit `int`).
 
 The parser (`parse_config`) is strict: an unknown key in any section is an
 error that names the key and the allowed ones (keys starting with `_` are
-comments), a section that is not a JSON object is an error, and a per-face
+comments), a section that is not a JSON object is an error, an integer
+field (grid dimensions, step counts and intervals, `keep_last`, device ids)
+takes only a JSON integer in the range of `int` (a fraction, an exponent, a
+boolean or a string is an error, not a conversion), and a per-face
 `boundary.phi` / `boundary.u` (any of `x_lo` … `z_hi` present) must name all
 six faces and nothing else. `allen-cahn-cuda --validate-config FILE` runs the
 parser and validator without touching the GPU; the ctest

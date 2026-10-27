@@ -205,7 +205,7 @@ int SimulationEngine::time_loop() {
     double time = start_time_;
     int max_steps = config_.time.max_steps;
     const bool sat_guard = config_.time.exit_on_saturation;
-    const int sat_freq = std::max(1, config_.time.saturation_check_freq);
+    const int sat_freq = config_.time.saturation_check_freq; // >= 1 (validate)
 
     int last_step = start_step_;
     for (int step = start_step_ + 1; step <= max_steps; ++step) {

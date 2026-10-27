@@ -245,6 +245,55 @@ std::string all_faces(const std::string& extra = "") {
 
 } // namespace
 
+// Every integer field takes only a JSON integer in the range of int. The
+// parser used get<int>(), which read 3.9 as 3, 4294967300 as 4, -4294967288
+// as 8 and true as 1 without a word, and failed on a string with a JSON type
+// error instead of a config error.
+TEST_F(SimulationConfigTest, IntegerFieldsTakeOnlyIntegersInTheRangeOfInt) {
+    const std::string range = " must be an integer from -2147483648 to 2147483647, got ";
+    struct Field {
+        const char* section;
+        const char* key;
+    };
+    for (const Field f :
+         {Field{"grid", "Nx"}, Field{"grid", "Ny"}, Field{"grid", "Nz"}, Field{"time", "max_steps"},
+          Field{"time", "saturation_check_freq"}, Field{"output", "frequency"},
+          Field{"checkpoint", "frequency"}, Field{"checkpoint", "keep_last"}}) {
+        const std::string name = std::string(f.section) + "." + f.key;
+        for (const char* bad : {"3.9", "8.0", "1e2", "4294967300", "-4294967288", "2147483648",
+                                "-2147483649", "true", "\"8\"", "null", "[8]"})
+            expect_rejected(R"({")" + std::string(f.section) + R"(": {")" + f.key + R"(": )" + bad +
+                                "}}",
+                            {"config: " + name + range});
+    }
+    // The ends of the range parse (validate() then has its own rules).
+    EXPECT_EQ(
+        SimulationConfig::from_json_string(R"({"time": {"max_steps": 2147483647}})").time.max_steps,
+        2147483647);
+    expect_rejected(R"({"checkpoint": {"frequency": -2147483648}})",
+                    {"checkpoint frequency must be >= 0"});
+
+    for (const char* bad : {"3.9", "4294967296", "-4294967296", "true", "\"0\"", "null"})
+        expect_rejected(std::string(R"({"gpu": {"device_ids": [0, )") + bad + "]}}",
+                        {"config: gpu.device_ids[1]" + range});
+    for (const char* bad : {"0", "\"0\"", "{}", "null"})
+        expect_rejected(std::string(R"({"gpu": {"device_ids": )") + bad + "}}",
+                        {"config: gpu.device_ids must be an array of integers"});
+}
+
+// saturation_check_freq and the GPU ids have their ranges checked: the engine
+// silently used max(1, saturation_check_freq), and a negative id failed only
+// when the solver selected the device.
+TEST_F(SimulationConfigTest, SaturationIntervalAndDeviceIdsMustBeInRange) {
+    for (const char* freq : {"0", "-5"})
+        expect_rejected(std::string(R"({"time": {"saturation_check_freq": )") + freq + "}}",
+                        {"saturation_check_freq must be >= 1"});
+    EXPECT_EQ(SimulationConfig::from_json_string(R"({"time": {"saturation_check_freq": 1}})")
+                  .time.saturation_check_freq,
+              1);
+    expect_rejected(R"({"gpu": {"device_ids": [0, -1]}})", {"gpu.device_ids must be >= 0, got -1"});
+}
+
 TEST_F(SimulationConfigTest, UnknownKeyIsRejectedInEverySection) {
     expect_rejected(R"({"physiks": {}})", {"physiks", "<root>"});
     for (const char* section :

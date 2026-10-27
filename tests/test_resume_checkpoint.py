@@ -246,6 +246,10 @@ class ResumeHelperTest(unittest.TestCase):
     def test_config_grid(self) -> None:
         self.assertEqual(resume.config_grid({}), (600, 600, 600))  # engine defaults
         self.assertEqual(resume.config_grid({"grid": {"Nx": 8}}), (8, 600, 600))
+        self.assertEqual(resume.config_grid({"grid": {"Nz": 2**31 - 1}}), (600, 600, 2**31 - 1))
+        for bad in (0, 2**31, 4294967300, 8.0, "8", True):
+            with self.assertRaises(ValueError):
+                resume.config_grid({"grid": {"Ny": bad}})
         self.assertEqual(resume.config_spacing({}), (0.4, 0.4, 0.4))  # engine defaults
         self.assertEqual(resume.config_spacing({"grid": {"dy": 0.5}}), (0.4, 0.5, 0.4))
         self.assertEqual(resume.config_spacing({"grid": {"dz": 1}}), (0.4, 0.4, 1.0))

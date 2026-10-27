@@ -79,6 +79,7 @@ REAL_BYTES = 8  # Real is double (src/core/Grid.hpp)
 
 # GridParams defaults (src/core/SimulationConfig.hpp) for keys a config omits.
 DEFAULT_GRID = {"Nx": 600, "Ny": 600, "Nz": 600}
+INT_MAX = 2**31 - 1  # the engine reads grid dimensions as int
 DEFAULT_SPACING = {"dx": 0.4, "dy": 0.4, "dz": 0.4}  # GridParams defaults
 
 # The CRC is streamed so memory stays bounded (a 600^3 payload is 3.2 GiB).
@@ -131,7 +132,8 @@ def config_grid(cfg: dict) -> tuple[int, int, int]:
 
     SimulationEngine::initialize_from_checkpoint refuses a checkpoint whose
     dimensions differ from these, so they are what a resume must match.
-    Raises ValueError if the config does not give integer dimensions.
+    Raises ValueError if the config does not give positive integer
+    dimensions in the range of the engine's int (its parser rejects others).
     """
     grid = cfg.get("grid", {})
     if not isinstance(grid, dict):
@@ -139,8 +141,10 @@ def config_grid(cfg: dict) -> tuple[int, int, int]:
     dims = []
     for key, default in DEFAULT_GRID.items():
         value = grid.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"grid.{key} must be a positive integer, got {value!r}")
+        if isinstance(value, bool) or not isinstance(value, int) \
+                or not 1 <= value <= INT_MAX:
+            raise ValueError(
+                f"grid.{key} must be an integer from 1 to {INT_MAX}, got {value!r}")
         dims.append(value)
     return dims[0], dims[1], dims[2]
 
