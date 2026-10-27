@@ -975,9 +975,10 @@ Implicit step:
   Solve: (I - Δt·D·∇²)·u^{n+1} = u^n + 0.5·(φ^{n+1} - φ^n)
 ```
 
-The implicit system is solved by **Jacobi sweeps** until the largest change
-between two iterates is below 1e-10, checked every 10 sweeps, for at most
-200 sweeps (§10.2). One 7-point sweep:
+The implicit system is solved by **Jacobi sweeps** until a bound on the
+max-norm error of the iterate, checked every 10 sweeps, is at most 1e-10;
+an iterate that cannot be certified ends the step with an error (§10.2).
+One 7-point sweep:
 
 ```
 u_new[c] = (rhs[c] + Δt·D·Σ_d (u_old[c+e_d] + u_old[c−e_d]) / h_d²) / (1 + 2·Δt·D·Σ_d 1/h_d²)
@@ -993,10 +994,11 @@ flowchart TD
     EX --> BC1["Apply BCs to φ^{n+1}"]
     BC1 --> RHS["Compute RHS:<br/>rhs = u^n + 0.5·(φ^{n+1} - φ^n)"]
     RHS --> INIT["Initialize: u_guess = u^n"]
-    INIT --> LOOP{"Jacobi sweeps<br/>(at most 200)"}
+    INIT --> LOOP{"Jacobi sweeps"}
     LOOP -->|"each sweep"| JAC["u_new = (rhs + Δt·D·Σ neighbors) / diag<br/>BCs, swap(u_new, u_tmp)"]
     JAC --> LOOP
-    LOOP -->|"every 10 sweeps: max change < 1e-10, or 200 sweeps"| BC2["Apply BCs to u^{n+1}"]
+    LOOP -->|"every 10 sweeps: error bound ≤ 1e-10"| BC2["Apply BCs to u^{n+1}"]
+    LOOP -->|"not finite, rounding bound ≥ 1e-10,<br/>or change not decreasing"| ERR["Error: the step throws"]
     BC2 --> SWAP["Swap old ↔ new"]
     style EX fill:#ff9,stroke:#333
     style JAC fill:#9ff,stroke:#333
@@ -1126,22 +1128,96 @@ implicitly; its measured stability limits are in §4.3.
 
 ### 10.2 Jacobi Iteration Convergence
 
-IMEX solves `(I − Δt·D·∇²ₕ)u = rhs` by Jacobi sweeps. The matrix is strictly
-diagonally dominant for every Δt > 0 (the off-diagonal weights of both
-stencils are positive and sum to the magnitude of the centre weight), so the
-iteration converges for every Δt, with spectral radius
+IMEX solves `(I − Δt·D·∇²ₕ)u = rhs` by Jacobi sweeps
 
 ```
-ρ_J ≤ s/(1 + s),   s = Δt·D·c/h²,   c = 6 (7-point), 128/30 (27-point)
+u_{k+1} = (rhs + Δt·D·(off-diagonal part of ∇²ₕ) u_k) / (1 + s)
+s = 2Δt·D Σ_d h_d⁻²  (7-point),   s = 128 Δt·D / (30 h²)  (27-point)
 ```
 
-(the neighbour sum divided by the centre weight has a symbol in [−1, 1] for
-the 7-point and [−0.4375, 1] for the 27-point stencil, so the bound is the
-smoothest mode's; walls keep the discrete spectrum strictly inside), which
-approaches 1 as Δt·D/h² grows. The code sweeps until the largest change
-between two iterates is below 1e-10, checked every 10 sweeps, and stops
-after at most 200 sweeps (`kJacobiTol`, `kJacobiCheckFreq`,
-`kJacobiMaxIters` in `CudaSolver.cuh`).
+(s is Δt·D times the sum of the stencil's off-diagonal weights), with the
+ghost cells of u_k holding its boundary values (§9.1), refilled after every
+sweep (`CudaSolver::imex_sweep`).
+
+**Contraction.** Write the ghost values through the interior values they
+copy: a face ghost is c times its adjacent value plus a constant, c = 0
+(Dirichlet), 1 (Neumann with any flux, Robin with α = 0), c ∈ [0, 1] for
+every Robin face `validate()` accepts (§9.1); a periodic ghost copies the
+interior cell next to the opposite face; the edge and corner ghosts the
+27-point stencil reads chain two or three of these (faces filled Z, Y, X);
+multi-GPU halos copy the neighbouring domain's cells. The iteration matrix J
+then has non-negative entries and row sums at most
+
+```
+q = s/(1 + s)
+```
+
+since every off-diagonal weight is positive and a ghost passes on at most
+its weight. So ‖J‖∞ ≤ q for every accepted boundary condition and number of
+GPUs. If every u face is Neumann (any flux; also Robin with α = 0) or
+periodic, every row sum equals q, the constant vector is an eigenvector and
+ρ(J) = q; a Dirichlet face or a Robin face with α ≠ 0 makes ρ(J) < q (J is
+irreducible). Iteration matrices built from an exact emulation of the
+sweep and the ghost fill (832 small grids: one to four cells per axis, both
+stencils, every pair of rules on the x faces with four layouts that cover
+every rule on the y and z faces) have ‖J‖∞ = q; with Robin coefficients of
+opposite signs, which `validate()` rejects, ρ(J) reaches 1.29 at s = 1.5
+(c = −10).
+
+**Stopping rule.** With e_k = u* − u_k (u* the exact solution) and
+d_{k+1} = max|u_{k+1} − u_k|, e_{k+1} = J e_k = J(e_{k+1} + u_{k+1} − u_k)
+gives ‖e_{k+1}‖∞ ≤ q/(1 − q) · d_{k+1} = s · d_{k+1}. Every
+`kJacobiCheckFreq` = 10 sweeps `JacobiStoppingRule` (`JacobiStopping.hpp`)
+evaluates
+
+```
+bound = (s·d + γ_K (1 + 3s) m) / (1 − γ_K (1 + 2s)),   γ_K = K u/(1 − K u),  u = 2⁻⁵³
+```
+
+with d and m = max(|u_k|, |u_{k+1}|) over every cell (one fused reduction,
+`launch_max_abs_diff_and_max_abs`), and accepts u_{k+1} when bound ≤
+`kJacobiTol` = 1e-10: its interior error is then at most 1e-10 in the max
+norm (the bound itself is evaluated in double precision, to a relative
+10⁻¹⁵). The check frequency changes only how many sweeps run after the
+bound is met (at most 9), not the accuracy. d shrinks by at least q per
+sweep, so the bound is met after about ln(s·d₁/1e-10) / ln(1/q) sweeps,
+≈ (1 + s)·ln(s·d₁/1e-10) for large s; there is no fixed sweep limit.
+
+**Rounding term.** A sweep differs from the exact map of the stored iterate
+by at most γ_K(|rhs| + s·m)/(1 + s) per cell (standard model; FMA
+contraction only removes roundings). One term of `jacobi_step_kernel`
+passes through at most 17 roundings (7-point: the neighbour pair, its
+weight 1/h² and its own two, the sum over axes, Δt·D, the right-hand side,
+the division, and the diagonal 1 + s) or 26 (27-point: up to 11 in the
+12-term edge sum, the weights, the coefficient Δt·D/(30h²), the right-hand
+side, the division and the diagonal). The ghost fill adds at most 3γ₆·m per
+fill level (Robin: 6 roundings, a non-cancelling denominator since
+αβ ≥ 0; Neumann 2; Dirichlet and periodic none): one level for the face
+ghosts of the 7-point stencil, up to three for the corner ghosts of the
+27-point stencil, i.e. 18 and 54 more. Hence K = 35 (7-point) and 80
+(27-point), `kJacobiRoundingUnits7/27`. With |rhs| ≤ (1 + 2s)(m + ‖e‖)
+(the equation itself) and ‖e_{k+1}‖ ≤ s·d + (1 + s)·(sweep rounding), the
+bound above follows.
+
+**Failures.** The step throws `std::runtime_error` instead of returning an
+iterate the rule cannot accept:
+- d or m not finite: the state diverged (a NaN or Inf in u or the latent
+  heat);
+- the rounding term alone, bound at d = 0, reaches 1e-10 — at
+  (1 + 3s)·m ≥ 2.6·10⁴ (7-point) or 1.1·10⁴ (27-point): no number of
+  sweeps certifies the tolerance; Δt must be smaller;
+- d did not decrease between two checks: in exact arithmetic it shrinks by
+  q¹⁰, so rounding stopped the iteration above the tolerance.
+
+**Evidence** (`tests/unit/test_ImexJacobi.cu`): one step at s = 17.1
+(7-point, anisotropic spacing) and s = 16 (27-point), every kind of u face,
+on one GPU and three domains, against a long-double solution of the same
+system: errors 2.9·10⁻¹¹ and 8.2·10⁻¹¹ (the former test, a change below
+1e-10 within at most 200 sweeps, left 6.3·10⁻⁸ and 1.4·10⁻⁸); a NaN in u
+and Δt = 10⁴ throw; `JacobiStoppingRule.*` tests the rule on the host.
+`benchmark_small` (1000 steps) and the IMEX rows of Appendix B (420 steps
+each) stop at sweep 20 on every step under both rules, so their results are
+unchanged.
 
 ### 10.3 Adaptive Time Stepping
 
@@ -1376,7 +1452,7 @@ graph TD
 | Property | Euler | Heun (RK2) | RK4 | IMEX |
 |----------|-------|------------|-----|------|
 | Order of accuracy in time | 1 | 2 | 4 | 1 |
-| Stages per step | 1 | 2 | 4 | 1 + Jacobi sweeps (until the change is below 1e-10, at most 200; §10.2) |
+| Stages per step | 1 | 2 | 4 | 1 + Jacobi sweeps (until the error bound is ≤ 1e-10; §10.2) |
 | GPU memory, bytes per cell (measured, Appendix C) | 32.1 | 48.1 | 112.1 | 48.1 |
 | … with `willmore_beta > 0` | 108.1 | rejected | rejected | 124.1 |
 | Explicit thermal update stable for (§10.1) | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2.785 | any Δt (u implicit) |

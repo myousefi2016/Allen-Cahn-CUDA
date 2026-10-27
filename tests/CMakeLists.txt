@@ -18,6 +18,7 @@ add_executable(unit_tests
     unit/test_BoundaryConditions.cu
     unit/test_Reduction.cu
     unit/test_CudaSolver.cu
+    unit/test_ImexJacobi.cu
     unit/test_MultiGPUSolver.cu
     unit/test_Willmore.cu
     unit/test_WillmorePreconditioner.cu

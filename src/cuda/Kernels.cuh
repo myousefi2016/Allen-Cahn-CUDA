@@ -325,4 +325,11 @@ void launch_max_abs_reduction(const double* field, double* result, std::size_t N
 void launch_max_abs_diff(const double* a, const double* b, double* d_result, std::size_t N,
                          double* scratch, int scratch_size, cudaStream_t stream);
 
+/// d_result[0] = max|a - b| and d_result[1] = max(|a|, |b|) over N elements,
+/// in one pass; a NaN in a or b makes the results NaN. scratch needs two
+/// entries per block (scratch_size >= 2).
+void launch_max_abs_diff_and_max_abs(const double* a, const double* b, double* d_result,
+                                     std::size_t N, double* scratch, int scratch_size,
+                                     cudaStream_t stream);
+
 } // namespace ac::cuda

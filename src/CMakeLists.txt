@@ -28,6 +28,7 @@ add_library(ac_cuda STATIC
     cuda/ThermalKernels.cu
     cuda/BoundaryKernels.cu
     cuda/ReductionKernels.cu
+    cuda/JacobiStopping.cpp
     cuda/CudaSolver.cu
     cuda/MultiGPUSolver.cu
 )

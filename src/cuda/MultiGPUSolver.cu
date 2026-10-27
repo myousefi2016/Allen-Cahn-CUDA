@@ -359,24 +359,30 @@ void MultiGPUSolver::step(double dt) {
             CUDA_CHECK(cudaSetDevice(domain.device_id));
             domain.solver->imex_begin_thermal();
         }
-        for (int iter = 0; iter < CudaSolver::kJacobiMaxIters; ++iter) {
-            for (auto& domain : domains_) {
-                CUDA_CHECK(cudaSetDevice(domain.device_id));
-                domain.solver->imex_sweep();
-            }
-            // Refresh the iterate's halos/ghosts before it is read: by the next
-            // sweep's stencil and by the residual on the periodic ghost planes.
-            exchange(Buffers::JacobiIterate);
-            if ((iter + 1) % CudaSolver::kJacobiCheckFreq == 0) {
-                double residual = 0.0;
+        {
+            // Every domain has the same dt, D, spacing and stencil, so the
+            // first domain's rule is the global one; it sees the maxima over
+            // all owned cells, as on one GPU.
+            JacobiStoppingRule rule = domains_.front().solver->jacobi_stopping_rule();
+            for (int sweeps = 1;; ++sweeps) {
                 for (auto& domain : domains_) {
                     CUDA_CHECK(cudaSetDevice(domain.device_id));
-                    residual =
-                        nan_aware_max(residual, domain.solver->imex_residual(domain.owned_begin(),
-                                                                             domain.owned_end()));
+                    domain.solver->imex_sweep();
                 }
-                if (residual < CudaSolver::kJacobiTol)
-                    break;
+                // Refresh the iterate's halos/ghosts before it is read: by the
+                // next sweep's stencil and by the change on the periodic ghost
+                // planes.
+                exchange(Buffers::JacobiIterate);
+                if (sweeps % CudaSolver::kJacobiCheckFreq == 0) {
+                    JacobiChange total;
+                    for (auto& domain : domains_) {
+                        CUDA_CHECK(cudaSetDevice(domain.device_id));
+                        total = max_of(total, domain.solver->imex_change(domain.owned_begin(),
+                                                                         domain.owned_end()));
+                    }
+                    if (rule.converged(sweeps, total))
+                        break;
+                }
             }
         }
         for (auto& domain : domains_) {

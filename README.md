@@ -45,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 24 unit-test files, 8 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 25 unit-test files, 8 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -165,7 +165,7 @@ graph LR
     subgraph IMEX["IMEX (explicit AC + implicit thermal)"]
         I1["Explicit: allen_cahn_fused"]
         I2["Build RHS: u_old + 0.5*(phi_new - phi_old)"]
-        I3["Jacobi: max 200 iters,<br/>convergence check every 10,<br/>tol = 1e-10"]
+        I3["Jacobi sweeps: every 10, check the<br/>max-norm error bound ≤ 1e-10"]
         I1 --> I2 --> I3
     end
 ```
@@ -684,7 +684,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   '
 ```
 
-### Unit tests (`tests/unit/`, 24 files)
+### Unit tests (`tests/unit/`, 25 files)
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
@@ -704,9 +704,10 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_Gradient.cu`            | 2nd- and 4th-order central-difference gradient kernels                           |
 | `test_Anisotropy.cu`          | A(n), dFunc, dF/dphi; face flux = ∂f/∂∇φ; ∇·F second-order (all ε) and = W₀²·7-point Laplacian at ε = 0 |
 | `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin (also with a tiny denominator), per-face mixed, interior unchanged |
-| `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions                                |
+| `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions; the fused change and magnitude reduction of the IMEX check (exact maxima, NaN and Inf reach both) |
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
+| `test_ImexJacobi.cu`          | IMEX thermal solve: error within 1e-10 of a long-double solution at s ≈ 17 (both stencils, every kind of u face, one GPU and three domains); NaN temperature and a tolerance below rounding throw; the stopping rule on the host |
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; engine run |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states |
@@ -720,7 +721,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_SphereRegression.cu`    | Dendritic growth from spherical seed reproduces reference behaviour              |
 | `test_EulerConvergence.cu`    | Forward Euler shows expected error reduction under dt refinement                 |
 | `test_EnergyConservation.cu`  | Phase-field free-energy decreases monotonically                                  |
-| `test_SchemeComparison.cu`    | Euler vs Heun vs RK4 agreement; IMEX stability at large dt                       |
+| `test_SchemeComparison.cu`    | Euler vs Heun vs RK4 agreement; IMEX stays finite at 3× the explicit thermal limit, where Euler overflows |
 | `test_CheckpointRestart.cu`   | Checkpoint at midpoint then restart matches uninterrupted run                    |
 | `test_StencilComparison.cu`   | 7-point vs 27-point: bounded fields, smoother 27-pt interface, same physics      |
 | `test_AnisotropyForce.cu`     | Seed growth favours <100> increasingly with ε; grid anisotropy at ε = 0 is < 2% and vanishes under refinement |
@@ -756,13 +757,14 @@ Allen-Cahn-CUDA/
 │   ├── cuda/                  # ISolver, CudaSolver, MultiGPUSolver,
 │   │                          # AllenCahn / Thermal / Boundary / Reduction / Willmore kernels,
 │   │                          # WillmoreSolve (implicit Willmore step),
+│   │                          # JacobiStopping (IMEX thermal solve stopping rule),
 │   │                          # DeviceField (RAII GPU memory), CudaUtils (Stream, Event)
 │   ├── io/                    # VTKWriter (async), CheckpointIO (binary, fsync, CRC32)
 │   ├── logging/               # Logger (spdlog wrapper)
 │   ├── main.cpp               # Entry point + signal handler
 │   └── CMakeLists.txt
 ├── tests/
-│   ├── unit/                  # 24 unit-test files
+│   ├── unit/                  # 25 unit-test files
 │   ├── integration/           # 8 integration-test files
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   └── CMakeLists.txt

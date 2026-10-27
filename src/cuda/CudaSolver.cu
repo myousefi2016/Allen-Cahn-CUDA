@@ -140,12 +140,14 @@ CudaSolver::CudaSolver(const SimulationConfig& config)
     u_new_ = DeviceField<double>(total_points_);
 
     // Reduction scratch
-    d_reduction_result_ = DeviceField<double>(1);
+    // Two results and two partial maxima per block: imex_change reduces the
+    // change and the magnitude in one pass.
+    d_reduction_result_ = DeviceField<double>(2);
     {
         constexpr int BLOCK_SIZE = 256;
         int num_blocks = static_cast<int>((total_points_ + BLOCK_SIZE * 2 - 1) / (BLOCK_SIZE * 2));
         num_blocks = std::max(num_blocks, 1);
-        reduction_scratch_ = DeviceField<double>(static_cast<std::size_t>(num_blocks));
+        reduction_scratch_ = DeviceField<double>(2 * static_cast<std::size_t>(num_blocks));
     }
 
     // Allocate temporaries based on time integration scheme
@@ -396,12 +398,31 @@ void CudaSolver::rk4_stage(int stage, double dt) {
 
 void CudaSolver::step_imex(double dt) {
     imex_begin(dt);
-    for (int iter = 0; iter < kJacobiMaxIters; ++iter) {
+    // The rule throws instead of returning an iterate it cannot certify, and
+    // the change it requires to decrease between checks ends the loop.
+    JacobiStoppingRule rule = jacobi_stopping_rule();
+    for (int sweeps = 1;; ++sweeps) {
         imex_sweep();
-        if ((iter + 1) % kJacobiCheckFreq == 0 && imex_residual(0, params_.Nx) < kJacobiTol)
-            break;
+        if (sweeps % kJacobiCheckFreq == 0) {
+            if (rule.converged(sweeps, imex_change(0, params_.Nx)))
+                break;
+        }
     }
     imex_finish();
+}
+
+JacobiStoppingRule CudaSolver::jacobi_stopping_rule() const {
+    // s = the diagonal of jacobi_step_kernel minus one, computed as there.
+    const double alpha = params_.dt;
+    if (params_.stencil_type == 1) {
+        const double coeff = alpha * params_.D / (30.0 * (params_.dx * params_.dx));
+        return {coeff * 128.0, kJacobiRoundingUnits27, kJacobiTol};
+    }
+    const double inv_dx2 = 1.0 / (params_.dx * params_.dx);
+    const double inv_dy2 = 1.0 / (params_.dy * params_.dy);
+    const double inv_dz2 = 1.0 / (params_.dz * params_.dz);
+    return {alpha * params_.D * 2.0 * (inv_dx2 + inv_dy2 + inv_dz2), kJacobiRoundingUnits7,
+            kJacobiTol};
 }
 
 void CudaSolver::imex_begin(double dt) {
@@ -429,10 +450,8 @@ void CudaSolver::imex_begin_thermal() {
     // jacobi_step_kernel writes interior cells only, so both iterate buffers
     // start from u_old and the BC is re-applied to every new iterate: boundary
     // cells then always hold values consistent with the current interior
-    // (instead of leftover scratch data), and the residual measures real
-    // convergence. Adaptive iteration count: check residual every
-    // kJacobiCheckFreq sweeps, exit early when converged; at most
-    // kJacobiMaxIters to handle large dt*D/h^2 ratios.
+    // (instead of leftover scratch data), and the change between iterates is
+    // that of the iteration (docs/THEORY.md 10.2).
     u_new_.copy_from(u_old_, compute_stream_);
     u_tmp_.copy_from(u_old_, compute_stream_);
 }
@@ -446,18 +465,19 @@ void CudaSolver::imex_sweep() {
     swap(u_new_, u_tmp_);
 }
 
-double CudaSolver::imex_residual(int x_begin, int x_end) const {
+JacobiChange CudaSolver::imex_change(int x_begin, int x_end) const {
+    // After imex_sweep's swap u_new_ holds u_{k+1} and u_tmp_ holds u_k.
     const std::size_t plane = static_cast<std::size_t>(params_.Ny) * params_.Nz;
     const std::size_t offset = static_cast<std::size_t>(x_begin) * plane;
     const std::size_t count = static_cast<std::size_t>(x_end - x_begin) * plane;
-    launch_max_abs_diff(u_new_.data() + offset, u_tmp_.data() + offset, d_reduction_result_.data(),
-                        count, reduction_scratch_.data(),
-                        static_cast<int>(reduction_scratch_.size()), compute_stream_);
-    double residual = 0.0;
-    CUDA_CHECK(cudaMemcpyAsync(&residual, d_reduction_result_.data(), sizeof(double),
+    launch_max_abs_diff_and_max_abs(u_new_.data() + offset, u_tmp_.data() + offset,
+                                    d_reduction_result_.data(), count, reduction_scratch_.data(),
+                                    static_cast<int>(reduction_scratch_.size()), compute_stream_);
+    double result[2] = {0.0, 0.0};
+    CUDA_CHECK(cudaMemcpyAsync(result, d_reduction_result_.data(), 2 * sizeof(double),
                                cudaMemcpyDeviceToHost, compute_stream_));
     compute_stream_.synchronize();
-    return residual;
+    return {result[0], result[1]};
 }
 
 void CudaSolver::imex_finish() {

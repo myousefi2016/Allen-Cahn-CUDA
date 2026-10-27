@@ -206,17 +206,14 @@ the flux is recomputed at the cell faces, never stored.
 
 The Allen–Cahn equation is integrated explicitly. The thermal equation
 becomes `(I − dt*D*Lap) u_new = u_old + 0.5*(phi_new − phi_old)` and is
-solved by Jacobi iteration (`CudaSolver.cu:415-470`):
-
-| Constant            | Value | Source                 |
-|---------------------|-------|------------------------|
-| `JACOBI_MAX_ITERS`  | 200   | `CudaSolver.cu:438`    |
-| `JACOBI_CHECK_FREQ` | 10    | `CudaSolver.cu:439`    |
-| `JACOBI_TOL`        | 1e-10 | `CudaSolver.cu:440`    |
-
-Convergence is checked every `JACOBI_CHECK_FREQ` iterations via
-`launch_max_abs_diff(u_new, u_tmp, ...)`; the loop breaks early when the
-residual drops below `JACOBI_TOL`.
+solved by Jacobi sweeps (`CudaSolver::step_imex`, `imex_sweep`): every
+`kJacobiCheckFreq` (10) sweeps one fused reduction
+(`launch_max_abs_diff_and_max_abs`) returns the change of the last sweep
+and the largest |u|, and `JacobiStoppingRule` accepts the iterate when its
+certified max-norm error bound is at most `kJacobiTol` (1e-10), or throws
+when the iterate is not finite, when rounding alone reaches the tolerance,
+or when the change stops decreasing (docs/THEORY.md §10.2). There is no
+fixed sweep limit.
 
 ```mermaid
 graph LR
@@ -230,7 +227,7 @@ graph LR
         R1["k1 to k4"] --> R2["rk4_combine"] --> R3["BC + swap"]
     end
     subgraph IMEX["IMEX"]
-        I1["allen_cahn_fused"] --> I2["build RHS"] --> I3["Jacobi iter"] --> I4["check residual"]
+        I1["allen_cahn_fused"] --> I2["build RHS"] --> I3["Jacobi sweeps"] --> I4["error bound check"]
         I3 --> I4 --> I3
     end
 ```
@@ -480,9 +477,9 @@ stencil reads is current:
 | IMEX | the Jacobi iterate (`u_new_`) after every sweep, then the new state |
 | Euler / IMEX with β > 0 | additionally, in the Willmore solve: ω once; per CG iteration the direction and its Laplacian; per Chebyshev step the single-precision iterate and its Laplacian |
 
-The IMEX solver checks the global residual (max over domains) every 10
-sweeps, like the single-GPU solver, so both run the same number of Jacobi
-sweeps.
+The IMEX solver applies the stopping rule to the global change and
+magnitude (max over the domains' owned cells) every 10 sweeps, like the
+single-GPU solver, so both run the same number of Jacobi sweeps.
 
 **Synchronisation.** Before an exchange every domain records
 `compute_done` on its compute stream and every halo stream waits on all

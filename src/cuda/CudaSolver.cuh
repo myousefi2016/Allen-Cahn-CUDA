@@ -5,6 +5,7 @@
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
 #include "cuda/ISolver.cuh"
+#include "cuda/JacobiStopping.hpp"
 #include "cuda/Kernels.cuh"
 #include "cuda/WillmoreKernels.cuh"
 #include "cuda/WillmoreSolve.cuh"
@@ -64,16 +65,26 @@ public:
     /// four stages back to back; MultiGPUSolver exchanges tmp halos between them.
     void rk4_stage(int stage, double dt);
 
-    /// IMEX building blocks (step_imex = begin, sweeps with periodic residual
-    /// checks, finish), exposed so MultiGPUSolver can exchange the Jacobi
-    /// iterate's halos before every sweep and test a global residual.
+    /// IMEX building blocks (step_imex = begin, sweeps with a check of the
+    /// stopping rule every kJacobiCheckFreq sweeps, finish), exposed so
+    /// MultiGPUSolver can exchange the Jacobi iterate's halos after every
+    /// sweep and apply the rule to global maxima.
     void imex_begin(double dt);
     void imex_sweep();
-    [[nodiscard]] double imex_residual(int x_begin, int x_end) const;
     void imex_finish();
-    static constexpr int kJacobiMaxIters = 200;
+    /// The change and magnitude of the last sweep over every cell of the
+    /// x-slab [x_begin, x_end).
+    [[nodiscard]] JacobiChange imex_change(int x_begin, int x_end) const;
+    /// The stopping rule (docs/THEORY.md 10.2) for the Jacobi sweep of params()
+    /// (dt, D, spacing, stencil): the error of the accepted iterate is at
+    /// most kJacobiTol in the max norm.
+    [[nodiscard]] JacobiStoppingRule jacobi_stopping_rule() const;
     static constexpr int kJacobiCheckFreq = 10;
     static constexpr double kJacobiTol = 1e-10;
+    /// Roundings one term of a sweep passes through, ghost fill included
+    /// (docs/THEORY.md 10.2).
+    static constexpr int kJacobiRoundingUnits7 = 35;
+    static constexpr int kJacobiRoundingUnits27 = 80;
 
     /// max|phi_new - phi_old| over the x-slab [x_begin, x_end).
     [[nodiscard]] double compute_max_dphi(int x_begin, int x_end) const;

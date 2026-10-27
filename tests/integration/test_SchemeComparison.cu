@@ -134,34 +134,34 @@ TEST_F(SchemeComparisonTest, HeunIntermediateAccuracy) {
     EXPECT_LT(center(phi_rk4), 1.5);
 }
 
-// Test IMEX stability with larger timestep (implicit diffusion should be stable)
-TEST_F(SchemeComparisonTest, IMEXStabilityLargerDt) {
-    int N = 16;
-    auto cfg = make_config(N, TimeScheme::IMEX);
-    cfg.time.dt = 0.005; // Larger dt that would be unstable for explicit diffusion
-
-    CudaSolver solver(cfg);
-    Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
-    FieldData phi(grid, "phi"), u(grid, "u");
-    make_sphere_ic(phi, u, N);
-
-    solver.initialize(phi, u);
-
-    // Run several steps - should not blow up
-    for (int s = 0; s < 10; ++s) {
-        solver.step(0.005);
-    }
-
-    solver.copy_phi_to_host(phi);
-
-    // Check for NaN/Inf
-    bool stable = true;
-    for (int x = 0; x < N; ++x)
-        for (int y = 0; y < N; ++y)
-            for (int z = 0; z < N; ++z) {
-                if (std::isnan(phi(x, y, z)) || std::isinf(phi(x, y, z))) {
-                    stable = false;
-                }
-            }
-    EXPECT_TRUE(stable) << "IMEX should remain stable with larger time step";
+// IMEX treats thermal diffusion implicitly. At dt = 0.04, h = 0.4, D = 2 the
+// explicit thermal update has dt*D*rho = 6 (rho = 12/h^2, 7-point stencil),
+// three times its stability limit 2 (docs/THEORY.md 10.1): Euler overflows,
+// IMEX stays finite. d0 = 0.1 keeps the phase-field update, explicit in both
+// schemes, inside its own limit: its diffusivity W0^2 (1+eps)^2 / tau0 is
+// 0.40, five times smaller than D.
+TEST_F(SchemeComparisonTest, IMEXStableBeyondTheExplicitThermalLimit) {
+    const int N = 16, steps = 500;
+    const double dt = 0.04;
+    auto finite_after_run = [&](TimeScheme scheme) {
+        auto cfg = make_config(N, scheme);
+        cfg.physics.d0 = 0.1;
+        cfg.time.dt = dt;
+        cfg.validate();
+        CudaSolver solver(cfg);
+        Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
+        FieldData phi(grid, "phi"), u(grid, "u");
+        make_sphere_ic(phi, u, N);
+        solver.initialize(phi, u);
+        for (int s = 0; s < steps; ++s)
+            solver.step(dt);
+        solver.copy_phi_to_host(phi);
+        solver.copy_u_to_host(u);
+        for (std::size_t i = 0; i < phi.size(); ++i)
+            if (!std::isfinite(phi.data()[i]) || !std::isfinite(u.data()[i]))
+                return false;
+        return true;
+    };
+    EXPECT_FALSE(finite_after_run(TimeScheme::Euler)) << "dt is not beyond the explicit limit";
+    EXPECT_TRUE(finite_after_run(TimeScheme::IMEX));
 }
