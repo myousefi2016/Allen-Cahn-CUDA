@@ -161,7 +161,7 @@ sequenceDiagram
     alt Restart from checkpoint
         Eng->>Mgr: restore()
         Mgr-->>Eng: phi, u, step, time, dt, grid
-        Eng->>Eng: check grid and spacing match config<br/>(fixed dt: configured dt; adaptive: checkpoint dt)
+        Eng->>Eng: check grid and spacing match config<br/>(fixed dt: configured dt, adaptive: checkpoint dt<br/>clamped to [dt_min, dt_max], then the stability cap)
     else Fresh start
         Eng->>Eng: initialize_fields()<br/>(tanh seed)
     end
@@ -208,7 +208,7 @@ sequenceDiagram
 classDiagram
     class ISolver {
         <<interface>>
-        +initialize(phi, u)
+        +initialize(phi0, u0)
         +step(dt)
         +compute_max_dphi() double
         +compute_boundary_max_phi() double
@@ -221,27 +221,29 @@ classDiagram
     class CudaSolver {
         -phi_old_, phi_new_ : DeviceField
         -u_old_, u_new_ : DeviceField
-        -phi_tmp_, u_tmp_ : DeviceField  (Heun/RK4/IMEX)
-        -k1_phi_..k4_phi_, k1_u_..k4_u_  (RK4)
-        -d_reduction_result_ : DeviceField~1~
+        -phi_tmp_, u_tmp_ : DeviceField, Heun/RK4/IMEX only
+        -k1_phi_..k4_phi_, k1_u_..k4_u_ : DeviceField, RK4 only
+        -d_reduction_result_ : DeviceField, 2 elements
         -reduction_scratch_  : DeviceField
         -compute_stream_, transfer_stream_ : Stream
         -scheme_ : TimeScheme
         +step_euler(dt), step_heun(dt), step_rk4(dt), step_imex(dt)
         +step_heun_stage1(dt), step_heun_stage2(dt)
         +rk4_stage(stage, dt)
-        +imex_begin(dt), imex_sweep(), imex_residual(x0, x1), imex_finish()
-        +compute_max_dphi(x0, x1), compute_boundary_max_phi(x0, x1, lo, hi)
+        +imex_begin(dt), imex_sweep(), imex_finish()
+        +imex_change(x_begin, x_end) JacobiChange
+        +jacobi_stopping_rule() JacobiStoppingRule
+        +compute_max_dphi(x_begin, x_end), compute_boundary_max_phi(x_begin, x_end, x_lo_face, x_hi_face)
         +stream() cudaStream_t
-        +phi_data() double*
-        +u_data() double*
+        +phi_data() double#42;
+        +u_data() double#42;
         -apply_bc(field, bc)
-        -apply_bc_per_face(field, faces)
+        -apply_bc_per_face(field, face_bcs)
     }
 
     class MultiGPUSolver {
         -domains_ : vector~GPUDomain~
-        -halo_width_ : int (= kStencilReach = 1)
+        -halo_width_ : int = kStencilReach = 1
         -wrap_phi_lo_, wrap_phi_hi_, wrap_u_lo_, wrap_u_hi_ : bool
         -build_domains()
         -release_domains()
@@ -253,8 +255,8 @@ classDiagram
 
     class GPUDomain {
         +device_id : int
-        +x_start, x_end : int (owned global planes)
-        +left_halo, right_halo : int (1 or 0)
+        +x_start, x_end : int, owned global planes
+        +left_halo, right_halo : int, 1 or 0
         +local_Nx : int
         +solver : unique_ptr~CudaSolver~
         +halo_stream : Stream
@@ -287,8 +289,8 @@ graph TB
             phi_new["phi_new_"]
             u_old["u_old_"]
             u_new["u_new_"]
-            redr["d_reduction_result_ (1 elt)"]
-            reds["reduction_scratch_ (~num_blocks)"]
+            redr["d_reduction_result_ (2 elts)"]
+            reds["reduction_scratch_ (2 x ceil(Nx*Ny*Nz / 512))"]
         end
         subgraph HRI["Heun / RK4 / IMEX"]
             phi_tmp["phi_tmp_"]

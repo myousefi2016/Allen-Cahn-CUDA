@@ -1,5 +1,6 @@
 #include "core/SimulationConfig.hpp"
 #include "core/SimulationEngine.hpp"
+#include "core/StabilityLimits.hpp"
 #include "logging/Logger.hpp"
 
 #include <atomic>
@@ -24,7 +25,8 @@ static void print_usage(const char* prog) {
               << "If no config file is given, loads config/default.json or\n"
               << "../config/default.json if one exists, else uses compiled-in defaults.\n"
               << "--validate-config parses and validates the file (unknown keys,\n"
-              << "ranges, stability rules) without touching the GPU; exit 0 if valid.\n"
+              << "ranges, stability rules) without touching the GPU; if it is valid,\n"
+              << "prints its dt stability limits (\"none\": no limit) and exits 0.\n"
               << "See config/default.json for an example configuration.\n";
 }
 
@@ -45,8 +47,9 @@ int main(int argc, char* argv[]) {
                     print_usage(argv[0]);
                     return EXIT_FAILURE;
                 }
-                (void)ac::SimulationConfig::from_json(std::filesystem::path(argv[2]));
-                std::cout << "valid: " << argv[2] << "\n";
+                const auto checked =
+                    ac::SimulationConfig::from_json(std::filesystem::path(argv[2]));
+                std::cout << "valid: " << argv[2] << "\n" << ac::stability_limits_report(checked);
                 return EXIT_SUCCESS;
             }
             auto config_path = std::filesystem::path(arg);

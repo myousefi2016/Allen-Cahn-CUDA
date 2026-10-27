@@ -442,8 +442,9 @@ TEST(JacobiStoppingRule, RoundingAtTheToleranceThrows) {
     expect_rule_throws(huge, 0.0, 0.0, "rounding bound");
 }
 
-// In exact arithmetic the change shrinks by s/(1+s) per sweep; a change that
-// is not smaller than at the previous check ends the solve with an error.
+// In exact arithmetic the change shrinks by at least the factor s/(1+s) per
+// sweep; a change that is not smaller than at the previous check ends the
+// solve with an error.
 TEST(JacobiStoppingRule, ChangeThatStopsDecreasingThrows) {
     JacobiStoppingRule rule(3.0, 35, 1e-10);
     EXPECT_FALSE(rule.converged(10, {1e-3, 1.0}));

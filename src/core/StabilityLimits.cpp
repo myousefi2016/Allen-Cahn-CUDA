@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
+#include <string>
 
 namespace ac {
 
@@ -120,6 +123,38 @@ double phase_field_dt_limit(const SimulationConfig& config) {
         limit = std::min(limit, best);
     }
     return limit;
+}
+
+namespace {
+
+/// A limit with 17 significant digits (two different doubles never print
+/// alike), or "none" for +infinity.
+std::string limit_text(double limit) {
+    if (limit == std::numeric_limits<double>::infinity())
+        return "none";
+    std::ostringstream os;
+    os << std::setprecision(17) << limit;
+    return os.str();
+}
+
+} // namespace
+
+std::string stability_limits_report(const SimulationConfig& config) {
+    const std::string scheme = config.time.scheme == TimeScheme::Euler  ? "euler"
+                               : config.time.scheme == TimeScheme::Heun ? "heun"
+                               : config.time.scheme == TimeScheme::RK4  ? "rk4"
+                                                                        : "imex";
+    const std::string stencil = config.stencil == StencilType::Isotropic27Point ? "27pt" : "7pt";
+    const double thermal = thermal_dt_limit(config);
+    const double phase_field = phase_field_dt_limit(config);
+    std::string report = "thermal dt limit (scheme " + scheme + ", stencil " + stencil +
+                         "): " + limit_text(thermal) + "\nphase-field dt limit (scheme " + scheme +
+                         ", any stencil): " + limit_text(phase_field) + "\n";
+    if (config.time.adaptive) {
+        report += "adaptive dt cap (cfl_safety times the smaller limit): " +
+                  limit_text(config.time.cfl_safety * std::min(thermal, phase_field)) + "\n";
+    }
+    return report;
 }
 
 } // namespace ac

@@ -218,3 +218,34 @@ TEST(StabilityLimits, RejectionMessageTellsDtAndLimitApart) {
     ASSERT_NE(dt.str(), lim.str());
     expect_invalid(cfg, "time.dt = " + dt.str() + " exceeds the stability limit " + lim.str());
 }
+
+// --validate-config prints this report: each limit as validate() applies it,
+// printed to 17 significant digits, "none" for +infinity, and the adaptive
+// cap cfl_safety times the smaller limit only with time.adaptive.
+TEST(StabilityLimits, ReportPrintsTheLimitsAndTheAdaptiveCap) {
+    auto digits17 = [](double v) {
+        std::ostringstream os;
+        os << std::setprecision(17) << v;
+        return os.str();
+    };
+    auto cfg = config(TimeScheme::Euler, StencilType::Isotropic27Point);
+    EXPECT_EQ(stability_limits_report(cfg),
+              "thermal dt limit (scheme euler, stencil 27pt): " + digits17(thermal_dt_limit(cfg)) +
+                  "\nphase-field dt limit (scheme euler, any stencil): " +
+                  digits17(phase_field_dt_limit(cfg)) + "\n");
+    cfg.time.scheme = TimeScheme::IMEX;
+    cfg.time.adaptive = true;
+    cfg.time.cfl_safety = 0.5;
+    EXPECT_EQ(stability_limits_report(cfg),
+              "thermal dt limit (scheme imex, stencil 27pt): none\n"
+              "phase-field dt limit (scheme imex, any stencil): " +
+                  digits17(phase_field_dt_limit(cfg)) +
+                  "\nadaptive dt cap (cfl_safety times the smaller limit): " +
+                  digits17(0.5 * phase_field_dt_limit(cfg)) + "\n");
+    cfg.physics.epsilon = 0.12; // run_dendrite.json: beta damps every checkerboard case
+    cfg.physics.willmore_beta = 0.25;
+    EXPECT_EQ(stability_limits_report(cfg),
+              "thermal dt limit (scheme imex, stencil 27pt): none\n"
+              "phase-field dt limit (scheme imex, any stencil): none\n"
+              "adaptive dt cap (cfl_safety times the smaller limit): none\n");
+}

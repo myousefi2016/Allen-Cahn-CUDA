@@ -170,8 +170,6 @@ TEST_F(WillmoreTest, VanishingBetaReducesToExplicitEuler) {
     EXPECT_LT(max_diff, 1e-12);
 }
 
-// The fourth-order term is only integrated by the Euler / IMEX phase-field
-// update; the explicit multi-stage schemes must refuse it.
 // The Willmore right-hand side takes omega's boundary cells from the
 // homogeneous form of phi's boundary conditions: the discrete energy
 // (beta/2)|omega_h|^2, omega_h = W0^2 (lap_0 phi + c) + h(phi) with lap_0 the
@@ -236,6 +234,8 @@ TEST_F(WillmoreTest, UniformLiquidInsideInhomogeneousWallsStaysExact) {
     }
 }
 
+// The fourth-order term is only integrated by the Euler / IMEX phase-field
+// update; the explicit multi-stage schemes must refuse it.
 TEST_F(WillmoreTest, RequiresEulerOrImex) {
     for (TimeScheme s : {TimeScheme::Heun, TimeScheme::RK4}) {
         auto cfg = periodic_config(8, 0.5, 1.0, 0.01);

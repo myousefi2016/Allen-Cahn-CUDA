@@ -18,6 +18,16 @@ whose alpha and beta have opposite signs, a saturation_check_freq of 0).
 So neither a validator that accepts anything nor a loader that parses without
 validating can pass.
 
+For every valid file the binary must print the explicit stability limits
+for the file's scheme and stencil (the thermal and the phase-field dt limit,
+and with time.adaptive the cap cfl_safety times the smaller one), "none"
+where a limit is +infinity. Each printed value must be the one validate()
+applies: as time.dt it is accepted and the next double above it is rejected
+(the thermal limit of default.json, the phase-field limit of
+benchmark_small.json, the cap of an adaptive copy of default.json), and the
+IMEX thermal limit of benchmark_small.json, the phase-field limit of
+run_dendrite.json and the cap of an adaptive IMEX copy of it print as "none".
+
 The configurations run from the repository root (config/*.json and the
 Makefile's run_vtk.json) must also use their own output_dir and
 checkpoint_dir: checkpoint retention treats a directory as one trajectory and
@@ -28,6 +38,7 @@ Usage: validate_shipped_configs.py BINARY REPO_ROOT   (exit 0 = all valid)
 """
 
 import json
+import math
 import re
 import subprocess
 import sys
@@ -39,6 +50,29 @@ try:
 except ImportError:
     print("FAIL: PyYAML (python3-yaml) is required to read the k8s manifests")
     sys.exit(1)
+
+
+LIMIT_LINE = re.compile(r"^(thermal dt limit|phase-field dt limit|adaptive dt cap) "
+                        r"\(([^)]*)\): (none|[0-9][0-9.e+-]*)$", re.M)
+
+
+def printed_limits(stdout: str):
+    """{line name: (what it applies to, value text)} of the limit lines."""
+    return {m[1]: (m[2], m[3]) for m in LIMIT_LINE.finditer(stdout)}
+
+
+def expected_limits(cfg):
+    """{line name: what it applies to} that a valid cfg must print (the
+    defaults are scheme euler, stencil 7pt and a fixed dt)."""
+    time = cfg.get("time", {})
+    scheme = time.get("scheme", "euler")
+    stencil = cfg.get("stencil", "7pt")
+    stencil = {"standard": "7pt", "isotropic": "27pt"}.get(stencil, stencil)
+    lines = {"thermal dt limit": f"scheme {scheme}, stencil {stencil}",
+             "phase-field dt limit": f"scheme {scheme}, any stencil"}
+    if time.get("adaptive", False):
+        lines["adaptive dt cap"] = "cfl_safety times the smaller limit"
+    return lines
 
 
 def k8s_payloads(root: Path):
@@ -105,6 +139,9 @@ def main() -> int:
         for name, text in cases:
             out = validate(name, text)
             ok = out.returncode == 0
+            if ok:
+                printed = {k: v[0] for k, v in printed_limits(out.stdout).items()}
+                ok = printed == expected_limits(json.loads(text))
             failures += not ok
             print(f"{'ok  ' if ok else 'FAIL'} {name}")
             if not ok:
@@ -114,6 +151,59 @@ def main() -> int:
             cfg = json.loads((root / "config" / name).read_text())
             change(cfg)
             return json.dumps(cfg)
+
+        def with_time(name, **time):
+            return mutated(name, lambda cfg: cfg["time"].update(time))
+
+        def limit(text, line):
+            out = validate("limit", text)
+            found = printed_limits(out.stdout) if out.returncode == 0 else {}
+            return found.get(line, (None, None))[1]
+
+        # Each printed limit is the validator's: accepted as time.dt, the next
+        # double above it rejected.
+        boundaries = [
+            ("default.json", {}, "thermal dt limit",
+             "exceeds the stability limit {} of the explicit thermal update"),
+            ("benchmark_small.json", {}, "phase-field dt limit",
+             "exceeds the stability limit {} of the explicit phase-field update"),
+            ("default.json", {"adaptive": True}, "adaptive dt cap",
+             "time.dt (the first adaptive step) = "),
+        ]
+        for name, time, line, needle in boundaries:
+            what = f"{line} of {name}" + (" (adaptive)" if time else "")
+            value = limit(with_time(name, **time), line)
+            if value is None or value == "none":
+                print(f"FAIL {what}: printed {value!r}, not a number")
+                failures += 1
+                continue
+            at = validate("limit", with_time(name, **time, dt=float(value)))
+            above = validate("limit", with_time(name, **time,
+                                                dt=math.nextafter(float(value), math.inf)))
+            message = above.stdout + above.stderr
+            if at.returncode != 0:
+                print(f"FAIL {what}: time.dt = the printed {value} rejected")
+                failures += 1
+            elif above.returncode == 0 or needle.format(value) not in message:
+                print(f"FAIL {what}: time.dt one double above {value} not rejected with "
+                      f"\"{needle.format(value)}\"")
+                print("     " + message.strip().replace("\n", "\n     "))
+                failures += 1
+            else:
+                print(f"ok   {what}: {value} is the largest accepted time.dt")
+
+        # +infinity prints as "none".
+        nones = [
+            ("benchmark_small.json", {}, "thermal dt limit"),
+            ("run_dendrite.json", {}, "phase-field dt limit"),
+            ("run_dendrite.json", {"scheme": "imex", "adaptive": True}, "adaptive dt cap"),
+        ]
+        for name, time, line in nones:
+            what = f"{line} of {name}" + (f" with {time}" if time else "")
+            value = limit(with_time(name, **time), line)
+            ok = value == "none"
+            failures += not ok
+            print(f"{'ok  ' if ok else 'FAIL'} {what}: {value}")
 
         def misspell(cfg):
             cfg["physics"]["epsilom"] = cfg["physics"].pop("epsilon")

@@ -42,10 +42,11 @@ CUDA_BUILD_DIR     ?= build
 CUDA_ARCH          ?= 75
 NATIVE_BIN         ?= $(CUDA_BUILD_DIR)/src/allen-cahn-cuda
 CONFIG             ?= config/benchmark_small.json
-# Parents of the shipped configurations' own directories (out/<config>,
-# checkpoints/<config>): created before a run, chowned after it, removed by
-# cuda-clean. The binary writes where the configuration's output.output_dir
-# and checkpoint.checkpoint_dir say; every run needs its own checkpoint_dir.
+# Parents of the directories of the repository's config/<name>.json and the
+# generated config/run_vtk.json (out/<name>, checkpoints/<name>): created
+# before a run, chowned after it, removed by cuda-clean. The binary writes
+# where the configuration's output.output_dir and checkpoint.checkpoint_dir
+# say; every run needs its own checkpoint_dir.
 OUT_DIR            ?= out
 CHECKPOINT_DIR     ?= checkpoints
 
@@ -53,7 +54,10 @@ CHECKPOINT_DIR     ?= checkpoints
 VIZ_SCRIPT         ?= scripts/visualize_dendrite.py
 VIZ_IN             ?= $(OUT_DIR)/run_dendrite
 VIZ_ROOT           ?= viz
-VIZ_OUT            ?= $(VIZ_ROOT)/$(notdir $(VIZ_IN))
+# viz/<last path component of VIZ_IN>. abspath drops trailing and repeated
+# slashes and '.' components first, so out/run_vtk/ and out/run_vtk/. also
+# give viz/run_vtk (notdir alone gives viz/ and viz/.).
+VIZ_OUT            ?= $(VIZ_ROOT)/$(notdir $(abspath $(VIZ_IN)))
 VIZ_LAYOUT         ?= panels
 VIZ_FPS            ?= 12
 VIZ_WINDOW_W       ?= 1920
@@ -161,7 +165,7 @@ test-integration: build-debug ## Run integration tests only
 	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS) \
 		-R "^integration[.]"
 
-test-e2e: build-debug ## Run the end-to-end tests (the real binary) only
+test-e2e: build-debug ## Run the end-to-end tests (the real binary, the Makefile) only
 	@echo "==> Running end-to-end tests..."
 	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error \
 		-R "^e2e[.]"
@@ -254,7 +258,7 @@ cuda-test-integration: cuda-build ## (docker) Run integration test binary only
 	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^integration[.]"; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 
-cuda-test-e2e: cuda-build ## (docker) Run the end-to-end tests (the real binary) only
+cuda-test-e2e: cuda-build ## (docker) Run the end-to-end tests (the real binary, the Makefile) only
 	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -R "^e2e[.]"; \
 	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
 

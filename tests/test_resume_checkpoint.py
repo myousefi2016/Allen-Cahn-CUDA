@@ -225,9 +225,10 @@ class ResumeHelperTest(unittest.TestCase):
 
     # 9a --------------------------------------------------------------------
     def test_reads_the_checkpoint_dir_from_the_config(self) -> None:
-        # The Makefile's resume targets pass only the config: the helper must
-        # search the config's own checkpoint_dir, not a shared one (where
-        # another run left a higher step of the same grid).
+        # The Makefile's resume targets pass only the config (checked by
+        # tests/e2e/makefile_resume_call.py): the helper must search the
+        # config's own checkpoint_dir, not a shared one (where another run
+        # left a higher step of the same grid).
         own = self.ckpt / "run_a"
         own.mkdir()
         cfg = dict(self.config)

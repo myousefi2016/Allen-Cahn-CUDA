@@ -45,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 27 unit-test files, 8 integration-test files and an end-to-end test of the binary; mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 27 unit-test files, 8 integration-test files and four end-to-end tests (two of the binary, two of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -331,8 +331,15 @@ writing step *S* it keeps *S* and the `keep_last - 1` newest older
 checkpoints, and deletes any checkpoint *above* *S* (left by an earlier
 run past the point this run restarted from), so "resume from the latest
 checkpoint" can never jump back to a stale history; each removal is logged.
-So every run needs its own `checkpoint_dir`: every shipped configuration
-writes to `checkpoints/<config>` and `out/<config>`. As a safety net,
+So every run needs its own `checkpoint_dir`. The repository's
+`config/<name>.json` files and the `config/run_vtk.json` that
+`make cuda-run-vtk` writes use `checkpoints/<name>` and `out/<name>`, and
+`e2e.ShippedConfigsValidate` fails if two of them have the same
+`checkpoint_dir` or the same `output_dir`. Both k8s payloads (base, which
+the prod overlay keeps, and dev) write to `/data/output/checkpoints` and
+`/data/output` on the PVC of `k8s/base/pvc.yaml`, which `k8s/base/job.yaml`
+mounts at `/data/output`; each overlay deploys the Job and its own copy of that
+PVC into its own namespace (`allen-cahn-dev`, `allen-cahn-prod`). As a safety net,
 retention leaves alone, and does not count toward `keep_last`, checkpoints
 of another grid (header `Nx`, `Ny`, `Nz`, spacing), files named like
 checkpoints whose header cannot be read, and files not named
@@ -354,10 +361,11 @@ make cuda-watch-dendrite          # = tail -F run_long.log
 make cuda-status-dendrite
 
 # After ANY interrupt (Ctrl-C, container kill, host suspend, OOM, ...)
-make cuda-resume-dendrite         # picks up where it left off, no flags needed
+make cuda-resume-dendrite         # resumes from the newest checkpoint the binary can restore (cold start if there is none)
 
-# Visualize partial / completed output (works mid-run too)
-make cuda-visualize VIZ_EXTRA_ARGS="--skip-saturated"
+# Visualize partial / completed output (works mid-run too):
+# ./out/run_dendrite_long/*.vts -> ./viz/run_dendrite_long/*.png + dendrite.mp4
+make cuda-visualize VIZ_IN=out/run_dendrite_long VIZ_EXTRA_ARGS="--skip-saturated"
 ```
 
 The resume mechanism is implemented in `scripts/resume_from_latest_checkpoint.py`,
@@ -441,10 +449,20 @@ Output:
 ```
 viz/run_dendrite/
   frame_000000.png    # step 0
-  frame_000060.png    # step 60
+  frame_000800.png    # step 800
   ...
   dendrite.mp4        # stitched video
 ```
+
+Each frame is named after the step of the snapshot it renders:
+`output_<step>.vts` becomes `frame_<step>.png`, the step zero-padded to
+six digits. `config/run_dendrite.json` writes a snapshot at step 0 and
+then every 800 steps (`output.frequency`) up to step 28000
+(`max_steps`): steps 0, 800, 1600, …, 28000, which is
+28000 / 800 + 1 = 36 snapshots. The saturation guard checks every 800
+steps (`saturation_check_freq`), so a run it stops early ends on one of
+these steps. A snapshot that `--skip-saturated` drops has no frame and
+is not in the video.
 
 ### Common overrides
 
@@ -455,8 +473,10 @@ make cuda-visualize VIZ_WINDOW_W=2560 VIZ_WINDOW_H=1440 VIZ_FPS=24
 # Just the 3D cutaway, no sidebar
 make cuda-visualize-single
 
-# Different output directories
-make cuda-visualize VIZ_IN=/data/run42 VIZ_OUT=/data/run42/viz
+# Another run's snapshots, rendered to a directory of your choice (VIZ_OUT
+# defaults to viz/<name of VIZ_IN>); the container mounts only the
+# repository, at /work, so both paths must be relative and stay inside it
+make cuda-visualize VIZ_IN=out/run_dendrite_long VIZ_OUT=viz/long_run
 
 # Drop saturated frames; cap at 30 frames; no silhouette outline
 make cuda-visualize VIZ_EXTRA_ARGS="--skip-saturated --limit 30 --no-silhouette"
@@ -539,7 +559,7 @@ configurations, not to the compiled-in values.
 | Parameter             | Accepted values |
 |-----------------------|-----------------|
 | `time.scheme`         | `"euler"`, `"heun"`, `"rk4"`, `"imex"` |
-| `time.dt`             | at most the explicit stability limits of the scheme, stencil and spacing (`docs/THEORY.md` §10.1; `--validate-config` reports them); with `time.adaptive`, at most `cfl_safety` times them, like `time.dt_min` |
+| `time.dt`             | at most the explicit stability limits (`docs/THEORY.md` §10.1), which `--validate-config` prints for a valid file: the thermal one of the scheme, stencil, spacing and `physics.D`, the phase-field one of the scheme, spacing and physics; with `time.adaptive`, at most `cfl_safety` times the smaller one, like `time.dt_min` |
 | `time.cfl_safety`     | in (0, 1]: adaptive steps are capped at this fraction of the stability limits |
 | `physics.epsilon`     | anisotropy strength in [0, 1/3); above 1/15 it requires `physics.willmore_beta > 0` |
 | `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (0 when omitted); > 0 requires `time.scheme` `"euler"` or `"imex"` |
@@ -557,6 +577,31 @@ conversion. Check a file without a GPU:
 
 ```bash
 ./build/release/src/allen-cahn-cuda --validate-config config/run_dendrite.json
+```
+
+For a valid file it prints, after its log lines, the explicit stability
+limits of `time.dt` for its scheme and stencil:
+
+```
+valid: config/run_dendrite.json
+thermal dt limit (scheme euler, stencil 27pt): 0.026086956521739132
+phase-field dt limit (scheme euler, any stencil): none
+```
+
+The values are printed to 17 significant digits, as in the rejection
+messages, so each reads back as exactly the limit the validator compares
+with; a fixed `time.dt` must not exceed the smaller one. `none` means no
+limit: `"imex"` has no thermal limit (it treats u implicitly), and the
+phase-field limit is none when the Willmore term damps every checkerboard
+case it is taken over, as in the `run_dendrite*.json` configurations
+(`docs/THEORY.md` §10.1). The phase-field limit does not depend on
+`stencil`, which selects only the thermal Laplacian. With `time.adaptive` a
+third line gives the cap on every adaptive step, `cfl_safety` times the
+smaller limit, which `time.dt` and `time.dt_min` must not exceed
+(`config/default.json` with `"adaptive": true`):
+
+```
+adaptive dt cap (cfl_safety times the smaller limit): 0.012000000000000002
 ```
 
 ### Per-face boundary conditions
@@ -685,8 +730,9 @@ required) — see `.github/workflows/ci.yml`.
 
 The suite has three `ctest` groups, selectable with `-R "^unit[.]"`,
 `-R "^integration[.]"` and `-R "^e2e[.]"`: the `unit_tests` and
-`integration_tests` executables and an end-to-end test that drives the
-built binary (Python 3). It is verified on an NVIDIA RTX 4090
+`integration_tests` executables and four end-to-end tests (Python 3): two
+drive the built binary, two check the Makefile's resume and visualization
+targets with `make -n` (GNU make). It is verified on an NVIDIA RTX 4090
 (compute 8.9) with CUDA 13.2.
 
 Without a usable GPU the CUDA tests are reported as *Skipped*. Set
@@ -699,8 +745,9 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 
 | Suite             | Files | Status            |
 |-------------------|-------|-------------------|
-| Unit tests        | 24    | ✅ all passing     |
+| Unit tests        | 27    | ✅ all passing     |
 | Integration tests | 8     | ✅ all passing     |
+| End-to-end tests  | 4     | ✅ all passing     |
 
 ```bash
 git clone https://github.com/myousefi2016/Allen-Cahn-CUDA.git
@@ -727,7 +774,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 |-------------------------------|----------------------------------------------------------------------------------|
 | `test_Grid.cpp`               | Grid construction, indexing, spacing, validity checks                            |
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
-| `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the gradient energy's Hessian diagonal, the phase-field limit over the axis subsets and gradient directions), `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap |
+| `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the gradient energy's Hessian diagonal, the phase-field limit over the axis subsets and gradient directions), `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap; the `--validate-config` report (each limit to 17 digits, `none` for +∞, the adaptive cap only with `time.adaptive`) |
 | `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, integer fields only ints in the range of `int`, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters), defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
@@ -766,12 +813,14 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_AnisotropyForce.cu`     | Seed growth favours <100> increasingly with ε; grid anisotropy at ε = 0 is < 2% and vanishes under refinement |
 | `test_WillmoreRefinement.cu`  | At ε = 0.12 grid refinement does not converge without the Willmore term and converges with it |
 
-### End-to-end test (`tests/e2e/`)
+### End-to-end tests (`tests/e2e/`)
 
 | File              | What it covers                                                                  |
 |-------------------|----------------------------------------------------------------------------------|
 | `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at |
-| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config`; a misspelled key, integer fields that are not ints (64.5 cells, 4294967297 steps) and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs, `saturation_check_freq` 0) are rejected; the runs from the repository root use their own output and checkpoint directories |
+| `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` call the resume helper with only the config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), so it searches the config's own `checkpoint_dir`; checked with `make -n` and a stub helper, without docker |
+| `makefile_viz_out.py` | `make cuda-visualize` renders into `viz/<name of the run>` however `VIZ_IN` is spelled (`out/run_vtk`, `out/run_vtk/`, `out/run_vtk//`, `out/run_vtk/.`, `./out/run_vtk`, an absolute path), and `VIZ_ROOT` and `VIZ_OUT` override it; checked with `make -n`, without docker |
+| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config` and prints its thermal and phase-field dt limits for its scheme and stencil; a `time.dt` equal to a printed limit (thermal, phase-field, adaptive cap) is accepted and one double above it rejected, and an infinite limit prints as `none`; a misspelled key, integer fields that are not ints (64.5 cells, 4294967297 steps) and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs, `saturation_check_freq` 0) are rejected; the runs from the repository root use their own output and checkpoint directories |
 
 ### Run a single test
 
@@ -805,7 +854,8 @@ Allen-Cahn-CUDA/
 ├── tests/
 │   ├── unit/                  # 27 unit-test files
 │   ├── integration/           # 8 integration-test files
-│   ├── e2e/                   # signal_exit.py, validate_shipped_configs.py
+│   ├── e2e/                   # signal_exit.py, validate_shipped_configs.py,
+│   │                          # makefile_resume_call.py, makefile_viz_out.py
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   ├── test_resume_checkpoint.py  # resume helper: checkpoint choice and config rewrite
 │   ├── test_gpu_runner_guard.py   # self-hosted GPU runner guard

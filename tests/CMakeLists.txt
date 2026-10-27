@@ -87,7 +87,7 @@ gtest_discover_tests(integration_tests
     PROPERTIES TIMEOUT 300
 )
 
-# ── End-to-end tests (the real binary) ──────────────────────────────────────
+# ── End-to-end tests (the real binary, the Makefile) ────────────────────────
 # Exit code 77 = no GPU (reported as Skipped; signal_exit.py fails instead
 # when AC_REQUIRE_GPU=1).
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -106,3 +106,21 @@ add_test(NAME e2e.ShippedConfigsValidate
             $<TARGET_FILE:allen-cahn-cuda> ${PROJECT_SOURCE_DIR}
 )
 set_tests_properties(e2e.ShippedConfigsValidate PROPERTIES TIMEOUT 300)
+
+# The Makefile's resume targets must pass the resume helper only the config, so
+# that it searches the config's own checkpoint_dir. Runs `make -n` with a stub
+# helper (GNU make on PATH; no binary, docker or GPU).
+add_test(NAME e2e.MakefileResumeCall
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_resume_call.py
+            ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.MakefileResumeCall PROPERTIES TIMEOUT 60)
+
+# `make cuda-visualize` renders a run into viz/<name of the run> however VIZ_IN
+# is spelled (trailing or repeated slashes, '.'). Runs `make -n` (GNU make on
+# PATH; no binary, docker or GPU).
+add_test(NAME e2e.MakefileVizOut
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_viz_out.py
+            ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.MakefileVizOut PROPERTIES TIMEOUT 60)

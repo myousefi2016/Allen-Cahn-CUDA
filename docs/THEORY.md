@@ -1303,9 +1303,12 @@ periodic, every row sum equals q, the constant vector is an eigenvector and
 irreducible). Iteration matrices built from an exact emulation of the
 sweep and the ghost fill (832 small grids: one to four cells per axis, both
 stencils, every pair of rules on the x faces with four layouts that cover
-every rule on the y and z faces) have ‖J‖∞ = q; with Robin coefficients of
-opposite signs, which `validate()` rejects, ρ(J) reaches 1.29 at s = 1.5
-(c = −10).
+every rule on the y and z faces; Δt·D = 0.025) all have ‖J‖∞ ≤ q.
+‖J‖∞ = q in the 488 in which the stencil of some cell reads no ghost whose
+fill passes through a Dirichlet face or a Robin face with α ≠ 0; ‖J‖∞ < q
+in the other 344, down to 0.375 q (27-point stencil, one cell along x,
+Dirichlet on every face). With Robin coefficients of opposite signs, which
+`validate()` rejects, ρ(J) reaches 1.29 at s = 1.5 (c = −10).
 
 **Stopping rule.** With e_k = u* − u_k (u* the exact solution) and
 d_{k+1} = max|u_{k+1} − u_k|, e_{k+1} = J e_k = J(e_{k+1} + u_{k+1} − u_k)
@@ -1350,7 +1353,8 @@ iterate the rule cannot accept:
   (1 + 3s)·m ≥ 2.6·10⁴ (7-point) or 1.1·10⁴ (27-point): no number of
   sweeps certifies the tolerance; Δt must be smaller;
 - d did not decrease between two checks: in exact arithmetic it shrinks by
-  q¹⁰, so rounding stopped the iteration above the tolerance.
+  at least the factor q¹⁰, so rounding stopped the iteration above the
+  tolerance.
 
 **Evidence** (`tests/unit/test_ImexJacobi.cu`): one step at s = 17.1
 (7-point, anisotropic spacing) and s = 16 (27-point), every kind of u face,

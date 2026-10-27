@@ -2,6 +2,8 @@
 
 #include "core/SimulationConfig.hpp"
 
+#include <string>
+
 namespace ac {
 
 /// Explicit stability limits of the time step (docs/THEORY.md 10.1). Both are
@@ -55,5 +57,15 @@ namespace ac {
 /// frozen-coefficient for a gradient), so is their minimum. +infinity when
 /// beta L_S >= Lam in every case.
 [[nodiscard]] double phase_field_dt_limit(const SimulationConfig& config);
+
+/// The lines `allen-cahn-cuda --validate-config` prints for a valid
+/// configuration: the thermal limit with the scheme and stencil it is
+/// computed for, the phase-field limit with the scheme (`stencil` selects
+/// only the thermal Laplacian), and with time.adaptive the cap
+/// cfl_safety * min(thermal, phase field) of every adaptive step. A finite
+/// value is printed to 17 significant digits, as in validate()'s messages,
+/// so it reads back as exactly the limit validate() compares with; +infinity
+/// prints as "none".
+[[nodiscard]] std::string stability_limits_report(const SimulationConfig& config);
 
 } // namespace ac

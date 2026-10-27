@@ -303,6 +303,17 @@ in Lam_S), minimised over S and n (THEORY 10.1).
 `SimulationConfig::validate` rejects a fixed dt above either limit, and with
 adaptive stepping a time.dt or dt_min above the cap and `cfl_safety`
 outside (0, 1]. The engine computes the cap once, in its constructor.
+For a valid file `allen-cahn-cuda --validate-config` prints the lines of
+`stability_limits_report`: the thermal limit with the scheme and stencil,
+the phase-field limit with the scheme (`stencil` selects only the thermal
+Laplacian), and with adaptive stepping the cap, each printed to 17
+significant digits like the rejection messages, `none` for +∞:
+
+```
+thermal dt limit (scheme <euler|heun|rk4|imex>, stencil <7pt|27pt>): <limit|none>
+phase-field dt limit (scheme <euler|heun|rk4|imex>, any stencil): <limit|none>
+adaptive dt cap (cfl_safety times the smaller limit): <cap|none>
+```
 
 The validator also rejects:
 - `time.adaptive_tolerance <= 0` when `time.adaptive == true`.
@@ -320,10 +331,13 @@ takes only a JSON integer in the range of `int` (a fraction, an exponent, a
 boolean or a string is an error, not a conversion), and a per-face
 `boundary.phi` / `boundary.u` (any of `x_lo` … `z_hi` present) must name all
 six faces and nothing else. `allen-cahn-cuda --validate-config FILE` runs the
-parser and validator without touching the GPU; the ctest
-`e2e.ShippedConfigsValidate` runs it on every configuration the repository
-ships (`config/*.json`, the k8s payloads, the Makefile's `run_vtk.json` and
-the JSON examples in the docs).
+parser and validator without touching the GPU and, for a valid file, prints
+the limit lines above; the ctest `e2e.ShippedConfigsValidate` runs it on
+every configuration the repository ships (`config/*.json`, the k8s
+payloads, the Makefile's `run_vtk.json` and the JSON examples in the docs),
+requires the limit lines for each, and checks that a `time.dt` equal to a
+printed limit (thermal, phase-field, adaptive cap) is accepted and one
+double above it rejected.
 
 ---
 
@@ -585,7 +599,9 @@ fixed-dt run (`time.adaptive` false) continues with the configured dt,
 with a warning if the checkpoint was written with another one (the
 configured dt is the one `validate()` checked and the step-counted
 frequencies assume), and an adaptive run continues from the checkpoint's
-dt. A restart is requested iff
+dt, clamped to [dt_min, dt_max] and capped at `cfl_safety` times the
+stability limits like every adapted step (with a warning if that changes
+it). A restart is requested iff
 `checkpoint.restart_file` is set; if that file does not exist the run
 fails (`CheckpointManager::restore`) instead of cold-starting, which
 would otherwise overwrite and rotate away the real checkpoints.
@@ -603,9 +619,17 @@ removal is logged at info level. Only names of the exact form
 `checkpoint_<digits>.acbin` whose header has this run's grid (`Nx`, `Ny`,
 `Nz`, spacing) are managed: a checkpoint of another grid cannot belong to
 this trajectory and is left alone, with one warning. Two runs of the same
-grid cannot be told apart, so every run needs its own `checkpoint_dir`;
-every shipped configuration has one (`checkpoints/<config>`, and
-`out/<config>` for its output), which `e2e.ShippedConfigsValidate` checks.
+grid cannot be told apart, so every run needs its own `checkpoint_dir`.
+The repository's `config/<name>.json` files and the `config/run_vtk.json`
+that `make cuda-run-vtk` writes use `checkpoints/<name>` (and `out/<name>`
+for their output), and `e2e.ShippedConfigsValidate` fails if two of them
+have the same `checkpoint_dir` or the same `output_dir`. Both k8s payloads
+(base, which the prod overlay keeps, and dev) use
+`/data/output/checkpoints` (and `/data/output`) on the PVC of
+`k8s/base/pvc.yaml`, which `k8s/base/job.yaml` mounts at `/data/output`;
+each overlay deploys the Job and its own copy of that PVC into its own
+namespace
+(`allen-cahn-dev`, `allen-cahn-prod`).
 `restore()` without a `restart_file` walks the directory in descending
 step order and returns the first valid checkpoint.
 
