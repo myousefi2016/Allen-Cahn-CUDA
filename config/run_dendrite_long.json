@@ -35,14 +35,14 @@
     "_comment_output": "VTK every 8000 steps (2.5 time units): 16 frames up to saturation, 1.0 GB.",
     "output": {
         "frequency": 8000,
-        "output_dir": "./out",
+        "output_dir": "./out/run_dendrite_long",
         "format": "vts",
         "async_io": true
     },
     "_comment_checkpoint": "Checkpoint every 48000 steps (15 time units, 11.6 minutes of compute on an RTX 4090), keep_last = 3 (340 MB). The resume target picks the latest intact checkpoint.",
     "checkpoint": {
         "frequency": 48000,
-        "checkpoint_dir": "./checkpoints",
+        "checkpoint_dir": "./checkpoints/run_dendrite_long",
         "keep_last": 3
     },
     "gpu": {

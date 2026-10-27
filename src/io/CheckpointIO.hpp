@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace ac {
@@ -52,7 +53,11 @@ public:
 
     static RestoreData read(const std::filesystem::path& path);
 
-    /// Check if a file is a valid checkpoint.
+    /// The header of a checkpoint file, if the file holds a whole header with
+    /// the ACCHKPT magic.
+    static std::optional<Header> read_header(const std::filesystem::path& path);
+
+    /// Check if a file is a valid checkpoint (read_header succeeds).
     static bool is_valid_checkpoint(const std::filesystem::path& path);
 };
 

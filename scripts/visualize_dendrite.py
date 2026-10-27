@@ -35,7 +35,7 @@
 #
 # Usage (standalone)
 #   python scripts/visualize_dendrite.py \
-#       --input-dir ./out --output-dir ./viz \
+#       --input-dir ./out/run_dendrite --output-dir ./viz/run_dendrite \
 #       --layout panels --make-video --fps 12
 #
 # Usage (Makefile)

@@ -10,7 +10,11 @@
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <memory>
 #include <random>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -242,6 +246,60 @@ TEST_F(CheckpointManagerTest, RetentionIgnoresUnrelatedFiles) {
     EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_20.acbin"));
     for (const char* name : {"notes.txt", "checkpoint_x.acbin", "checkpoint_5.acbin.tmp"})
         EXPECT_TRUE(std::filesystem::exists(test_dir_ / name)) << name;
+}
+
+// Checkpoints of another grid in the same directory (another configuration's
+// run) are not this trajectory: retention leaves them alone, even those with
+// higher steps, and they do not count toward keep_last. Before, a 160^3 demo
+// writing step 12000 deleted the 384^3 run's checkpoints 16000..30000.
+TEST_F(CheckpointManagerTest, RetentionLeavesCheckpointsOfOtherGridsAlone) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    const Grid other(Dim3{N + 2, N, N}, Spacing{1.0, 1.0, 1.0});
+    const Grid spacing(Dim3{N, N, N}, Spacing{0.5, 1.0, 1.0});
+    FieldData phi_o(other, "phi"), u_o(other, "u"), phi_s(spacing, "phi"), u_s(spacing, "u");
+    for (int step : {16000, 24000, 30000})
+        CheckpointIO::write(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin"), step,
+                            step * 0.01, 0.01, other, phi_o, u_o);
+    CheckpointIO::write(test_dir_ / "checkpoint_14000.acbin", 14000, 140.0, 0.01, spacing, phi_s,
+                        u_s);
+
+    CheckpointManager mgr(make_params(4000, 1), grid_);
+    mgr.save(4000, 40.0, 0.01, phi, u);
+    mgr.save(8000, 80.0, 0.01, phi, u);
+    mgr.save(12000, 120.0, 0.01, phi, u);
+
+    for (int step : {14000, 16000, 24000, 30000})
+        EXPECT_TRUE(
+            std::filesystem::exists(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin")))
+            << step;
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_4000.acbin"));
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_8000.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_12000.acbin"));
+}
+
+// Removals are logged at info level, the console level of the binary: the
+// user sees which checkpoint was deleted and why.
+TEST_F(CheckpointManagerTest, RemovalsAreLoggedAtInfoLevel) {
+    auto stream = std::make_shared<std::ostringstream>();
+    auto logger = std::make_shared<spdlog::logger>(
+        "capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(*stream));
+    logger->set_level(spdlog::level::info);
+    const auto previous = spdlog::default_logger();
+    spdlog::set_default_logger(logger);
+
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    CheckpointManager mgr(make_params(10, 1), grid_);
+    mgr.save(10, 0.1, 0.01, phi, u);
+    mgr.save(20, 0.2, 0.01, phi, u);
+    spdlog::set_default_logger(previous);
+
+    EXPECT_NE(stream->str().find("Removed checkpoint"), std::string::npos) << stream->str();
+    EXPECT_NE(stream->str().find("checkpoint_10.acbin (beyond keep_last)"), std::string::npos)
+        << stream->str();
 }
 
 // A configured restart_file that does not exist must stop the run: the old

@@ -35,14 +35,14 @@
     "_comment_output": "VTK every 2000 steps (2.5 time units): 47 frames up to saturation, up to 630 MB each, 21.5 GB in total.",
     "output": {
         "frequency": 2000,
-        "output_dir": "./out",
+        "output_dir": "./out/run_dendrite_large",
         "format": "vts",
         "async_io": true
     },
     "_comment_checkpoint": "Checkpoint every 8000 steps (10 time units, 15.7 minutes of compute on an RTX 4090). 906 MB per checkpoint, keep_last = 3: 2.7 GB.",
     "checkpoint": {
         "frequency": 8000,
-        "checkpoint_dir": "./checkpoints",
+        "checkpoint_dir": "./checkpoints/run_dendrite_large",
         "keep_last": 3
     },
     "gpu": {

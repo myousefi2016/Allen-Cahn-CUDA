@@ -19,17 +19,19 @@
         "dt": 0.005,
         "max_steps": 1000,
         "scheme": "imex",
-        "adaptive": false
+        "adaptive": false,
+        "saturation_check_freq": 200
     },
     "stencil": "7pt",
     "output": {
         "frequency": 100,
-        "output_dir": "./out",
+        "output_dir": "./out/benchmark_small",
         "format": "raw",
         "async_io": true
     },
     "checkpoint": {
-        "frequency": 0
+        "frequency": 0,
+        "checkpoint_dir": "./checkpoints/benchmark_small"
     },
     "initial": {
         "seed_radius": 2.0

@@ -5,8 +5,8 @@
 # Writes synthetic checkpoints in the on-disk format of src/io/CheckpointIO.hpp
 # (packed little-endian 128-byte Header, then phi and u as Nx*Ny*Nz doubles
 # each; data_crc32 = CRC-32 of phi||u, 0 = not stored) into a temp directory,
-# runs the helper the way the Makefile does (from the directory holding
-# config/ and checkpoints/, with relative arguments) and asserts that:
+# runs the helper from the directory holding config/ and checkpoints/, with
+# relative arguments, and asserts that:
 #
 #   1. the highest-step valid checkpoint is chosen, and the printed config
 #      path and injected restart_file stay relative to the cwd
@@ -20,6 +20,8 @@
 #      nothing on stdout, no resume config written
 #   8. the CRC is computed correctly when streamed in small chunks
 #   9. a config without usable grid dimensions exits 2, never 1
+#  9a. given only the config, as the Makefile's resume targets call it, the
+#      helper searches the config's own checkpoint_dir
 #
 # Run:  python3 tests/test_resume_checkpoint.py   (stdlib only; exit 0 = pass)
 # ============================================================================
@@ -105,9 +107,10 @@ class ResumeHelperTest(unittest.TestCase):
     def write_config(self, cfg: dict) -> None:
         (self.work / "config" / "run.json").write_text(json.dumps(cfg))
 
-    def run_helper(self) -> subprocess.CompletedProcess:
+    def run_helper(self, *dir_arg: str) -> subprocess.CompletedProcess:
+        args = dir_arg if dir_arg else ("checkpoints",)
         return subprocess.run(
-            [sys.executable, str(HELPER), "config/run.json", "checkpoints"],
+            [sys.executable, str(HELPER), "config/run.json", *args],
             cwd=self.work, capture_output=True, text=True, check=False)
 
     def assert_resumes_from(self, step: int) -> subprocess.CompletedProcess:
@@ -218,6 +221,25 @@ class ResumeHelperTest(unittest.TestCase):
                 resume.read_valid_header(bad, 200, GRID)
         finally:
             resume.CRC_CHUNK_BYTES = saved
+
+    # 9a --------------------------------------------------------------------
+    def test_reads_the_checkpoint_dir_from_the_config(self) -> None:
+        # The Makefile's resume targets pass only the config: the helper must
+        # search the config's own checkpoint_dir, not a shared one (where
+        # another run left a higher step of the same grid).
+        own = self.ckpt / "run_a"
+        own.mkdir()
+        cfg = dict(self.config)
+        cfg["checkpoint"] = dict(cfg["checkpoint"], checkpoint_dir="./checkpoints/run_a")
+        self.write_config(cfg)
+        write_checkpoint(own, 200)
+        write_checkpoint(self.ckpt, 900)
+        res = subprocess.run([sys.executable, str(HELPER), "config/run.json"], cwd=self.work,
+                             capture_output=True, text=True, check=False)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        resumed = json.loads((self.work / "config" / "run_resume.json").read_text())
+        self.assertEqual(resumed["checkpoint"]["restart_file"],
+                         "checkpoints/run_a/checkpoint_200.acbin")
 
     # 9 ----------------------------------------------------------------------
     def test_config_grid(self) -> None:

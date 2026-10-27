@@ -23,18 +23,19 @@
         "max_steps": 28000,
         "scheme": "euler",
         "adaptive": false,
-        "cfl_safety": 0.9
+        "cfl_safety": 0.9,
+        "saturation_check_freq": 800
     },
     "stencil": "27pt",
     "output": {
         "frequency": 800,
-        "output_dir": "./out",
+        "output_dir": "./out/run_dendrite",
         "format": "vts",
         "async_io": true
     },
     "checkpoint": {
         "frequency": 12000,
-        "checkpoint_dir": "./checkpoints",
+        "checkpoint_dir": "./checkpoints/run_dendrite",
         "keep_last": 3
     },
     "gpu": {

@@ -16,6 +16,12 @@ a Robin face whose alpha and beta have opposite signs).
 So neither a validator that accepts anything nor a loader that parses without
 validating can pass.
 
+The configurations run from the repository root (config/*.json and the
+Makefile's run_vtk.json) must also use their own output_dir and
+checkpoint_dir: checkpoint retention treats a directory as one trajectory and
+would delete another run's checkpoints, and outputs of equal steps would
+overwrite each other.
+
 Usage: validate_shipped_configs.py BINARY REPO_ROOT   (exit 0 = all valid)
 """
 
@@ -73,6 +79,20 @@ def main() -> int:
         return 1
 
     failures = 0
+    owners = {}
+    local = [(n, t) for n, t in cases if n.startswith("config/") or n == "Makefile cuda-run-vtk"]
+    for name, text in local:
+        cfg = json.loads(text)
+        dirs = {"output_dir": cfg.get("output", {}).get("output_dir", "./out"),
+                "checkpoint_dir": cfg.get("checkpoint", {}).get("checkpoint_dir", "./checkpoints")}
+        for key, value in dirs.items():
+            path = str(Path(value))
+            if (key, path) in owners:
+                print(f"FAIL {name}: {key} {value} is also used by {owners[(key, path)]}")
+                failures += 1
+            owners[(key, path)] = name
+    print(f"{'ok  ' if failures == 0 else 'FAIL'} own output_dir and checkpoint_dir for "
+          f"{len(local)} runs from the repository root")
     with tempfile.TemporaryDirectory() as tmp:
         def validate(name, text):
             path = Path(tmp) / "config.json"

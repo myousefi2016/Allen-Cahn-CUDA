@@ -23,18 +23,19 @@
         "max_steps": 24000,
         "scheme": "euler",
         "adaptive": false,
-        "cfl_safety": 0.9
+        "cfl_safety": 0.9,
+        "saturation_check_freq": 400
     },
     "stencil": "7pt",
     "output": {
         "frequency": 400,
-        "output_dir": "./out",
+        "output_dir": "./out/default",
         "format": "vts",
         "async_io": true
     },
     "checkpoint": {
         "frequency": 2000,
-        "checkpoint_dir": "./checkpoints",
+        "checkpoint_dir": "./checkpoints/default",
         "keep_last": 3
     },
     "gpu": {

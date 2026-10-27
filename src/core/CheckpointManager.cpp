@@ -99,6 +99,20 @@ void CheckpointManager::enforce_retention(int newest_step) {
         const char* reason = nullptr;
         if (step == newest_step)
             continue;
+        const auto header = CheckpointIO::read_header(path);
+        if (!header || header->Nx != grid_.Nx() || header->Ny != grid_.Ny() ||
+            header->Nz != grid_.Nz() || header->dx != grid_.dx() || header->dy != grid_.dy() ||
+            header->dz != grid_.dz()) {
+            if (!warned_foreign_) {
+                spdlog::warn("{} also holds checkpoints that are not of this run's {}x{}x{} grid "
+                             "(first: {}); retention leaves them alone. Give every run its own "
+                             "checkpoint.checkpoint_dir.",
+                             params_.checkpoint_dir.string(), grid_.Nx(), grid_.Ny(), grid_.Nz(),
+                             path.filename().string());
+                warned_foreign_ = true;
+            }
+            continue;
+        }
         if (step > newest_step)
             reason = "newer than the checkpoint just written (from an earlier run)";
         else if (kept_older < params_.keep_last - 1)
@@ -112,7 +126,7 @@ void CheckpointManager::enforce_retention(int newest_step) {
         if (ec)
             spdlog::warn("Could not remove checkpoint {}: {}", path.string(), ec.message());
         else
-            spdlog::debug("Removed checkpoint {} ({})", path.string(), reason);
+            spdlog::info("Removed checkpoint {} ({})", path.string(), reason);
     }
 }
 

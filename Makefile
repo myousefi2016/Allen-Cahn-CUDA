@@ -42,13 +42,18 @@ CUDA_BUILD_DIR     ?= build
 CUDA_ARCH          ?= 75
 NATIVE_BIN         ?= $(CUDA_BUILD_DIR)/src/allen-cahn-cuda
 CONFIG             ?= config/benchmark_small.json
+# Parents of the shipped configurations' own directories (out/<config>,
+# checkpoints/<config>): created before a run, chowned after it, removed by
+# cuda-clean. The binary writes where the configuration's output.output_dir
+# and checkpoint.checkpoint_dir say; every run needs its own checkpoint_dir.
 OUT_DIR            ?= out
 CHECKPOINT_DIR     ?= checkpoints
 
 # Visualization (scripts/visualize_dendrite.py)
 VIZ_SCRIPT         ?= scripts/visualize_dendrite.py
-VIZ_IN             ?= $(OUT_DIR)
-VIZ_OUT            ?= viz
+VIZ_IN             ?= $(OUT_DIR)/run_dendrite
+VIZ_ROOT           ?= viz
+VIZ_OUT            ?= $(VIZ_ROOT)/$(notdir $(VIZ_IN))
 VIZ_LAYOUT         ?= panels
 VIZ_FPS            ?= 12
 VIZ_WINDOW_W       ?= 1920
@@ -87,7 +92,7 @@ CUDA_DOCKER_RUN_FS = docker run --rm -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
 
 # Chown build artefacts back to the host user at the end of every docker job.
 CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
-  $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_OUT) 2>/dev/null || true
+  $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_ROOT) $(VIZ_OUT) 2>/dev/null || true
 
 # Force serial execution — the cuda-* targets share $(CUDA_BUILD_DIR) and
 # would race on cmake/FetchContent if the user has MAKEFLAGS=-jN in their env.
@@ -265,17 +270,17 @@ cuda-run-small: cuda-run ## (docker) 128^3 quick benchmark -> raw output
 cuda-run-default: CONFIG=config/default.json
 cuda-run-default: cuda-run ## (docker) 600^3 full production run -> VTS output
 
-cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in ./out
+cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in ./out/run_vtk
 	@mkdir -p config $(OUT_DIR) $(CHECKPOINT_DIR)
 	@echo "==> Writing config/run_vtk.json"
 	@printf '%s\n' \
 	    '{' \
 	    '  "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "D": 2.0, "d0": 0.5, "willmore_beta": 0.0149 },' \
 	    '  "grid":     { "Nx": 128, "Ny": 128, "Nz": 128, "dx": 0.4, "dy": 0.4, "dz": 0.4 },' \
-	    '  "time":     { "dt": 0.005, "max_steps": 3200, "scheme": "euler", "adaptive": false },' \
+	    '  "time":     { "dt": 0.005, "max_steps": 3200, "scheme": "euler", "adaptive": false, "saturation_check_freq": 160 },' \
 	    '  "stencil":  "27pt",' \
-	    '  "output":   { "frequency": 160, "output_dir": "./out", "format": "vts", "async_io": true },' \
-	    '  "checkpoint": { "frequency": 800, "checkpoint_dir": "./checkpoints", "keep_last": 3 },' \
+	    '  "output":   { "frequency": 160, "output_dir": "./out/run_vtk", "format": "vts", "async_io": true },' \
+	    '  "checkpoint": { "frequency": 800, "checkpoint_dir": "./checkpoints/run_vtk", "keep_last": 3 },' \
 	    '  "initial":  { "seed_radius": 2.4 },' \
 	    '  "boundary": {' \
 	    '    "phi": { "type": "neumann", "flux": 0.0 },' \
@@ -300,7 +305,7 @@ cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, be
 #
 # After an interrupt (SIGINT, container kill, host suspend, ...), simply:
 #   make cuda-resume-dendrite
-# which scans $(CHECKPOINT_DIR) for the highest-numbered intact checkpoint,
+# which scans the config's checkpoint_dir for the highest-numbered intact checkpoint,
 # skipping any whose header, exact size or CRC32 does not match the config's
 # grid (truncated, foreign-grid or corrupted files), generates
 # config/run_dendrite_long_resume.json, and restarts the binary.
@@ -321,7 +326,7 @@ cuda-run-dendrite-long: cuda-build ## (docker) Long 192^3 dendrite run (eps=0.15
 cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest intact checkpoint (cold start if none)
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
 	@set +e; \
-	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LONG_CONFIG) $(CHECKPOINT_DIR)); \
+	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LONG_CONFIG)); \
 	rc_helper=$$?; \
 	if [ $$rc_helper -eq 0 ]; then \
 	  case "$$RESUME_CFG" in /*) \
@@ -361,7 +366,7 @@ cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run until saturat
 cuda-resume-dendrite-large: cuda-build ## (docker) Resume the large run from latest checkpoint
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
 	@set +e; \
-	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LARGE_CONFIG) $(CHECKPOINT_DIR)); \
+	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LARGE_CONFIG)); \
 	rc_helper=$$?; \
 	if [ $$rc_helper -eq 0 ]; then \
 	  case "$$RESUME_CFG" in /*) \
@@ -391,22 +396,25 @@ cuda-watch-dendrite: ## Tail run_long.log (only useful after 'nohup make cuda-ru
 
 cuda-status-dendrite: ## Show progress of the long run (latest checkpoint, frame count, ETA)
 	@printf "==> Long-run status (target: %s)\n" $(LONG_CONFIG)
-	@TARGET=$$(python3 -c "import json; print(json.load(open('$(LONG_CONFIG)'))['time']['max_steps'])"); \
+	@CFG='$(LONG_CONFIG)'; \
+	TARGET=$$(python3 -c "import json; print(json.load(open('$$CFG'))['time']['max_steps'])"); \
+	CKPT=$$(python3 -c "import json; print(json.load(open('$$CFG'))['checkpoint']['checkpoint_dir'])"); \
+	OUT=$$(python3 -c "import json; print(json.load(open('$$CFG'))['output']['output_dir'])"); \
 	echo "  Target steps:        $$TARGET"; \
-	if [ -d $(CHECKPOINT_DIR) ]; then \
-	  echo "  Checkpoints:"; \
-	  ls -lh $(CHECKPOINT_DIR)/checkpoint_*.acbin 2>/dev/null | awk '{printf "    %s  %s\n", $$5, $$NF}' | sort -t/ -k3 || echo "    (none yet)"; \
-	  LATEST=$$(ls $(CHECKPOINT_DIR)/checkpoint_*.acbin 2>/dev/null | sed 's/.*checkpoint_\([0-9]*\)\.acbin/\1/' | sort -n | tail -1); \
+	if [ -d "$$CKPT" ]; then \
+	  echo "  Checkpoints ($$CKPT):"; \
+	  ls -lh "$$CKPT"/checkpoint_*.acbin 2>/dev/null | awk '{printf "    %s  %s\n", $$5, $$NF}' | sort -t/ -k3 || echo "    (none yet)"; \
+	  LATEST=$$(ls "$$CKPT"/checkpoint_*.acbin 2>/dev/null | sed 's/.*checkpoint_\([0-9]*\)\.acbin/\1/' | sort -n | tail -1); \
 	  if [ -n "$$LATEST" ]; then \
 	    PCT=$$(python3 -c "print(f'{100*$$LATEST/$$TARGET:.1f}')"); \
 	    echo "  Latest step:         $$LATEST / $$TARGET ($$PCT%)"; \
 	  fi; \
 	else \
-	  echo "  Checkpoints:         (no $(CHECKPOINT_DIR)/ yet)"; \
-	fi
-	@if [ -d $(OUT_DIR) ]; then \
-	  N_VTS=$$(ls $(OUT_DIR)/output_*.vts 2>/dev/null | wc -l); \
-	  echo "  VTK frames written:  $$N_VTS"; \
+	  echo "  Checkpoints:         (no $$CKPT/ yet)"; \
+	fi; \
+	if [ -d "$$OUT" ]; then \
+	  N_VTS=$$(ls "$$OUT"/output_*.vts 2>/dev/null | wc -l); \
+	  echo "  VTK frames written:  $$N_VTS ($$OUT)"; \
 	fi
 	@if [ -f $(LONG_LOG) ]; then \
 	  echo "  Last log line:"; \
@@ -417,7 +425,8 @@ cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounte
 	$(CUDA_DOCKER_RUN_IT) bash
 
 # ── Visualization (PyVista, headless via Xvfb) ──────────────────────────────
-# Renders every out/*.vts snapshot to viz/frame_*.png plus an optional MP4.
+# Renders every $(VIZ_IN)/*.vts snapshot (default: out/run_dendrite) to
+# $(VIZ_OUT)/frame_*.png (default: viz/<name of VIZ_IN>) plus an optional MP4.
 # Uses the prebuilt cuda-dev image — no GPU required, so we use the _FS runner.
 # The script itself calls pv.start_xvfb() to spin up an Xvfb server.
 #
@@ -430,7 +439,7 @@ cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounte
 # built before visualization support was added. Run:  make cuda-image-rebuild
 cuda-visualize: cuda-image ## (docker) Render .vts snapshots to PNGs + MP4 (panels layout)
 	@if [ ! -d $(VIZ_IN) ] || [ -z "$$(ls $(VIZ_IN)/output_*.vts 2>/dev/null)" ]; then \
-	  echo "ERROR: no .vts files in $(VIZ_IN). Run 'make cuda-run-vtk' or 'make cuda-run-dendrite' first."; \
+	  echo "ERROR: no .vts files in $(VIZ_IN). Run 'make cuda-run-dendrite' first, or set VIZ_IN to a run's output directory (e.g. VIZ_IN=out/run_vtk after 'make cuda-run-vtk')."; \
 	  exit 1; \
 	fi
 	@if ! $(CUDA_DOCKER_RUN_FS) bash -c 'command -v python3 >/dev/null && command -v Xvfb >/dev/null'; then \
@@ -472,17 +481,17 @@ cuda-all: ## (docker) Build + test + VTK simulation + visualization end-to-end
 	@$(MAKE) cuda-build
 	@$(MAKE) cuda-test
 	@$(MAKE) cuda-run-vtk
-	@$(MAKE) cuda-visualize
+	@$(MAKE) cuda-visualize VIZ_IN=$(OUT_DIR)/run_vtk
 
 cuda-dendrite-demo: ## (docker) Build + dendrite-friendly run (160^3) + production viz
 	@$(MAKE) cuda-build
 	@$(MAKE) cuda-run-dendrite
-	@$(MAKE) cuda-visualize VIZ_EXTRA_ARGS="--skip-saturated"
+	@$(MAKE) cuda-visualize VIZ_IN=$(OUT_DIR)/run_dendrite VIZ_EXTRA_ARGS="--skip-saturated"
 
 cuda-clean: ## Remove native build dir, simulation outputs, checkpoints, and visualizations
-	@if [ -d $(CUDA_BUILD_DIR) ] || [ -d $(OUT_DIR) ] || [ -d $(CHECKPOINT_DIR) ] || [ -d $(VIZ_OUT) ]; then \
-		echo "==> Removing $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_OUT) (inside container to handle root-owned files)"; \
-		$(CUDA_DOCKER_RUN_FS) rm -rf $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_OUT); \
+	@if [ -d $(CUDA_BUILD_DIR) ] || [ -d $(OUT_DIR) ] || [ -d $(CHECKPOINT_DIR) ] || [ -d $(VIZ_ROOT) ]; then \
+		echo "==> Removing $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_ROOT) (inside container to handle root-owned files)"; \
+		$(CUDA_DOCKER_RUN_FS) rm -rf $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_ROOT); \
 	else \
 		echo "==> Nothing to clean."; \
 	fi

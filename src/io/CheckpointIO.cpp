@@ -171,14 +171,20 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) 
                        .u = std::move(u)};
 }
 
-bool CheckpointIO::is_valid_checkpoint(const std::filesystem::path& path) {
+std::optional<CheckpointIO::Header> CheckpointIO::read_header(const std::filesystem::path& path) {
     std::ifstream ifs(path, std::ios::binary);
     if (!ifs.is_open())
-        return false;
+        return std::nullopt;
 
     Header hdr{};
     ifs.read(reinterpret_cast<char*>(&hdr), sizeof(Header));
-    return ifs.good() && std::strncmp(hdr.magic, "ACCHKPT", 7) == 0;
+    if (!ifs.good() || std::strncmp(hdr.magic, "ACCHKPT", 7) != 0)
+        return std::nullopt;
+    return hdr;
+}
+
+bool CheckpointIO::is_valid_checkpoint(const std::filesystem::path& path) {
+    return read_header(path).has_value();
 }
 
 } // namespace ac

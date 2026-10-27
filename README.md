@@ -274,18 +274,18 @@ make cuda-build                  # configure + build inside the prebuilt image
 make cuda-test                   # full unit + integration suite
 make cuda-test-unit              # unit tests only
 make cuda-test-integration       # integration tests only
-make cuda-run-small              # 128^3 quick benchmark      -> ./out (raw)
-make cuda-run-vtk                # 128^3 dendrite             -> ./out (.vts for ParaView)
-make cuda-run-dendrite           # 160^3 dendrite (Euler + Willmore beta=0.25, 27pt, eps=0.12) -> ./out (.vts)
+make cuda-run-small              # 128^3 quick benchmark      -> ./out/benchmark_small (raw)
+make cuda-run-vtk                # 128^3 dendrite             -> ./out/run_vtk (.vts for ParaView)
+make cuda-run-dendrite           # 160^3 dendrite (Euler + Willmore beta=0.25, 27pt, eps=0.12) -> ./out/run_dendrite (.vts)
 make cuda-run-dendrite-large     # 384^3 dendrite until saturation (179 min of compute on an RTX 4090)
 make cuda-run-dendrite-long      # 192^3 long run until saturation, crash-safe checkpointing
 make cuda-resume-dendrite        # resume the long run from latest intact checkpoint
 make cuda-resume-dendrite-large  # resume the large run
 make cuda-status-dendrite        # show progress: latest checkpoint, frame count, % done
 make cuda-watch-dendrite         # tail run_long.log
-make cuda-run-default            # 600^3 production run        -> ./out (.vts)
+make cuda-run-default            # 600^3 production run        -> ./out/default (.vts)
 make cuda-run CONFIG=config/my.json  # arbitrary config
-make cuda-visualize              # render ./out/*.vts -> ./viz/*.png + dendrite.mp4 (panels)
+make cuda-visualize              # render ./out/run_dendrite/*.vts -> ./viz/run_dendrite/*.png + dendrite.mp4 (panels; VIZ_IN=out/<run> for another run)
 make cuda-visualize-single       # 3D cutaway view only, no sidebar
 make cuda-visualize-self-test    # synthetic-data smoke test of the visualizer
 make cuda-dendrite-demo          # build + run-dendrite + visualize end-to-end
@@ -327,8 +327,12 @@ Checkpoint retention treats `checkpoint_dir` as one trajectory: after
 writing step *S* it keeps *S* and the `keep_last - 1` newest older
 checkpoints, and deletes any checkpoint *above* *S* (left by an earlier
 run past the point this run restarted from), so "resume from the latest
-checkpoint" can never jump back to a stale history. Files not named
-`checkpoint_<step>.acbin` are never touched.
+checkpoint" can never jump back to a stale history; each removal is logged.
+So every run needs its own `checkpoint_dir`: every shipped configuration
+writes to `checkpoints/<config>` and `out/<config>`. As a safety net,
+retention leaves alone checkpoints of another grid (header `Nx`, `Ny`, `Nz`,
+spacing) and files not named `checkpoint_<step>.acbin`; it cannot tell two
+runs of the same grid apart.
 
 Recommended workflow (mandatory backgrounding so it survives terminal close):
 
@@ -358,8 +362,13 @@ Override defaults on the command line:
 
 ```bash
 make cuda-build CUDA_ARCH=80     # A100 instead of T4
-make cuda-run CONFIG=config/default.json OUT_DIR=/data/out
+make cuda-run CONFIG=config/my.json
 ```
+
+A run writes where its configuration's `output.output_dir` and
+`checkpoint.checkpoint_dir` say. The `cuda-*` targets mount the repository
+at `/work` in the container, so these paths must be relative and stay
+inside the repository.
 
 ---
 
@@ -420,7 +429,7 @@ make cuda-dendrite-demo        # build + 160^3 dendrite run + production viz
 Output:
 
 ```
-viz/
+viz/run_dendrite/
   frame_000000.png    # step 0
   frame_000060.png    # step 60
   ...
@@ -468,13 +477,13 @@ python3 tests/visualize_smoke.py
 ```bash
 docker run --rm -v $PWD:/work -w /work allen-cahn-cuda-dev:local \
   python3 scripts/visualize_dendrite.py \
-    --input-dir ./out --output-dir ./viz \
+    --input-dir ./out/run_dendrite --output-dir ./viz/run_dendrite \
     --layout panels --make-video --fps 15 \
     --phi-cmap coolwarm --u-cmap plasma \
     --smooth-iters 20 --pass-band 0.10 \
     --window-size 1920 1080 \
     --skip-saturated \
-    --scan-json ./viz/scan.json
+    --scan-json ./viz/run_dendrite/scan.json
 ```
 
 Full CLI: `python3 scripts/visualize_dendrite.py --help`.
@@ -490,10 +499,10 @@ and `config/run_dendrite*.json` for dendrite-friendly presets.
 {
     "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "beta0": 0.0, "D": 2.0, "d0": 0.5, "willmore_beta": 0.0149 },
     "grid":     { "Nx": 600, "Ny": 600, "Nz": 600, "dx": 0.4, "dy": 0.4, "dz": 0.4 },
-    "time":     { "dt": 0.0025, "max_steps": 24000, "scheme": "euler", "adaptive": false, "cfl_safety": 0.9 },
+    "time":     { "dt": 0.0025, "max_steps": 24000, "scheme": "euler", "adaptive": false, "cfl_safety": 0.9, "saturation_check_freq": 400 },
     "stencil":  "7pt",
-    "output":   { "frequency": 400, "output_dir": "./out", "format": "vts", "async_io": true },
-    "checkpoint": { "frequency": 2000, "checkpoint_dir": "./checkpoints", "keep_last": 3 },
+    "output":   { "frequency": 400, "output_dir": "./out/default", "format": "vts", "async_io": true },
+    "checkpoint": { "frequency": 2000, "checkpoint_dir": "./checkpoints/default", "keep_last": 3 },
     "gpu":      { "device_ids": [0], "multi_gpu": false },
     "initial":  { "seed_radius": 2.0 },
     "boundary": {
@@ -583,7 +592,7 @@ docker compose --profile dev up
 docker compose --profile test up
 
 # Production simulation (provide config by absolute path inside the image);
-# results land in ./output/out and ./output/checkpoints
+# results land in ./output/out/default and ./output/checkpoints/default
 make docker-run                                  # default.json, as the host user
 docker compose --profile prod run prod /app/config/default.json
 ```
@@ -697,7 +706,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
 | `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32                        |
-| `test_CheckpointManager.cpp`  | Frequency, retention (just-written file kept, one trajectory after a restart), restart-from-latest, missing restart file |
+| `test_CheckpointManager.cpp`  | Frequency, retention (just-written file kept, one trajectory after a restart, checkpoints of other grids left alone, removals logged at info), restart-from-latest, missing restart file |
 | `test_LRUCache.cpp`           | LRU eviction order, capacity, hit/miss, concurrent access                        |
 | `test_SpatialHash.cpp`        | 3D bucket insert/query, FNV-1a hashing                                           |
 | `test_ConcurrentMap.cpp`      | Striped concurrent map operations under contention                               |
@@ -736,7 +745,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | File              | What it covers                                                                  |
 |-------------------|----------------------------------------------------------------------------------|
 | `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at |
-| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config`; a misspelled key and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs) are rejected |
+| `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config`; a misspelled key and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs) are rejected; the runs from the repository root use their own output and checkpoint directories |
 
 ### Run a single test
 

@@ -34,10 +34,14 @@ private:
     /// Checkpoint files in checkpoint_dir (checkpoint_<step>.acbin), by step.
     [[nodiscard]] std::vector<std::pair<int, std::filesystem::path>> list_checkpoints() const;
 
-    /// After writing `newest_step`: keep it and the keep_last - 1 highest
+    /// After writing `newest_step`, among the checkpoints of this run's grid
+    /// (header Nx, Ny, Nz, dx, dy, dz): keep it and the keep_last - 1 highest
     /// older steps; delete the rest, including any step above newest_step
-    /// (left by an earlier run past this run's restart point).
+    /// (left by an earlier run past this run's restart point). A checkpoint
+    /// of another grid, or without a readable header, cannot belong to this
+    /// trajectory and is left alone (with one warning per manager).
     void enforce_retention(int newest_step);
+    bool warned_foreign_ = false;
 
     CheckpointParams params_;
     Grid grid_;

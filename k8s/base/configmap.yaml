@@ -33,7 +33,8 @@ data:
             "max_steps": 24000,
             "scheme": "euler",
             "adaptive": false,
-            "cfl_safety": 0.9
+            "cfl_safety": 0.9,
+            "saturation_check_freq": 400
         },
         "stencil": "7pt",
         "output": {

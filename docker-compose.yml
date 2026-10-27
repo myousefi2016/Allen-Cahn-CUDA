@@ -12,7 +12,8 @@
 #   docker compose --profile prod run prod /app/config/default.json
 #
 # The prod image runs from /output (the volume), so results land in
-# ./output/out and ./output/checkpoints; configs must be absolute paths.
+# ./output/<the config's output_dir and checkpoint_dir>, e.g. ./output/out/default
+# and ./output/checkpoints/default; configs must be absolute paths.
 # ============================================================================
 
 services:

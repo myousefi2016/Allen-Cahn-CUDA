@@ -580,8 +580,14 @@ it lists the directory (the only source of truth) and, for the step *S*
 just written, keeps *S* plus the `keep_last - 1` highest steps below it and
 deletes the rest, including every step above *S*: those come from an
 earlier run past this run's restart point, and keeping them would let
-"resume from the latest checkpoint" jump back to that stale history. Only
-names of the exact form `checkpoint_<digits>.acbin` are managed.
+"resume from the latest checkpoint" jump back to that stale history. Each
+removal is logged at info level. Only names of the exact form
+`checkpoint_<digits>.acbin` whose header has this run's grid (`Nx`, `Ny`,
+`Nz`, spacing) are managed: a checkpoint of another grid cannot belong to
+this trajectory and is left alone, with one warning. Two runs of the same
+grid cannot be told apart, so every run needs its own `checkpoint_dir`;
+every shipped configuration has one (`checkpoints/<config>`, and
+`out/<config>` for its output), which `e2e.ShippedConfigsValidate` checks.
 `restore()` without a `restart_file` walks the directory in descending
 step order and returns the first valid checkpoint.
 
