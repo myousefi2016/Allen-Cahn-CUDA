@@ -244,6 +244,60 @@ TEST_F(SimulationEngineTest, ShutdownRequestWritesCheckpointAndStops) {
         CheckpointIO::is_valid_checkpoint(cfg.checkpoint.checkpoint_dir / "checkpoint_1.acbin"));
     EXPECT_TRUE(std::filesystem::exists(cfg.output.output_dir / "output_1.vts"));
     EXPECT_FALSE(std::filesystem::exists(cfg.checkpoint.checkpoint_dir / "checkpoint_2.acbin"));
+    EXPECT_TRUE(engine.interrupted());
+    EXPECT_EQ(engine.exit_status(15), 143);
+    EXPECT_EQ(engine.exit_status(2), 130);
+}
+
+// A run that reaches max_steps is complete, also when a shutdown request
+// arrives during its last step: the process exits 0, not 128 + signal (main
+// used to report every signal, so a Kubernetes Job counted a finished run as
+// failed and reran it). A resume of it would compute nothing.
+TEST_F(SimulationEngineTest, RunThatReachesItsEndIsComplete) {
+    auto cfg = make_config(8, 3);
+    {
+        SimulationEngine engine(cfg);
+        engine.run();
+        EXPECT_FALSE(engine.interrupted());
+        EXPECT_EQ(engine.exit_status(15), 0);
+    }
+    std::filesystem::remove_all(test_dir_);
+    cfg.time.max_steps = 1;
+    SimulationEngine engine(cfg);
+    g_shutdown_requested.store(true);
+    engine.run();
+    g_shutdown_requested.store(false);
+    EXPECT_TRUE(
+        CheckpointIO::is_valid_checkpoint(cfg.checkpoint.checkpoint_dir / "checkpoint_1.acbin"));
+    EXPECT_FALSE(engine.interrupted());
+    EXPECT_EQ(engine.exit_status(15), 0);
+}
+
+// The saturation guard's final checkpoint is a saturated state. A resume from
+// it used to compute up to saturation_check_freq further steps into the wall,
+// write another frame and checkpoint, and rotate away the checkpoints from
+// before wall contact; it must compute nothing and leave the state as it was.
+TEST_F(SimulationEngineTest, SaturatedRestartComputesNothing) {
+    auto cfg = make_config(8, 10);
+    cfg.initial.seed_radius = 2.0; // walls are 1.4 from the centre: saturated at step 1
+    cfg.time.exit_on_saturation = true;
+    cfg.time.saturation_threshold = -0.5;
+    cfg.time.saturation_check_freq = 1;
+    {
+        SimulationEngine engine(cfg);
+        engine.run();
+    }
+    const auto saturated = cfg.checkpoint.checkpoint_dir / "checkpoint_1.acbin";
+    ASSERT_TRUE(CheckpointIO::is_valid_checkpoint(saturated));
+    const auto before = CheckpointIO::read(saturated);
+
+    cfg.checkpoint.restart_file = saturated;
+    SimulationEngine resumed(cfg);
+    resumed.run();
+    EXPECT_FALSE(std::filesystem::exists(cfg.checkpoint.checkpoint_dir / "checkpoint_2.acbin"));
+    EXPECT_FALSE(std::filesystem::exists(cfg.output.output_dir / "output_2.vts"));
+    for (std::size_t i = 0; i < before.phi.size(); ++i)
+        ASSERT_EQ(resumed.phi().data()[i], before.phi.data()[i]) << i;
 }
 
 // A resume continues after its checkpoint's step and never writes the frames up

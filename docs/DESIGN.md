@@ -686,8 +686,9 @@ is skipped with a warning
 | Condition | Detection | Result |
 |---|---|---|
 | NaN/Inf field | host scan before every output and checkpoint and after the last step; NaN-propagating `compute_max_dphi` (adaptive dt) and `compute_boundary_max_phi` (saturation guard) | `std::runtime_error`, exit 1, nothing of the diverged state written |
-| `SIGINT` / `SIGTERM` | lock-free atomics set by the handler, checked after every step | output + checkpoint of the current step, exit 128 + signal |
-| Solid reaches a wall | saturation guard every `saturation_check_freq` steps | output + checkpoint, exit 0 |
+| `SIGINT` / `SIGTERM` | lock-free atomics set by the handler, checked after every step | output + checkpoint of the current step, exit 128 + signal if that step is before `max_steps` (`SimulationEngine::exit_status`); a run that reached `max_steps` is complete (exit 0) |
+| Solid reaches a wall | saturation guard every `saturation_check_freq` steps, and at a restored state | output + checkpoint, exit 0; a restart from a saturated state computes nothing |
+| An argument the command line does not take | `main` | usage, exit 1 (nothing is run) |
 | A frame or checkpoint write fails | the writer thread; the first failure is rethrown by the next `write_async` or the final `flush` | later snapshots dropped (no checkpoint after a failed frame), `std::runtime_error`, exit 1 |
 | A Willmore step cannot proceed | relaxation times or the right-hand side's norm not finite (`solve_willmore_step`) | `std::runtime_error` naming the cause: `tau0` or `tau0 A(n)^2` outside the doubles, a gradient whose fourth powers overflow A(n); a non-finite state, `lambda u` beyond the double range, a phase-field term beyond it, or finite components whose squares overflow; a `dt` for which `tau/dt` overflows |
 | The IMEX rounding term reaches the tolerance | `JacobiStoppingRule` | `std::runtime_error`: whether a smaller `dt` can certify (and by how much it must shrink) or no `dt` can at this `max abs(u)` (`docs/THEORY.md` 10.2) |

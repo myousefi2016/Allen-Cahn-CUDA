@@ -45,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and four end-to-end tests (two of the binary, two of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and five end-to-end tests (three of the binary, two of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -330,9 +330,9 @@ Exit status of `allen-cahn-cuda`:
 
 | Status | Meaning |
 |---|---|
-| 0 | Reached `max_steps`, or stopped by the saturation guard |
+| 0 | Reached `max_steps` (also when a signal arrived during its last step or after it), or stopped by the saturation guard (a resume of its final checkpoint computes nothing) |
 | 1 | Error, including a diverged (NaN/Inf) field or a missing `restart_file`; no output or checkpoint of a diverged state is written |
-| 130 / 143 | Interrupted by `SIGINT` / `SIGTERM` after writing a checkpoint of the current step (resume with `cuda-resume-dendrite`) |
+| 130 / 143 | Interrupted by `SIGINT` / `SIGTERM` before `max_steps`, after writing a checkpoint of the step it stopped at (resume with `cuda-resume-dendrite`) |
 
 Checkpoint retention treats `checkpoint_dir` as one trajectory: after
 writing step *S* it keeps *S* and the `keep_last - 1` newest older
@@ -746,7 +746,7 @@ required) — see `.github/workflows/ci.yml`.
 
 The suite has three `ctest` groups, selectable with `-R "^unit[.]"`,
 `-R "^integration[.]"` and `-R "^e2e[.]"`: the `unit_tests` and
-`integration_tests` executables and four end-to-end tests (Python 3): two
+`integration_tests` executables and five end-to-end tests (Python 3): three
 drive the built binary, two check the Makefile's resume and visualization
 targets with `make -n` (GNU make). It is verified on an NVIDIA RTX 4090
 (compute 8.9) with CUDA 13.2.
@@ -815,7 +815,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer and no halo; `validate()` rejects exactly the splits the solver rejects; engine run |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states, a failed step naming its cause |
-| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (capped at the stability limits after the dt_min clamp, also after a restart; growth when φ is at rest), short run, saturation stop, shutdown, divergence errors, no checkpoint before the frames up to its step (also at a shutdown or saturation), a failed checkpoint stops the run, restart-file and spacing checks, dt after a restart |
+| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (capped at the stability limits after the dt_min clamp, also after a restart; growth when φ is at rest), short run, saturation stop (a restart from a saturated state computes nothing), shutdown (interrupted only before `max_steps`), divergence errors, no checkpoint before the frames up to its step (also at a shutdown or saturation), a failed checkpoint stops the run, restart-file and spacing checks, dt after a restart |
 | `test_VTKWriter.cpp`          | Async and synchronous writes, raw / VTS output, VTS topology, write failures reported (never a published broken file, also when only `close()` fails, and no temporary file left), statistics cache |
 
 ### Integration tests (`tests/integration/`, 8 files)
@@ -835,7 +835,8 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 
 | File              | What it covers                                                                  |
 |-------------------|----------------------------------------------------------------------------------|
-| `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at |
+| `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at; a `SIGTERM` once it has logged its last step leaves the run complete (exit 0) |
+| `cli_arguments.py` | Only the documented command lines are accepted: an argument after them (`config.json --validate-config`, `config.json extra`, `--help extra`) is an error that starts nothing, without a GPU |
 | `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` call the resume helper with only the config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), so it searches the config's own `checkpoint_dir`; checked with `make -n` and a stub helper, without docker |
 | `makefile_viz_out.py` | `make cuda-visualize` renders into `viz/<name of the run>` however `VIZ_IN` is spelled (`out/run_vtk`, `out/run_vtk/`, `out/run_vtk//`, `out/run_vtk/.`, `./out/run_vtk`, an absolute path), and `VIZ_ROOT` and `VIZ_OUT` override it; checked with `make -n`, without docker |
 | `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config` and prints its thermal and phase-field dt limits for its scheme and stencil; a `time.dt` equal to a printed limit (thermal, phase-field, adaptive cap) is accepted and one double above it rejected, and an infinite limit prints as `none`; a misspelled key, integer fields that are not ints (64.5 cells, 4294967297 steps) and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs, `saturation_check_freq` 0) are rejected; the runs from the repository root use their own output and checkpoint directories |
@@ -873,7 +874,7 @@ Allen-Cahn-CUDA/
 ├── tests/
 │   ├── unit/                  # 29 unit-test files
 │   ├── integration/           # 8 integration-test files
-│   ├── e2e/                   # signal_exit.py, validate_shipped_configs.py,
+│   ├── e2e/                   # signal_exit.py, cli_arguments.py, validate_shipped_configs.py,
 │   │                          # makefile_resume_call.py, makefile_viz_out.py
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   ├── test_resume_checkpoint.py  # resume helper: checkpoint choice and config rewrite

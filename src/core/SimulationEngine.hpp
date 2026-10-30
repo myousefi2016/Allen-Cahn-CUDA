@@ -19,7 +19,8 @@ namespace ac {
 extern std::atomic<bool> g_shutdown_requested;
 
 /// Number of the signal that requested the shutdown (0 if none); main()
-/// exits with 128 + signal so callers see an interrupted, incomplete run.
+/// exits with 128 + signal when the run stopped for it before max_steps
+/// (SimulationEngine::exit_status), so callers see an interrupted, incomplete run.
 extern std::atomic<int> g_shutdown_signal;
 
 /// Top-level simulation orchestrator.
@@ -31,6 +32,18 @@ public:
 
     /// Run the full simulation from start (or restart) to completion.
     void run();
+
+    /// Whether run() stopped for a shutdown request before reaching max_steps: then a
+    /// checkpoint of the step it stopped at was written and a resume continues the run.
+    /// A run that reached max_steps or the saturation guard is complete, also when a
+    /// signal arrived during its last step or after it.
+    [[nodiscard]] bool interrupted() const { return interrupted_; }
+
+    /// The process exit status after run(): 128 + signal for an interrupted run (the
+    /// shell's convention for a run ended by that signal), 0 for a complete one.
+    [[nodiscard]] int exit_status(int signal) const {
+        return interrupted_ && signal > 0 ? 128 + signal : 0;
+    }
 
     /// Fields on the host: the final state after run() (for testing).
     [[nodiscard]] const FieldData& phi() const { return phi_host_; }
@@ -72,6 +85,7 @@ private:
     std::unique_ptr<VTKWriter> vtk_writer_;
 
     int start_step_ = 0;
+    bool interrupted_ = false;
     double start_time_ = 0.0;
     int last_phi_d2h_step_ = -1;
     int last_u_d2h_step_ = -1;

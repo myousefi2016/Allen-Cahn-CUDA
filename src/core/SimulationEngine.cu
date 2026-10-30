@@ -94,8 +94,20 @@ void SimulationEngine::run() {
         write_step(0, 0.0, config_.time.dt, true, false);
     }
 
+    // A restored state the saturation guard stopped (its final checkpoint) is not advanced
+    // again: the guard checks only every saturation_check_freq steps, so the steps up to
+    // its next check would grow the crystal further into the wall, write another frame
+    // and checkpoint, and rotate away the checkpoints from before wall contact.
+    const bool saturated = config_.time.exit_on_saturation &&
+                           checkpoint_mgr_->restart_requested() && check_saturation(start_step_);
+    if (saturated) {
+        spdlog::warn("The restored state at step {} is saturated (phi > {:.3f} next to a wall): "
+                     "nothing to compute",
+                     start_step_, config_.time.saturation_threshold);
+    }
+
     // Main time loop
-    const int last_step = time_loop();
+    const int last_step = saturated ? start_step_ : time_loop();
 
     // Final synchronization
     solver_->synchronize();
@@ -247,6 +259,7 @@ int SimulationEngine::time_loop() {
         if (g_shutdown_requested.load(std::memory_order_relaxed)) {
             spdlog::warn("Shutdown requested at step {}. Writing output and checkpoint...", step);
             last = true;
+            interrupted_ = step < max_steps;
         } else if (sat_guard && step % sat_freq == 0 && check_saturation(step)) {
             spdlog::warn("Saturation detected at step {} (phi > {:.3f} next to a wall). "
                          "Writing final output and checkpoint and exiting cleanly.",

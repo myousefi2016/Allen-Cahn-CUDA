@@ -104,6 +104,13 @@ set_tests_properties(e2e.SignalExitStatus PROPERTIES
     TIMEOUT 600
 )
 
+# Only the documented command lines are accepted; any other argument is an error,
+# not ignored (no GPU needed: every case ends before a run).
+add_test(NAME e2e.CommandLineArguments
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/cli_arguments.py
+            $<TARGET_FILE:allen-cahn-cuda> ${CMAKE_CURRENT_BINARY_DIR}/e2e_cli_arguments)
+set_tests_properties(e2e.CommandLineArguments PROPERTIES TIMEOUT 120)
+
 # Every configuration the repository ships (config/*.json, k8s payloads, the
 # Makefile's run_vtk.json, README/docs examples) must pass --validate-config.
 add_test(NAME e2e.ShippedConfigsValidate

@@ -7,7 +7,10 @@ require
   * exit status 128 + signal (143 / 130), so make, scripts and a Kubernetes
     Job see an interrupted run instead of a completed one;
   * a checkpoint of the step it stopped at, with an intact version-2 header
-    (resumable).
+    (resumable);
+and that a SIGTERM sent once the run has logged its last step (while it
+writes its last frame) leaves it complete: exit status 0, as the run reached
+max_steps (it used to exit 143, so a Kubernetes Job counted it as failed).
 
 Usage: signal_exit.py BINARY WORKDIR
 Exit 0 = pass, 1 = fail, 77 = no GPU (skipped; a failure if AC_REQUIRE_GPU=1).
@@ -110,6 +113,40 @@ def run_case(binary: Path, work: Path, sig: signal.Signals) -> list[str]:
     return errors
 
 
+def after_the_last_step(binary: Path, work: Path) -> list[str]:
+    case = work / "after_last_step"
+    shutil.rmtree(case, ignore_errors=True)
+    case.mkdir(parents=True)
+    cfg = {
+        "grid": {"Nx": 96, "Ny": 96, "Nz": 96, "dx": 0.4, "dy": 0.4, "dz": 0.4},
+        "time": {"dt": 0.005, "max_steps": 200, "scheme": "euler"},
+        "output": {"frequency": 200, "format": "vts", "async_io": True,
+                   "output_dir": str(case / "out")},
+        "checkpoint": {"frequency": 0, "checkpoint_dir": str(case / "ckpt"), "keep_last": 1},
+        "initial": {"seed_radius": 2.0},
+    }
+    cfg_path = case / "config.json"
+    cfg_path.write_text(json.dumps(cfg))
+    proc = subprocess.Popen([str(binary), str(cfg_path)], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, cwd=case)
+    log: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        log.append(line)
+        if re.search(r"Step 200/200", line):
+            proc.send_signal(signal.SIGTERM)
+            break
+    rest, _ = proc.communicate(timeout=300)
+    text = "".join(log) + (rest or "")
+    if proc.returncode != 0:
+        return [f"SIGTERM after the last step: exit status {proc.returncode}, expected 0; log tail:\n"
+                + "".join(text.splitlines(keepends=True)[-15:])]
+    if "Simulation completed" not in text or not (case / "out" / "output_200.vts").is_file():
+        return ["SIGTERM after the last step: the run did not complete with its last frame"]
+    print("SIGTERM after the last step: exit 0, output_200.vts written")
+    return []
+
+
 def main() -> int:
     binary, work = Path(sys.argv[1]), Path(sys.argv[2])
     if not gpu_visible():
@@ -121,6 +158,7 @@ def main() -> int:
     errors = []
     for sig in (signal.SIGTERM, signal.SIGINT):
         errors += run_case(binary, work, sig)
+    errors += after_the_last_step(binary, work)
     for e in errors:
         print("FAIL:", e)
     return 1 if errors else 0
