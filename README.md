@@ -45,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 27 unit-test files, 8 integration-test files and four end-to-end tests (two of the binary, two of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 28 unit-test files, 8 integration-test files and four end-to-end tests (two of the binary, two of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -585,16 +585,15 @@ limits of `time.dt` for its scheme and stencil:
 ```
 valid: config/run_dendrite.json
 thermal dt limit (scheme euler, stencil 27pt): 0.026086956521739132
-phase-field dt limit (scheme euler, any stencil): none
+phase-field dt limit (scheme euler, any stencil): 0.29130524887671538
 ```
 
 The values are printed to 17 significant digits, as in the rejection
 messages, so each reads back as exactly the limit the validator compares
 with; a fixed `time.dt` must not exceed the smaller one. `none` means no
 limit: `"imex"` has no thermal limit (it treats u implicitly), and the
-phase-field limit is none when the Willmore term damps every checkerboard
-case it is taken over, as in the `run_dendrite*.json` configurations
-(`docs/THEORY.md` §10.1). The phase-field limit does not depend on
+phase-field limit is none when no mode of the liquid grows at any dt (for
+example `willmore_beta` 0.6 at `epsilon` 0.12; `docs/THEORY.md` §10.1). The phase-field limit does not depend on
 `stencil`, which selects only the thermal Laplacian. With `time.adaptive` a
 third line gives the cap on every adaptive step, `cfl_safety` times the
 smaller limit, which `time.dt` and `time.dt_min` must not exceed
@@ -768,13 +767,14 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   '
 ```
 
-### Unit tests (`tests/unit/`, 27 files)
+### Unit tests (`tests/unit/`, 28 files)
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
 | `test_Grid.cpp`               | Grid construction, indexing, spacing, validity checks                            |
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
-| `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the gradient energy's Hessian diagonal, the phase-field limit over the axis subsets and gradient directions), `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap; the `--validate-config` report (each limit to 17 digits, `none` for +∞, the adaptive cap only with `time.adaptive`) |
+| `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the phase-field limit over the uniform liquid's modes and the liquid-gradient modes), a too small `willmore_beta` rejected with the growing mode and its certified bound, `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap; the `--validate-config` report (each limit to 17 digits, `none` for +∞, the adaptive cap only with `time.adaptive`) |
+| `test_LiquidModes.cpp`        | The certified liquid-mode search against binary128 references: every interval operation (at every binade edge, past overflow, inverse roots at 200000 points) and the sine and cosine enclosures contain the exact values; the Hessian's closed form is the derivative of the kernel's flux; the coefficients' enclosures contain their values and, by the mean value theorem, difference quotients of their first and second derivatives; each of the three box bounds is an upper bound on boxes of every size and at the stationary checkerboards, and the theta bounds for every coefficient in their intervals; a box is dropped only without a stationary point; the search domain and the symmetries it relies on; the reported growth maximum lies in [attained, bound] (independent search, 20000 sampled modes, permuted spacings) and a damping witness's bound holds (also just below the smallest regularising beta); the branch and bound alone, without the seed search, finds and certifies the same extrema; a search out of budget reports the range its extremum lies in |
 | `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, integer fields only ints in the range of `int`, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters), defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
@@ -793,7 +793,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
 | `test_ImexJacobi.cu`          | IMEX thermal solve: error within 1e-10 of a long-double solution at s ≈ 17 (both stencils, every kind of u face, one GPU and three domains); NaN temperature and a tolerance below rounding throw; the stopping rule on the host |
-| `test_StabilityLimitsGpu.cu`  | The solver's explicit updates have these limits: a checkerboard decays at 0.99× and grows at 1.01× (thermal: every scheme and stencil; phase field: the uniform liquid's 3-D, 1-D and 2-D checkerboards with and without the Willmore term, and a liquid with a ⟨111⟩ gradient) |
+| `test_StabilityLimitsGpu.cu`  | The solver's explicit updates have these limits: a mode decays at 0.99× and grows at 1.01× its limit (thermal: every scheme and stencil; phase field: the uniform liquid's 3-D, 1-D and 2-D checkerboards with and without the Willmore term and its uniform shift, a liquid with a ⟨111⟩ gradient, and the wave across a ⟨101⟩ gradient that binds with the Willmore term, which grows at 0.99× the limit the checkerboards gave) |
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer and no halo; engine run |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states |
@@ -840,8 +840,9 @@ ctest --test-dir build -R StencilComparisonTest  --output-on-failure
 ```
 Allen-Cahn-CUDA/
 ├── src/
-│   ├── core/                  # Grid, SimulationConfig, StabilityLimits, FieldData,
-│   │                          # CheckpointManager, LRUCache, SpatialHash, ConcurrentMap
+│   ├── core/                  # Grid, SimulationConfig, StabilityLimits, LiquidModes, Interval,
+│   │                          # FieldData, CheckpointManager, LRUCache, SpatialHash,
+│   │                          # ConcurrentMap
 │   ├── cuda/                  # ISolver, CudaSolver, MultiGPUSolver,
 │   │                          # AllenCahn / Thermal / Boundary / Reduction / Willmore kernels,
 │   │                          # WillmoreSolve (implicit Willmore step),
@@ -852,7 +853,7 @@ Allen-Cahn-CUDA/
 │   ├── main.cpp               # Entry point + signal handler
 │   └── CMakeLists.txt
 ├── tests/
-│   ├── unit/                  # 27 unit-test files
+│   ├── unit/                  # 28 unit-test files
 │   ├── integration/           # 8 integration-test files
 │   ├── e2e/                   # signal_exit.py, validate_shipped_configs.py,
 │   │                          # makefile_resume_call.py, makefile_viz_out.py

@@ -50,6 +50,7 @@ graph TB
     subgraph Core["Core"]
         SC["SimulationConfig"]
         SL["StabilityLimits"]
+        LM["LiquidModes"]
         GR["Grid"]
         FD["FieldData"]
         LRU["LRUCache"]
@@ -84,6 +85,7 @@ graph TB
     CS --> GR
     SC --> SL
     SE --> SL
+    SL --> LM
 ```
 
 ---
@@ -96,7 +98,7 @@ two test executables (`src/CMakeLists.txt`).
 ```mermaid
 graph LR
     aclog["ac_logging<br/>(spdlog wrapper)"]
-    accore["ac_core<br/>SimulationConfig.cpp,<br/>Grid.cpp, FieldData.cpp,<br/>StabilityLimits.cpp"]
+    accore["ac_core<br/>SimulationConfig.cpp,<br/>Grid.cpp, FieldData.cpp,<br/>StabilityLimits.cpp,<br/>LiquidModes.cpp"]
     accuda["ac_cuda<br/>(SEPARABLE_COMPILATION)<br/>kernels + DeviceField +<br/>CudaSolver + MultiGPUSolver +<br/>WillmoreSolve + JacobiStopping"]
     acio["ac_io<br/>VTKWriter.cpp,<br/>CheckpointIO.cpp,<br/>core/CheckpointManager.cpp"]
     acengine["ac_engine<br/>(SEPARABLE_COMPILATION)<br/>SimulationEngine.cu"]
@@ -127,10 +129,13 @@ graph LR
 A few non-obvious facts about the build graph:
 
 - **`ac_core` is intentionally minimal.** It only compiles
-  `SimulationConfig.cpp`, `Grid.cpp`, `FieldData.cpp` and
-  `StabilityLimits.cpp` (`src/CMakeLists.txt`). `LRUCache`, `SpatialHash`, and
+  `SimulationConfig.cpp`, `Grid.cpp`, `FieldData.cpp`, `StabilityLimits.cpp`
+  and `LiquidModes.cpp` (`src/CMakeLists.txt`). `LRUCache`, `SpatialHash`, and
   `ConcurrentMap` are header-only utilities included by downstream
-  libraries; they have no `.cpp`.
+  libraries; they have no `.cpp`. So is `Interval.hpp`, the outward-rounded
+  interval arithmetic `LiquidModes.cpp` builds its certified bounds from;
+  `LiquidModesDetail.hpp` exposes that search's pieces to
+  `tests/unit/test_LiquidModes.cpp`.
 - **`CheckpointManager.cpp` lives under `src/core/` but compiles into
   `ac_io`** (`src/CMakeLists.txt`). It is grouped there because
   `CheckpointManager.hpp` includes `io/CheckpointIO.hpp`, so the only

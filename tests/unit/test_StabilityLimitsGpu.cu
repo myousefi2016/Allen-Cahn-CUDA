@@ -185,3 +185,107 @@ TEST_F(StabilityLimitsGpuTest, GradientInTheLiquidLowersThePhaseFieldLimit) {
     EXPECT_GT(above, 1.0);
     EXPECT_GT(at_uniform, 1.0);
 }
+
+// With the Willmore term the binding mode lies between the checkerboards: at
+// the physics of default.json (eps 0.07, beta 0.0149) a liquid with a small
+// gradient along <101> is perturbed by a wave along <10-1>, across the
+// gradient. On a periodic grid of 46 x 4 x 46 interior cells the wave
+// cos(theta (x - z)), theta = 2 pi 15 / 46 = 0.652 pi, is an exact mode of
+// the frozen-coefficient update, the background 1e-3 cos(2 pi (x + z - 1.75)
+// / 46) keeps the gradient along +-<101> in every cell (no face where it
+// vanishes), and the background's own evolution is subtracted. The wave's
+// factor per step, its projection over 20 steps, is below 1 at 0.99 and
+// above 1 at 1.01 times its frozen limit 2 tau0 A^2 / (Lam - beta L), and
+// phase_field_dt_limit is at most that limit and within 1e-4 of it (the
+// continuous optimum is theta = 0.6518 pi). At 0.99 times the limit the
+// checkerboards gave (0.031570) the wave grows.
+TEST_F(StabilityLimitsGpuTest, WaveAcrossAGradientBindsWithTheWillmoreTerm) {
+    auto cfg = config(TimeScheme::IMEX, StencilType::Standard7Point);
+    cfg.grid.Nx = cfg.grid.Nz = 48;
+    cfg.grid.Ny = 6;
+    cfg.physics.epsilon = 0.07;
+    cfg.physics.willmore_beta = 0.0149;
+    const double pi = 3.14159265358979323846, theta = 2 * pi * 15 / 46, h = 0.4;
+    // the mode's frozen-coefficient limit, from the definitions
+    const double n[3] = {1 / std::sqrt(2.0), 0.0, 1 / std::sqrt(2.0)};
+    double H[3][3];
+    gradient_energy_hessian(n, cfg.physics.epsilon, H);
+    const double th[3] = {theta, 0.0, -theta};
+    double sigma = 0, mu = 0;
+    for (int d = 0; d < 3; ++d) {
+        const double c = 2 * (1 - std::cos(th[d])) / (h * h);
+        mu += c;
+        sigma += H[d][d] * c;
+        for (int e = 0; e < 3; ++e)
+            if (e != d)
+                sigma += H[d][e] * std::sin(th[d]) * std::sin(th[e]) / (h * h);
+    }
+    const double A = 1 - cfg.physics.epsilon; // A(<101>) = 1 - 3 eps + 4 eps / 2
+    const double tau = cfg.physics.tau0() * A * A;
+    const double lam = sigma + 2, L = (mu + 2) * (mu + 2);
+    const double limit = 2 * tau / (lam - cfg.physics.willmore_beta * L);
+    EXPECT_LE(phase_field_dt_limit(cfg), limit);
+    EXPECT_NEAR(phase_field_dt_limit(cfg) / limit, 1.0, 1e-4);
+
+    const Grid grid = cfg.make_grid();
+    auto run = [&](double dt, double eta) {
+        FieldData phi(grid, "phi"), u(grid, "u");
+        for (int x = 0; x < cfg.grid.Nx; ++x)
+            for (int y = 0; y < cfg.grid.Ny; ++y)
+                for (int z = 0; z < cfg.grid.Nz; ++z) {
+                    phi(x, y, z) = -1.0 + 1e-3 * std::cos(2 * pi * (x + z - 1.75) / 46.0) +
+                                   eta * std::cos(theta * (x - z));
+                    u(x, y, z) = 0.0;
+                }
+        cuda::CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        for (int s = 0; s < 20; ++s)
+            solver.step(dt);
+        solver.copy_phi_to_host(phi);
+        return phi;
+    };
+    auto factor = [&](double dt) {
+        const double eta = 1e-9;
+        const FieldData with = run(dt, eta), without = run(dt, 0.0);
+        double proj = 0, norm = 0;
+        for (int x = 1; x < cfg.grid.Nx - 1; ++x)
+            for (int y = 1; y < cfg.grid.Ny - 1; ++y)
+                for (int z = 1; z < cfg.grid.Nz - 1; ++z) {
+                    const double m = std::cos(theta * (x - z));
+                    proj += (with(x, y, z) - without(x, y, z)) * m;
+                    norm += m * m;
+                }
+        return std::pow(std::fabs(proj / norm / eta), 1.0 / 20);
+    };
+    const double below = factor(0.99 * limit), above = factor(1.01 * limit);
+    // validate() accepted every dt up to 0.031569931282615871 when only the
+    // checkerboards counted: the wave grows well below it.
+    const double old_limit = 0.031569931282615871, at_old = factor(0.99 * old_limit);
+    std::printf("<101> gradient, wave theta = 2 pi 15/46: limit %.9f (phase_field_dt_limit "
+                "%.9f), |g| %.9f at 0.99x, %.9f at 1.01x, %.9f at 0.99x the checkerboard limit\n",
+                limit, phase_field_dt_limit(cfg), below, above, at_old);
+    EXPECT_LT(below, 1.0);
+    EXPECT_GT(above, 1.0);
+    EXPECT_GT(at_old, 1.0);
+}
+
+// The uniform shift phi = -1 + eta of the uniform liquid (Lam = 2, L = 4,
+// tau = tau0 (1 - 3 eps/5)^2) decays at 0.99 and grows at 1.01 times
+// 2 tau_cb / (2 - 4 beta), here at the physics of run_dendrite.json
+// (eps 0.12, beta 0.25): a finite limit for every beta < 1/2, which the
+// gradient modes undercut.
+TEST_F(StabilityLimitsGpuTest, UniformShiftLimitIsSharp) {
+    auto cfg = config(TimeScheme::IMEX, StencilType::Standard7Point);
+    cfg.physics.epsilon = 0.12;
+    cfg.physics.willmore_beta = 0.25;
+    const double tau_cb = cfg.physics.tau0() * (1 - 0.6 * 0.12) * (1 - 0.6 * 0.12);
+    const double limit = 2 * tau_cb / (2 - 4 * 0.25);
+    const double below = amplification(cfg, 0.99 * limit, false, 0);
+    const double above = amplification(cfg, 1.01 * limit, false, 0);
+    std::printf("uniform shift eps 0.12 beta 0.25: limit %.6f (phase_field_dt_limit %.6f), |g| "
+                "%.9f at 0.99x, %.9f at 1.01x\n",
+                limit, phase_field_dt_limit(cfg), below, above);
+    EXPECT_LT(below, 1.0);
+    EXPECT_GT(above, 1.0);
+    EXPECT_LT(phase_field_dt_limit(cfg), limit);
+}

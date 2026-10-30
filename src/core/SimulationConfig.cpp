@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <stdexcept>
@@ -413,6 +414,40 @@ void SimulationConfig::validate() const {
             "fourth-order Willmore term is treated linearly implicitly in their phase-field "
             "update; heun and rk4 are fully explicit)");
     }
+    // In a liquid with a small gradient along n, a perturbation mode with
+    // Lam + beta L < 0 grows at every dt (docs/THEORY.md 10.1): beta does not
+    // regularise the non-convex gradient energy at this spacing. Close to the
+    // smallest beta that does, the search may not decide within its budget.
+    std::optional<LiquidModeBound> unstable;
+    try {
+        unstable = phase_field_unstable_mode(*this);
+    } catch (const LiquidModeSearchExhausted& e) {
+        throw std::invalid_argument(
+            "physics.willmore_beta = " + digits17(physics.willmore_beta) +
+            ": the stability analysis cannot decide within its budget whether it regularises "
+            "epsilon = " +
+            digits17(physics.epsilon) +
+            " at this grid spacing: the smallest Lam + beta L over the modes of a liquid with a "
+            "small gradient lies in [" +
+            digits17(e.lower) + ", " + digits17(e.upper) + "] (the mode n = (" +
+            digits17(e.mode.n[0]) + ", " + digits17(e.mode.n[1]) + ", " + digits17(e.mode.n[2]) +
+            "), wave numbers (" + digits17(e.mode.theta[0]) + ", " + digits17(e.mode.theta[1]) +
+            ", " + digits17(e.mode.theta[2]) +
+            ") rad per cell, has at most the upper end), and one below 0 would grow at every dt; "
+            "increase willmore_beta (docs/THEORY.md 10.1)");
+    }
+    if (const auto& mode = unstable) {
+        const LiquidMode& m = mode->mode;
+        throw std::invalid_argument(
+            "physics.willmore_beta = " + digits17(physics.willmore_beta) +
+            " does not regularise epsilon = " + digits17(physics.epsilon) +
+            " at this grid spacing: in a liquid with a small gradient along n = (" +
+            digits17(m.n[0]) + ", " + digits17(m.n[1]) + ", " + digits17(m.n[2]) +
+            ") the perturbation with wave numbers (" + digits17(m.theta[0]) + ", " +
+            digits17(m.theta[1]) + ", " + digits17(m.theta[2]) +
+            ") rad per cell has Lam + beta L <= " + digits17(mode->attained) +
+            " < 0 and grows at every dt; increase willmore_beta (docs/THEORY.md 10.1)");
+    }
 
     // Time validation
     if (time.dt <= 0.0)
@@ -432,8 +467,9 @@ void SimulationConfig::validate() const {
                                     "cfl_safety times the stability limit");
 
     // Explicit stability limits (docs/THEORY.md 10.1): beyond them a
-    // checkerboard perturbation (of the liquid, for the phase field) grows
-    // every step. They are printed with 17 significant digits, so a rejected
+    // perturbation (of the liquid, for the phase field, to within the
+    // tolerance of its certified bound) grows every step.
+    // They are printed with 17 significant digits, so a rejected
     // dt never shows as equal to its limit. With
     // adaptive stepping the first step uses time.dt and every later step is
     // capped at cfl_safety times the limits; dt_min must not exceed that cap.
@@ -455,8 +491,8 @@ void SimulationConfig::validate() const {
                 what + " = " + digits17(dt) + " exceeds " +
                 (factor < 1.0 ? "cfl_safety times " : "") + "the stability limit " +
                 digits17(phi_limit) +
-                " of the explicit phase-field update, above which a checkerboard "
-                "perturbation of the liquid grows every step (docs/THEORY.md 10.1)");
+                " of the explicit phase-field update (a perturbation of the liquid grows every "
+                "step above it, to within the tolerance of docs/THEORY.md 10.1)");
         }
     };
     if (time.adaptive) {

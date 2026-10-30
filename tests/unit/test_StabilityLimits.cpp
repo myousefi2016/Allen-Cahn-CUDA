@@ -1,6 +1,7 @@
 // Explicit stability limits (docs/THEORY.md 10.1): their closed forms and
 // the validation built on them. test_StabilityLimitsGpu.cu checks on the GPU
 // that the solver's update has exactly these limits.
+#include "common/LiquidModeReference.hpp"
 #include "core/StabilityLimits.hpp"
 
 #include <algorithm>
@@ -8,8 +9,10 @@
 #include <gtest/gtest.h>
 #include <iomanip>
 #include <limits>
+#include <random>
 #include <sstream>
 #include <string>
+#include <utility>
 
 using namespace ac;
 
@@ -74,59 +77,20 @@ TEST(StabilityLimits, ClosedForms) {
     EXPECT_EQ(thermal_dt_limit(imex), std::numeric_limits<double>::infinity());
 }
 
-// The Hessian diagonal of the gradient energy in closed form: (1 + eps)^2
-// along an axis, the stiffness S(eps) = (1 + eps)(1 - 15 eps) across it,
-// A^2 + 64 eps A / 9 at <111> (A = 1 - 5 eps/3), and 1 for every direction
-// at eps = 0; against a central difference of the flux that
-// anisotropic_flux computes (the derivative of F_i along p_i).
-TEST(StabilityLimits, GradientEnergyHessianDiagonal) {
-    const double x[3] = {1, 0, 0};
-    const double r3 = 1.0 / std::sqrt(3.0);
-    const double d111[3] = {r3, r3, r3};
-    const double odd[3] = {0.48, 0.6, std::sqrt(1.0 - 0.48 * 0.48 - 0.6 * 0.6)};
-    for (double eps : {0.0, 0.05, 0.12, 0.3}) {
-        EXPECT_DOUBLE_EQ(gradient_energy_hessian_diagonal(x, eps, 0), (1 + eps) * (1 + eps));
-        EXPECT_DOUBLE_EQ(gradient_energy_hessian_diagonal(x, eps, 1), (1 + eps) * (1 - 15 * eps));
-        // d111 is 1/sqrt(3) rounded: agreement to rounding (values of order 1).
-        const double a = 1 - 5 * eps / 3;
-        for (int i = 0; i < 3; ++i)
-            EXPECT_NEAR(gradient_energy_hessian_diagonal(d111, eps, i), a * a + 64 * eps * a / 9,
-                        1e-14);
-        // F_i(p) / W0^2 = A^2 p_i + 16 eps A (p_i^3/|p|^2 - s p_i/|p|^4), as
-        // anisotropic_flux; its derivative along p_i by a central difference
-        // with step 1e-5 (truncation O(1e-10), rounding O(1e-11)).
-        auto flux = [eps](const double p[3], int i) {
-            const double r = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
-            const double s =
-                p[0] * p[0] * p[0] * p[0] + p[1] * p[1] * p[1] * p[1] + p[2] * p[2] * p[2] * p[2];
-            const double an = 1 - 3 * eps + 4 * eps * s / (r * r);
-            return an * an * p[i] + 16 * eps * an * (p[i] * p[i] * p[i] / r - s * p[i] / (r * r));
-        };
-        for (int i = 0; i < 3; ++i) {
-            double up[3] = {odd[0], odd[1], odd[2]}, dn[3] = {odd[0], odd[1], odd[2]};
-            up[i] += 1e-5;
-            dn[i] -= 1e-5;
-            EXPECT_NEAR(gradient_energy_hessian_diagonal(odd, eps, i),
-                        (flux(up, i) - flux(dn, i)) / 2e-5, 1e-8)
-                << "eps " << eps << " i " << i;
-        }
-    }
-}
-
-// The phase-field limit (necessary condition): the uniform liquid's
-// checkerboards over every subset of the axes, and the liquid with a small
-// gradient. At eps = 0 nothing depends on the direction and the full
-// checkerboard of the uniform liquid binds; for eps > 0 on a cubic grid
-// without the Willmore term the <111> gradient binds (the minimum of
-// tau0 A^2 / (3 W0^2 H 4/h^2 + 2) over the directions); with the Willmore
-// term a 1-D or 2-D checkerboard binds, and a large beta damps every case.
+// The phase-field limit takes the smallest of the uniform liquid's exact modes
+// and the liquid-gradient bound. Without the Willmore term the <111> gradient's
+// full checkerboard binds (2 tau0 A^2 / (3 W0^2 H 4/h^2 + 2), at eps = 0 the
+// uniform liquid's too); with it the binding mode is a wave between the
+// checkerboards: at eps 0.07, beta 0.0149 (default.json) the gradient along
+// <101> with theta = (0.652, 0, -0.652) pi, limit 2 tau0 / 41.19 = 0.027467,
+// 13 % below what the checkerboards gave (0.031570).
 TEST(StabilityLimits, PhaseFieldLimitClosedForms) {
     auto cfg = config(TimeScheme::Euler, StencilType::Standard7Point); // h = 0.4
     const double tau0 = cfg.physics.tau0(), rho7 = 75.0;
-    // The limit is evaluated at directions computed with sin and cos; where it
-    // is stationary that changes it only by rounding: agreement to 1e-13.
+    // The certified bound is within kLiquidModeTolerance of the maximum.
+    const double tol = 2 * kLiquidModeTolerance;
     cfg.physics.epsilon = 0.0;
-    EXPECT_NEAR(phase_field_dt_limit(cfg) / (2 * tau0 / (rho7 + 2)), 1.0, 1e-13);
+    EXPECT_NEAR(phase_field_dt_limit(cfg) / (2 * tau0 / (rho7 + 2)), 1.0, tol);
     for (double eps : {0.05, 1.0 / 15.0}) {
         cfg.physics.epsilon = eps;
         const double a = 1 - 5 * eps / 3, h111 = a * a + 64 * eps * a / 9;
@@ -134,20 +98,60 @@ TEST(StabilityLimits, PhaseFieldLimitClosedForms) {
         const double uniform =
             2 * tau0 * (1 - 0.6 * eps) * (1 - 0.6 * eps) / ((1 + eps) * (1 + eps) * rho7 + 2);
         EXPECT_LT(at111, uniform);
-        EXPECT_NEAR(phase_field_dt_limit(cfg) / at111, 1.0, 1e-13) << "eps " << eps;
+        EXPECT_LE(phase_field_dt_limit(cfg), at111) << "eps " << eps;
+        EXPECT_NEAR(phase_field_dt_limit(cfg) / at111, 1.0, tol) << "eps " << eps;
     }
-    // eps 0.07, beta 0.0149 (default.json): the full checkerboard is damped
-    // (beta Lcb = 88.3 > Lam = 87.9), the 1-D one of the uniform liquid is not:
-    // 2 tau_cb / (W0^2 (1+eps)^2 25 + 2 - beta 27^2) = 0.0526; the gradient
-    // cases lower the limit further (2-D, <110>).
     cfg.physics.epsilon = 0.07;
     cfg.physics.willmore_beta = 0.0149;
-    const double tau_cb = tau0 * (1 - 0.6 * 0.07) * (1 - 0.6 * 0.07);
-    const double uniform_1d = 2 * tau_cb / (1.07 * 1.07 * 25 + 2 - 0.0149 * 27 * 27);
-    EXPECT_LT(phase_field_dt_limit(cfg), uniform_1d);
-    EXPECT_GT(phase_field_dt_limit(cfg), 0.0);
+    EXPECT_NEAR(phase_field_dt_limit(cfg) / (2 * tau0 / 41.189758899), 1.0, tol);
+    EXPECT_NEAR(phase_field_dt_limit(cfg), 0.027467, 1e-6);
+    // A large beta no longer damps every mode: the uniform shift alone has
+    // Lam - beta L = 2 - 4 beta > 0 for beta < 1/2 (2 tau_cb / (2 - 4 beta)),
+    // and the gradient modes bind below it (eps 0.07, beta 0.25: 2 tau0 / 2.0683).
     cfg.physics.willmore_beta = 0.25;
+    const double tau_cb = tau0 * (1 - 0.6 * 0.07) * (1 - 0.6 * 0.07);
+    EXPECT_LT(phase_field_dt_limit(cfg), 2 * tau_cb / (2 - 4 * 0.25));
+    EXPECT_NEAR(phase_field_dt_limit(cfg) / (2 * tau0 / 2.06830220779), 1.0, tol);
+    // Above beta = 1/2 every mode is damped at every dt.
+    cfg.physics.willmore_beta = 0.6;
     EXPECT_EQ(phase_field_dt_limit(cfg), std::numeric_limits<double>::infinity());
+    // At eps = 0 the gradient modes are the uniform liquid's (H = I, A = 1): with beta 0.1
+    // Lam - beta L = W0^2 mu + 2 - beta (W0^2 mu + 2)^2 peaks at W0^2 mu + 2 = 1 / (2 beta),
+    // at 1 / (4 beta) = 2.5 (mu = 3, inside [0, 75]): 2 tau0 / 2.5. (The branch and bound
+    // would not end there: its maximum is a level set of mu.)
+    cfg.physics.epsilon = 0.0;
+    cfg.physics.willmore_beta = 0.1;
+    EXPECT_NEAR(phase_field_dt_limit(cfg) / (2 * tau0 / 2.5), 1.0, 1e-15);
+}
+
+// A beta too small for eps > 1/15 at the spacing leaves liquid-gradient modes
+// with Lam + beta L < 0, which grow at every dt: validate() rejects the
+// configuration and names such a mode with its certified bound (the binary128
+// value there, from the definitions, below it). The shipped physics have none.
+TEST(StabilityLimits, UnderRegularisedPhysicsIsRejected) {
+    auto cfg = config(TimeScheme::Euler, StencilType::Standard7Point);
+    cfg.time.dt = 1e-4;
+    for (const auto& [eps, beta] : {std::pair{0.3, 0.1}, std::pair{0.12, 0.01}}) {
+        cfg.physics.epsilon = eps;
+        cfg.physics.willmore_beta = beta;
+        const auto mode = phase_field_unstable_mode(cfg);
+        ASSERT_TRUE(mode.has_value()) << eps << " " << beta;
+        EXPECT_LT(mode->attained, 0.0);
+        const test::Physics p{eps, beta, cfg.physics.W0, {0.4, 0.4, 0.4}};
+        const test::Q value = test::damping(p, mode->mode.n, mode->mode.theta);
+        EXPECT_TRUE(value <= test::Q(mode->attained))
+            << test::qstr(value) << " > " << mode->attained;
+        std::ostringstream bound;
+        bound << std::setprecision(17) << "Lam + beta L <= " << mode->attained << " < 0";
+        expect_invalid(cfg, bound.str());
+    }
+    for (const auto& [eps, beta] :
+         {std::pair{0.05, 0.0}, std::pair{0.07, 0.0149}, std::pair{0.10, 0.153},
+          std::pair{0.12, 0.25}, std::pair{0.15, 0.401}}) {
+        cfg.physics.epsilon = eps;
+        cfg.physics.willmore_beta = beta;
+        EXPECT_FALSE(phase_field_unstable_mode(cfg).has_value()) << eps << " " << beta;
+    }
 }
 
 // A fixed dt is accepted up to the smaller limit and rejected above it, with
@@ -242,8 +246,8 @@ TEST(StabilityLimits, ReportPrintsTheLimitsAndTheAdaptiveCap) {
                   digits17(phase_field_dt_limit(cfg)) +
                   "\nadaptive dt cap (cfl_safety times the smaller limit): " +
                   digits17(0.5 * phase_field_dt_limit(cfg)) + "\n");
-    cfg.physics.epsilon = 0.12; // run_dendrite.json: beta damps every checkerboard case
-    cfg.physics.willmore_beta = 0.25;
+    cfg.physics.epsilon = 0.12; // beta >= 1/2 damps every mode of the liquid
+    cfg.physics.willmore_beta = 0.6;
     EXPECT_EQ(stability_limits_report(cfg),
               "thermal dt limit (scheme imex, stencil 27pt): none\n"
               "phase-field dt limit (scheme imex, any stencil): none\n"

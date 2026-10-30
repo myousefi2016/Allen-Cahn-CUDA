@@ -1066,8 +1066,8 @@ Making it implicit removes this constraint while keeping the nonlinear
 Allen-Cahn term explicit (where implicit treatment would require a nonlinear
 solver). The explicit phase-field update keeps its own limit (§10.1), below
 the thermal one at the default physics (0.010626 against 0.013333); the
-Willmore term (β > 0) raises it, to 0.0316 at the shipped ε = 0.07,
-β = 0.0149, and removes it at the larger β of the dendrite configurations.
+Willmore term (β > 0) raises it, to 0.027467 at the shipped ε = 0.07,
+β = 0.0149 and to 0.17–0.69 at the larger β of the dendrite configurations.
 
 ---
 
@@ -1200,59 +1200,128 @@ above, at the checkerboard vertex (−2, −2, −2). On a periodic grid with an
 even number of interior cells per axis the checkerboard is an exact mode and
 ρ is attained; otherwise the largest eigenvalue is within O(1/N²) of ρ.
 
-**Phase field.** In the liquid (φ = −1) a checkerboard perturbation over a
-non-empty subset S of the axes, η(−1)^{Σ_{d∈S} x_d}, has at every face
-normal to an axis of S a gradient along the face normal only (the
-tangential averages of central differences vanish), zero gradient on the
-other faces, and a zero central-difference gradient at every cell. So
-A = 1 + ε on those faces and τ = τ₀(1 − 3ε/5)² at every cell (the spherical
-average the kernel uses for a zero gradient), and the face-flux divergence
-(§11, whatever `stencil` says) acts on the mode as W₀²(1 + ε)² times the
-7-point Laplacian, eigenvalue −μ_S. With the reaction's derivative 2 at
-φ = −1 (independent of u), one explicit step multiplies η by
-R(−Δt·Λ_S/τ_cb), with
+**Phase field.** The explicit phase-field update is linearised about the
+liquid φ = −1, where the reaction's derivative is 2 (independent of u), in
+two kinds of liquid.
+
+*The uniform liquid.* A perturbation ηψ(x) is an exact mode when every face
+sees a gradient along its normal only (A = 1 + ε there): the uniform shift
+ψ = 1, the checkerboards (−1)^{Σ_{d∈S} x_d} over a subset S of the axes, and
+the waves cos(θx_a) along one axis a (0 < θ < π) that alternate along a
+subset S' of the other two; in all of them the tangential averages of
+central differences vanish on every face. The face-flux divergence (§11,
+whatever `stencil` says) acts on them as W₀²(1 + ε)² times the 7-point
+Laplacian, eigenvalue −μ, μ = Σ_d 2(1 − cos θ_d)/h_d². Their cell gradient
+is zero for the shift and the checkerboards, so τ = τ_cb = τ₀(1 − 3ε/5)²
+(the value the kernel uses for a zero gradient), and axial for the waves,
+τ = τ₀(1 + ε)² (once their cell gradient exceeds the kernel's zero-gradient
+threshold, |∇φ|² > 10⁻³⁰). With
 
 ```
-Λ_S = W₀²(1 + ε)² μ_S + 2,   τ_cb = τ₀(1 − 3ε/5)²,   μ_S = 4 Σ_{d∈S} h_d⁻²
+Λ = W₀²(1 + ε)² μ + 2,    L = (W₀² μ + 2)²
 ```
 
-With the Willmore term (Euler and IMEX, β > 0, §4.4) the step solves
-(τ/Δt + βL)δφ = rhs, and at this mode L = (W₀²μ_S + 2)² =: L_S and
-rhs = −(Λ_S + βL_S)η:
+and the Willmore step (Euler and IMEX, β > 0, §4.4), which solves
+(τ/Δt + βL)δφ = rhs with rhs = −(Λ + βL)η at the mode, one step multiplies η by
 
 ```
-g = 1 − Δt (Λ_S + β L_S) / (τ_cb + Δt β L_S),    |g| ≤ 1  ⟺  Δt (Λ_S − β L_S) ≤ 2 τ_cb
+g = 1 − Δt (Λ + β L) / (τ + Δt β L),    |g| ≤ 1  ⟺  Λ + βL ≥ 0  and  Δt (Λ − β L) ≤ 2 τ
 ```
 
-Without the Willmore term the full checkerboard (S = all axes) binds; with
-it, Λ_S − βL_S is concave in μ_S and a 1-D or 2-D checkerboard can bind
-where the full one decays at every Δt (at ε = 0.07, β = 0.0149, h = 0.4:
-the full one has βL_S = 88.3 > Λ_S = 87.9, the 1-D one a limit of 0.0525).
+(Heun and RK4 have β = 0 and the factor R(−ΔtΛ/τ), stable for ΔtΛ ≤ rτ.)
+Λ − βL is concave in μ: the shift gives 2 − 4β, a finite limit for every
+β < 1/2; the checkerboards give μ_S = 4 Σ_{d∈S} h_d⁻²; on each family of
+waves the maximum over μ ∈ [μ_S', μ_S' + 4/h_a²] is at W₀²μ + 2 = (1 + ε)²/(2β)
+when that lies inside, or at an end: all in closed form.
 
-A liquid that is not exactly uniform has a small smooth gradient along some
-direction n (the tail of an interface). The checkerboard then leaves the
-cell gradients unchanged, so τ = τ₀A(n)², and changes the normal flux on a
-face normal to d by H_dd(n) times its normal gradient, H the Hessian of the
-gradient energy ½W₀²A²|p|², which depends on the direction only
-(`gradient_energy_hessian_diagonal`; (1 + ε)² along an axis, S(ε) across
-it). With `Λ_S(n) = W₀² Σ_{d∈S} H_dd(n) 4/h_d² + 2` and τ = τ₀A(n)² in
-place of Λ_S and τ_cb, the same g applies, frozen at the gradient's
-direction. On a cubic grid without the Willmore term it is lowest along
-⟨111⟩ at ε = 0.05 and 1/15 (`PhaseFieldLimitClosedForms`): at ε = 0.05 the
-limit is 0.010626 against 0.012570 for the uniform liquid (default physics,
-h = 0.4).
+*A liquid with a small gradient.* In the tail of an interface the liquid has
+a small smooth gradient along some unit direction n. With the coefficients
+frozen there, every Fourier mode exp(iθ·x) is an eigenmode: the face fluxes
+respond with W₀²H(n), H(n) the Hessian of ½A²|p|², the gradient energy
+½W₀²A²|p|² per W₀² (all its entries, `gradient_energy_hessian`; the energy is
+2-homogeneous, so H depends on the direction only: (1 + ε)² along an axis,
+S(ε) across it), the cell gradients
+keep their direction (τ = τ₀A(n)²; the change of τ multiplies the
+background's own rate, which vanishes at an equilibrium tail), and the
+face-flux discretisation (normal difference, averaged central tangential
+differences) gives
 
-`phase_field_dt_limit` returns the smallest limit over the seven subsets S,
-the uniform liquid and the gradient directions n of a 1° grid on the
-octant plus the exact ⟨110⟩ and ⟨111⟩, each refined to the bottom of its
-basin. Every case is a necessary condition on its own (exact for the
-uniform liquid; for a gradient, the frozen-coefficient condition, which an
-explicit scheme must meet), so their minimum is too. It is not shown to be
-sufficient: at an interface the anisotropic update has no closed form (its
-linearisation is not symmetric for ε > 0). For the shipped configurations
-it is 0.0316 at ε = 0.07, β = 0.0149 (`default.json`, `benchmark_small.json`,
-the Makefile's `run_vtk.json`, the k8s payloads; their dt are 0.0025 and
-0.005) and +∞ for the large-β dendrite configurations.
+```
+σ_n(θ) = Σ_d H_dd(n) 2 (1 − cos θ_d)/h_d² + Σ_{d≠e} H_de(n) sin θ_d sin θ_e / (h_d h_e),
+Λ = W₀² σ_n(θ) + 2
+```
+
+with the same L and g. At the checkerboards (θ_d ∈ {0, π}) the cross terms
+vanish; between them they do not, and with the Willmore term Λ − βL, which
+βL makes concave in μ, peaks between the checkerboards.
+
+**Two conditions.** A mode with Λ + βL < 0 grows at every Δt. The uniform
+liquid has Λ + βL ≥ 2; a gradient mode has it negative where H(n) is not
+positive semidefinite (ε > 1/15) and β is too small at the spacing: at
+ε = 0.3, β = 0.1, h = 0.4 the wave θ = (0, 0.437π, −0.455π) across an axial
+gradient has Λ + βL = −40.66, at ε = 0.12, β = 0.01 another one −16.28.
+`validate()` rejects such a configuration and names the mode. Otherwise the
+limit is the smallest rτ/(Λ − βL) over the modes with Λ − βL > 0.
+
+**Computation** (`phase_field_dt_limit`, `phase_field_unstable_mode`,
+`core/LiquidModes.hpp`). The uniform liquid in closed form. The gradient
+modes by a branch and bound over n (the octant: a sign change of n_d
+together with θ_d changes nothing; with equal spacings the triangle
+n_x ≥ n_y ≥ n_z, since permuting the axes of n and θ together changes
+nothing) and θ (θ_x ∈ [0, 3.2] by evenness, θ_y, θ_z ∈ [−3.2, 3.2] by
+periodicity). Every bound it uses is a composition of interval operations
+rounded outward (`core/Interval.hpp`: each result one unit in the last place
+or more beyond the rounded value, the formula's coefficients enclosed too,
+an overflow kept as an enclosure, sine and cosine widened past glibc's
+error of at most one unit), so it holds for the exact real formula: the
+smallest of a per-axis decomposition of the objective (each axis's concave
+part exact) and second-order Taylor bounds in n and in θ with interval
+Hessians over the box. It discards wave-number boxes whose θ-gradient
+excludes zero (the periodic function has its maximum at a stationary
+point). Every mode it records carries the lower end of an enclosure of its
+value. For the limit it returns an upper bound B of
+M = max (Λ − βL)/A(n)² once no box can exceed the best recorded value by
+more than 10⁻⁹·max(1, value) (`kLiquidModeTolerance`): M lies between the
+two, so the limit rτ₀/B is at most a relative 10⁻⁹·max(1, 1/M) below the
+frozen-coefficient limit. At ε = 0 these modes are the uniform liquid's
+(H = I, A = 1) and are not searched: Λ − βL then depends on μ alone and,
+with β > 0, peaks on a whole level set of μ, which no branch and bound
+narrows to 10⁻⁹. For Λ + βL it proves Λ + βL ≥ 0 for every mode or finds a
+mode whose enclosure is negative, and `validate()` names that mode with the
+enclosure's upper end. Each search has a budget of 2·10⁷ box evaluations:
+the shipped physics need 1.2·10⁴ to 1.6·10⁵, the tests up to 1.5·10⁶;
+close to the smallest β that regularises ε the sign search needs more, the
+closer it is (at ε = 0.12, h = 0.4 it decides β = 0.053008, min Λ + βL in
+[0, 0.0057], in 0.3 s and β = 0.052949, min in [0, 0.0015], in 3 s; at
+β = 0.0529346, between the latter and β = 0.0529199 with a witness at
+−0.0006, the budget runs out), and then `validate()` rejects the
+configuration with the range min Λ + βL is known to lie in; a limit search
+beyond its budget uses the upper end of its range, a looser bound.
+`tests/unit/test_LiquidModes.cpp` checks every interval operation, the
+coefficients and their derivatives,
+each bound, the discarded boxes, the domain and its symmetries, and the
+results against binary128 references, the Hessian by differentiating the
+kernel's flux. On the development machine (one core, the Release flags) a
+limit takes 0.04 s without the Willmore term and 0.33–0.38 s with it on a
+cubic grid (the shipped physics), 0.13 s and 1.0–1.7 s with the spacings
+0.4, 0.5 and 0.6; the sign 0.02–0.04 s and 0.14–0.21 s; both are cached per
+physics within a process.
+
+**Result.** Without the Willmore term the full checkerboard of a ⟨111⟩
+gradient binds on a cubic grid (ε = 0.05: 0.010626, against 0.012570 for the
+uniform liquid; at ε = 0 the uniform liquid's 2τ₀/(12W₀²/h² + 2)). With it
+the binding mode is a wave across the gradient: at ε = 0.07, β = 0.0149,
+h = 0.4 (`default.json`, `benchmark_small.json`, the Makefile's
+`run_vtk.json`, the k8s payloads) a gradient along ⟨101⟩ and
+θ = (0.652π, 0, −0.652π), limit 0.027467, below the 0.031570 the
+checkerboards alone give and the uniform liquid's 0.052546 (its 1-D
+checkerboard). For the dendrite configurations it is a gradient along a
+⟨110⟩ direction and a long wave across it (θ = 0.11π–0.20π): 0.2913
+(`run_dendrite.json`), 0.16986 (`run_dendrite_large.json`), 0.68562
+(`run_dendrite_long.json`). Every shipped dt is far below them
+(0.0003125–0.005). It is a necessary condition, not shown to be sufficient:
+inside an interface the anisotropic update has no closed form (its
+linearisation is not symmetric for ε > 0).
 
 **Measured** (`StabilityLimitsGpuTest`, periodic 18³, h = 0.4, D = 2, the
 perturbation over 40 steps): at 0.99 and 1.01 times each limit the factor
@@ -1263,11 +1332,17 @@ per step is 0.9800 / 1.0200 (Euler), 0.9802 / 1.0202 (Heun) and 0.9588 /
 at ε = 0.07, β = 0.0149, where at Δt = 0.06 the full checkerboard decays
 (0.817) and the 1-D one grows (1.126); for a liquid with a ⟨111⟩ gradient
 of 10⁻⁶ at ε = 0.05, 0.982 / 1.007 at its limit 0.010626, and 1.204 at 0.99
-times the uniform liquid's limit. The runs of §4.3 bracket the thermal
+times the uniform liquid's limit; the uniform shift at ε = 0.12, β = 0.25,
+0.993 / 1.007 at its limit 0.974318; and at ε = 0.07, β = 0.0149 on a periodic
+46 × 4 × 46 grid a liquid with a ⟨101⟩ gradient of 10⁻³ and the wave
+θ = 2π·15/46 across it, 0.991 / 1.009 at its frozen limit 0.0274673
+(`phase_field_dt_limit` 4·10⁻⁷ below it) and 1.114 at 0.99 times 0.031570. The runs of §4.3 bracket the thermal
 limits on the shipped grids: 7-point stable at 0.0125 and blown up at
 0.014, 27-point stable at 0.025 and blown up at 0.027.
 
 **Validation** (`core/StabilityLimits.hpp`, `SimulationConfig::validate`):
+a configuration with a liquid mode Λ + βL < 0 is rejected, naming the mode
+and a certified upper bound of its Λ + βL;
 a fixed Δt above either limit is rejected, with the configured stencil,
 spacing per axis and scheme (IMEX has no thermal limit); the message gives
 Δt and the limit to 17 significant digits. With adaptive stepping every
@@ -1615,13 +1690,13 @@ graph TD
 | GPU memory, bytes per cell (measured, Appendix C) | 32.1 | 48.1 | 112.1 | 48.1 |
 | … with `willmore_beta > 0` | 108.1 | rejected | rejected | 124.1 |
 | Explicit thermal update stable for (§10.1) | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2 | Δt·D·ρ ≤ 2.785 | any Δt (u implicit) |
-| Checkerboards of the liquid do not grow only if (§10.1; minimum over S and the gradient direction) | Δt(Λ_S − βL_S) ≤ 2τ | Δt·Λ_S ≤ 2τ | Δt·Λ_S ≤ 2.785τ | Δt(Λ_S − βL_S) ≤ 2τ |
+| Modes of the liquid do not grow only if (§10.1; every mode) | Λ + βL ≥ 0, Δt(Λ − βL) ≤ 2τ | Δt·Λ ≤ 2τ | Δt·Λ ≤ 2.785τ | Λ + βL ≥ 0, Δt(Λ − βL) ≤ 2τ |
 | ms per step, 160³, h = 0.4, dt = 0.005, ε = 0.05, β = 0 | 4.30 | 8.82 | 18.07 | 10.95 |
 | ms per step, same grid, ε = 0.12, β = 0.25 | 10.84 | rejected | rejected | 17.34 |
 
 ρ is the largest eigenvalue of −∇²ₕ: 4 Σ_d h_d⁻² (7-point), 184/(30h²)
-(27-point); Λ_S, τ and L_S are those of §10.1 (with the 7-point μ_S for
-either stencil). Costs measured on an RTX 4090 (CUDA 13.2, median over 200 steps
+(27-point); Λ, τ and L are those of §10.1 (the face-flux divergence and the
+Willmore Laplacian do not depend on `stencil`). Costs measured on an RTX 4090 (CUDA 13.2, median over 200 steps
 after 220 from the seed, no other process on the GPU) with the physics of
 `run_dendrite.json`. With β > 0 the Euler and IMEX φ update is the linearly
 implicit Willmore step (§4.3–4.4); the shipped configurations choose between

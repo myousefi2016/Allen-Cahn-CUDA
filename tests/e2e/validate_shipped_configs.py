@@ -25,8 +25,9 @@ where a limit is +infinity. Each printed value must be the one validate()
 applies: as time.dt it is accepted and the next double above it is rejected
 (the thermal limit of default.json, the phase-field limit of
 benchmark_small.json, the cap of an adaptive copy of default.json), and the
-IMEX thermal limit of benchmark_small.json, the phase-field limit of
-run_dendrite.json and the cap of an adaptive IMEX copy of it print as "none".
+IMEX thermal limit of benchmark_small.json, and the phase-field limit and
+the adaptive IMEX cap of a copy of run_dendrite.json with willmore_beta 0.6
+(no mode of the liquid grows at any dt) print as "none".
 
 The configurations run from the repository root (config/*.json and the
 Makefile's run_vtk.json) must also use their own output_dir and
@@ -193,14 +194,22 @@ def main() -> int:
                 print(f"ok   {what}: {value} is the largest accepted time.dt")
 
         # +infinity prints as "none".
+        def damped(name, **time):
+            def change(cfg):
+                cfg["physics"]["willmore_beta"] = 0.6
+                cfg["time"].update(time)
+            return mutated(name, change)
+
         nones = [
-            ("benchmark_small.json", {}, "thermal dt limit"),
-            ("run_dendrite.json", {}, "phase-field dt limit"),
-            ("run_dendrite.json", {"scheme": "imex", "adaptive": True}, "adaptive dt cap"),
+            ("benchmark_small.json", with_time("benchmark_small.json"), "thermal dt limit"),
+            ("run_dendrite.json with willmore_beta 0.6", damped("run_dendrite.json"),
+             "phase-field dt limit"),
+            ("run_dendrite.json with willmore_beta 0.6, imex, adaptive",
+             damped("run_dendrite.json", scheme="imex", adaptive=True), "adaptive dt cap"),
         ]
-        for name, time, line in nones:
-            what = f"{line} of {name}" + (f" with {time}" if time else "")
-            value = limit(with_time(name, **time), line)
+        for what_cfg, text, line in nones:
+            what = f"{line} of {what_cfg}"
+            value = limit(text, line)
             ok = value == "none"
             failures += not ok
             print(f"{'ok  ' if ok else 'FAIL'} {what}: {value}")

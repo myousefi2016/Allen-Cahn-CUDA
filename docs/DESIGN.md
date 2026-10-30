@@ -291,15 +291,24 @@ graph LR
    smaller explicit stability limit, last, so dt_min cannot lift a step
    above it. φ unchanged gives tolerance / max_dphi = +∞ and the factor 1.5.
 
-The limits (`core/StabilityLimits.hpp`, docs/THEORY.md §10.1) are exact for
-a checkerboard mode: the explicit thermal update of Euler, Heun and RK4,
+The limits (`core/StabilityLimits.hpp`, docs/THEORY.md §10.1) are the exact
+limit of the explicit thermal update of Euler, Heun and RK4,
 `dt * D * rho <= r` (rho = 4 sum_d h_d^-2 for the 7-point, 184/(30 h^2) for
 the 27-point stencil; r = 2, or 2.785293563405282 for RK4; none for IMEX),
-and, as a necessary condition, the explicit phase-field update in the
-liquid: `dt (Lam_S - beta L_S) <= r tau` for the checkerboards over every
-subset S of the axes, of the uniform liquid and of a liquid with a small
-gradient along n (tau = tau0 A(n)^2, the gradient energy's Hessian H_dd(n)
-in Lam_S), minimised over S and n (THEORY 10.1).
+and, as a necessary condition, that of the explicit phase-field update in the
+liquid: `dt (Lam - beta L) <= r tau` for every mode, the uniform liquid's
+exact modes (shift, checkerboards, axial waves; closed form) and every
+Fourier mode of a liquid with a small gradient along any direction n
+(tau = tau0 A(n)^2, the gradient energy's full Hessian H(n) in Lam), the
+latter as a certified bound from a branch and bound in interval arithmetic
+rounded outward at every operation (`core/LiquidModes.hpp`,
+`core/Interval.hpp`; above the maximum by at most 1e-9 max(1, maximum)). A
+mode with `Lam + beta L < 0` grows at every dt: `validate` rejects the
+configuration (beta too small for an epsilon above 1/15 at that spacing)
+and names the mode with a certified upper bound of its `Lam + beta L`, or,
+when the search cannot decide the sign within its budget (beta very close
+to the smallest value that regularises epsilon), the range the minimum
+lies in.
 `SimulationConfig::validate` rejects a fixed dt above either limit, and with
 adaptive stepping a time.dt or dt_min above the cap and `cfl_safety`
 outside (0, 1]. The engine computes the cap once, in its constructor.

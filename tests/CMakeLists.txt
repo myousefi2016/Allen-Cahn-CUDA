@@ -6,6 +6,7 @@ add_executable(unit_tests
     unit/test_Grid.cpp
     unit/test_SimulationConfig.cpp
     unit/test_StabilityLimits.cpp
+    unit/test_LiquidModes.cpp
     unit/test_FieldData.cpp
     unit/test_CheckpointIO.cpp
     unit/test_LRUCache.cpp
@@ -33,6 +34,8 @@ add_executable(unit_tests
     unit/test_Logger.cpp
 )
 
+# quadmath: binary128 sin, cos and sqrt for the reference values of
+# common/LiquidModeReference.hpp (part of GCC's runtime).
 target_link_libraries(unit_tests PRIVATE
     GTest::gtest_main
     ac_engine
@@ -40,6 +43,7 @@ target_link_libraries(unit_tests PRIVATE
     ac_cuda
     ac_io
     ac_logging
+    quadmath
 )
 
 target_include_directories(unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

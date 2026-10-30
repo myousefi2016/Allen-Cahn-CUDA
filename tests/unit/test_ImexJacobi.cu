@@ -50,10 +50,11 @@ PerFaceBoundary u_faces() {
 /// field update (no reaction, coupling or gradient term, and a zero Willmore
 /// right-hand side, whose solve returns zero), so an IMEX step is exactly the
 /// backward-Euler heat solve (I - dt D Lap_h) u_new = u_old. The Willmore
-/// term (beta = 0.25, as shipped at eps = 0.12) makes these large dt accepted
-/// configurations: it damps every checkerboard mode that limits the explicit
-/// phase-field update, phase_field_dt_limit is +infinity (docs/THEORY.md 10.1).
-SimulationConfig imex_config(StencilType stencil, double dt, int domains = 1) {
+/// term (beta = 0.25, as shipped at eps = 0.12) raises the explicit
+/// phase-field limit to 0.7147 on the anisotropic grid and 0.7161 on the
+/// cubic one (docs/THEORY.md 10.1), above the dt of these tests; at
+/// beta = 0.6 no mode of the liquid grows at any dt (limit +infinity).
+SimulationConfig imex_config(StencilType stencil, double dt, int domains = 1, double beta = 0.25) {
     SimulationConfig cfg;
     cfg.grid.Nx = 20;
     cfg.grid.Ny = 18;
@@ -63,7 +64,7 @@ SimulationConfig imex_config(StencilType stencil, double dt, int domains = 1) {
     cfg.grid.dy = stencil == StencilType::Standard7Point ? 0.5 : 0.4;
     cfg.grid.dz = stencil == StencilType::Standard7Point ? 0.3 : 0.4;
     cfg.physics.epsilon = 0.05;
-    cfg.physics.willmore_beta = 0.25;
+    cfg.physics.willmore_beta = beta;
     cfg.physics.D = 2.0;
     cfg.time.dt = dt;
     cfg.time.scheme = TimeScheme::IMEX;
@@ -313,10 +314,11 @@ TEST_F(ImexJacobiTest, NonFiniteTemperatureThrows) {
 
 // At dt = 1e4 (s = 8.5e5) the rounding of one sweep, amplified by the
 // conditioning of the system, exceeds kJacobiTol: no number of sweeps can
-// certify the tolerance, and the step must say so.
+// certify the tolerance, and the step must say so (beta = 0.6: no
+// phase-field limit, so this dt is accepted).
 TEST_F(ImexJacobiTest, ToleranceBeyondRoundingThrows) {
     for (int domains : {1, 3}) {
-        const SimulationConfig cfg = imex_config(StencilType::Standard7Point, 1e4, domains);
+        const SimulationConfig cfg = imex_config(StencilType::Standard7Point, 1e4, domains, 0.6);
         const Grid grid = cfg.make_grid();
         FieldData phi(grid, "phi"), u(grid, "u");
         initial_state(phi, u);
