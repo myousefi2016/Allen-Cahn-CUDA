@@ -704,7 +704,7 @@ docker compose --profile prod run prod /app/config/default.json
 |-------------------------------|----------------------------------------------------------------------------------------|
 | `docker/Dockerfile.dev`       | Full CUDA 12.6 development environment, non-root user, source mount expected           |
 | `docker/Dockerfile.prod`      | Multi-stage builder + minimal runtime (non-root)                                       |
-| `docker/Dockerfile.test`      | Builds debug, runs `ctest` as entrypoint                                                |
+| `docker/Dockerfile.test`      | Builds debug and runs the whole `ctest` suite (unit, integration, end-to-end, from the source tree it carries) as its entrypoint; without a GPU the CUDA tests and the e2e tests that run a simulation are reported as Skipped |
 | `docker/Dockerfile.cuda-dev`  | Prebuilt dev image used by the `make cuda-*` targets (saves apt-install per invocation) |
 | `docker-compose.yml`          | Profiles: `dev`, `test`, `prod` (image tag `allencahn-cuda:<profile>`)                  |
 

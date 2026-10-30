@@ -312,6 +312,14 @@ jobs:
               done
             '
 
+      # The test image's own command: ctest of the unit, integration and
+      # end-to-end tests, run from the source tree the image carries. This
+      # runner has no GPU, so the CUDA tests and the e2e tests that run a
+      # simulation are reported as Skipped; the rest must pass.
+      - name: Run the test image's suite (no GPU)
+        if: matrix.target == 'test'
+        run: docker run --rm allen-cahn-cuda:test
+
   # ── Kubernetes Manifests Validation ─────────────────────────────────────────
   k8s-validate:
     name: Validate Kubernetes Manifests

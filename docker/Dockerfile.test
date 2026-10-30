@@ -1,7 +1,9 @@
 # ============================================================================
 # Allen-Cahn-CUDA Test Runner Image
 # ----------------------------------------------------------------------------
-# Builds the project in Debug mode with all tests enabled, then runs ctest.
+# Builds the project in Debug mode with all tests enabled, then runs ctest:
+# the unit, integration and end-to-end tests. Without a GPU the CUDA tests and
+# the e2e tests that run a simulation are reported as Skipped.
 #
 # Usage:
 #   docker compose --profile test run test
@@ -76,6 +78,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libvtk9-dev \
         libhdf5-dev \
         libgomp1 \
+        make \
         python3 \
         python3-yaml \
     && \
@@ -101,9 +104,12 @@ RUN if [ "$(getent passwd 1000 | cut -d: -f1)" = "ubuntu" ]; then \
 
 WORKDIR /build
 
-# Copy the built test tree
+# The source tree the tests are registered against, at the builder's path: ctest
+# runs the end-to-end tests from /build/tests/e2e, and they read the Makefile
+# (with GNU make), config/, k8s/, docker/, README.md and docs/ under /build
+# (tests/CMakeLists.txt). Then the built test tree.
+COPY --chown=tester:tester . /build/
 COPY --from=test-builder --chown=tester:tester /build/test-build /build/build/debug
-COPY --from=test-builder --chown=tester:tester /build/config /build/config
 
 USER tester
 

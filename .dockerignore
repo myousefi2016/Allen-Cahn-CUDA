@@ -21,10 +21,10 @@ docker-compose.yml
 docker-compose.*.yml
 .dockerignore
 
-# ── CI / Documentation ────────────────────────────────────────────────────
+# ── CI ────────────────────────────────────────────────────────────────────
+# README.md and docs/ stay in the context: the test image's end-to-end tests
+# check the configurations their examples give (validate_shipped_configs.py).
 .github/
-docs/
-*.md
 LICENSE
 PULL_REQUEST_TEMPLATE.md
 
