@@ -184,3 +184,19 @@ add_test(NAME e2e.MakefileVizOut
             ${PROJECT_SOURCE_DIR}
 )
 set_tests_properties(e2e.MakefileVizOut PROPERTIES TIMEOUT 60)
+
+# README's test inventory (the summary table, the unit and integration headings, one
+# row per test file, the project tree's test lines) is the one this build registers:
+# the unit_tests and integration_tests sources and the tests ctest lists (no GPU).
+# Exit code 77 = those executables are not built (reported as Skipped).
+add_test(NAME e2e.ReadmeTestInventory
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/readme_test_inventory.py
+            ${CMAKE_CTEST_COMMAND} ${PROJECT_BINARY_DIR} ${PROJECT_SOURCE_DIR}
+            --unit $<TARGET_PROPERTY:unit_tests,SOURCES>
+            --integration $<TARGET_PROPERTY:integration_tests,SOURCES>
+    COMMAND_EXPAND_LISTS
+)
+set_tests_properties(e2e.ReadmeTestInventory PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 60
+)

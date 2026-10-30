@@ -791,10 +791,12 @@ with `kubeconform` (no API server required) — see
 
 The suite has three `ctest` groups, selectable with `-R "^unit[.]"`,
 `-R "^integration[.]"` and `-R "^e2e[.]"`: the `unit_tests` and
-`integration_tests` executables and ten end-to-end tests (Python 3): four
-drive the built binary, six check the Makefile's resume, visualization,
+`integration_tests` executables and the end-to-end tests (Python 3), which
+drive the built binary, check the Makefile's resume, visualization,
 simulation, `k8s-logs` and dev-image targets with `make -n` (and
-docker-compose.yml) and its `cuda-status-dendrite` target (GNU make). It is verified on an NVIDIA RTX 4090
+docker-compose.yml) and its `cuda-status-dendrite` target (GNU make), and
+check this section's inventory against the build. The table below gives the
+files and ctest tests of each group. It is verified on an NVIDIA RTX 4090
 (compute 8.9) with CUDA 13.2.
 
 Without a usable GPU the CUDA tests are reported as *Skipped*. Set
@@ -809,7 +811,7 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 |-------------------|-------|-------------|
 | Unit tests        | 29    | 361         |
 | Integration tests | 8     | 19          |
-| End-to-end tests  | 10    | 10          |
+| End-to-end tests  | 11    | 11          |
 
 ```bash
 git clone https://github.com/myousefi2016/Allen-Cahn-CUDA.git
@@ -830,7 +832,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   '
 ```
 
-### Unit tests (`tests/unit/`, 28 files)
+### Unit tests (`tests/unit/`, 29 files)
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
@@ -890,6 +892,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` run the binary with `--resume` and the run's config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), and a dry run runs nothing: no recipe line of these targets or their prerequisites is one make runs under `-n` (from make's data base), and `make -n` calls neither docker nor python3 (recording stubs) and leaves `config/` as it was; without docker |
 | `makefile_run_signals.py` | Every target that runs the simulation in a container (`cuda-run` and the targets that use it, the long and large runs and their resume targets, `cuda-dendrite-demo`, `cuda-all`; the list is checked against make's data base) gives the binary itself as the container's command, right after the dev image, as the calling user, and the dev image keeps the entrypoint that execs its command, so Ctrl-C and `docker stop` reach the binary's handlers; checked with `make -n` and a recording docker stub, without docker |
 | `makefile_viz_out.py` | `make cuda-visualize` renders into `viz/<name of the run>` however `VIZ_IN` is spelled (`out/run_vtk`, `out/run_vtk/`, `out/run_vtk//`, `out/run_vtk/.`, `./out/run_vtk`, an absolute path), and `VIZ_ROOT` and `VIZ_OUT` override it; checked with `make -n`, without docker |
+| `readme_test_inventory.py` | This section's inventory is the build's: the summary table's files and ctest tests of each group, the unit and integration headings, one row per test file and the project tree's test lines, against the `unit_tests` and `integration_tests` sources and the tests ctest lists; every test source in `tests/unit` and `tests/integration` is built, and every script in `tests/e2e` is a test or imported by one; without a GPU, and reported as Skipped in a build that has not built `unit_tests` or `integration_tests` |
 | `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config` and prints its thermal and phase-field dt limits for its scheme and stencil; a `time.dt` equal to a printed limit (thermal, phase-field, adaptive cap) is accepted and one double above it rejected, and an infinite limit prints as `none`; a misspelled key, integer fields that are not ints (64.5 cells, 4294967297 steps) and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs, `saturation_check_freq` 0) are rejected; the runs from the repository root use their own output and checkpoint directories |
 
 ### Run a single test
@@ -927,6 +930,7 @@ Allen-Cahn-CUDA/
 │   ├── integration/           # 8 integration-test files
 │   ├── e2e/                   # signal_exit.py, cli_arguments.py, k8s_job_resume.py, validate_shipped_configs.py,
 │   │                          # makefile_dev_user.py, makefile_k8s_logs.py, makefile_resume_call.py, makefile_run_signals.py, makefile_run_status.py, makefile_viz_out.py,
+│   │                          # readme_test_inventory.py,
 │   │                          # makefile_common.py (what the Makefile tests share)
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   ├── test_resume_checkpoint.py  # resume helper: checkpoint choice and config rewrite
