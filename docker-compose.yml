@@ -23,6 +23,12 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dev
+      # The container user takes the host user's IDs, so the bind-mounted
+      # checkout is writable (`make docker-shell` and `make docker-compose-up`
+      # export HOST_UID and HOST_GID).
+      args:
+        USER_UID: "${HOST_UID:-1000}"
+        USER_GID: "${HOST_GID:-1000}"
     image: allencahn-cuda:dev
     container_name: allencahn-dev
     profiles:

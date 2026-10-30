@@ -57,28 +57,40 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN cmake --version | head -1
 
 # ── Create non-root developer user ────────────────────────────────────────
-# The base image already has user/group `ubuntu` at UID/GID 1000. If it owns
-# the requested UID, rename it to `developer` (keeping its IDs, dropping the
-# supplementary groups it carries: adm, sudo, ...); otherwise create
-# `developer` with the requested IDs. The final check fails the build
-# if the account does not end up with exactly USER_UID:USER_GID.
+# `developer` gets exactly USER_UID:USER_GID, the host user's IDs (docker-compose.yml and
+# `make docker-build-dev` pass them), so the checkout bind-mounted at /workspace is
+# readable and writable as on the host. The base image already holds user and group
+# `ubuntu` at 1000 and system groups below 1000 (users is 100): an account that owns
+# USER_UID is renamed developer (keeping its IDs and home, dropping the supplementary
+# groups it carries: adm, sudo, ...), a group that owns USER_GID is reused (renamed
+# developer if it is `ubuntu`), and whatever is missing is created. UID 0 is refused: the
+# image runs as a non-root user. The final check fails the build if the account does not
+# end up with exactly USER_UID:USER_GID.
 # build/ and .ccache/ are named-volume mount points in docker-compose.yml;
 # Docker seeds an empty named volume from the image directory, so they are
 # created here owned by developer.
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-RUN if [ "$(getent passwd ${USER_UID} | cut -d: -f1)" = "ubuntu" ]; then \
-        usermod --login developer --home /home/developer --move-home \
-            --groups "" ubuntu && \
+RUN [ "${USER_UID}" != 0 ] || { echo "USER_UID 0: the dev image runs as a non-root user" >&2; exit 1; } && \
+    owner=$(getent passwd ${USER_UID} | cut -d: -f1) && \
+    if [ -n "$owner" ]; then \
+        usermod --login developer --home /home/developer --move-home --groups "" "$owner"; \
+    fi && \
+    group=$(getent group ${USER_GID} | cut -d: -f1) && \
+    if [ -z "$group" ]; then \
+        groupadd --gid ${USER_GID} developer; \
+    elif [ "$group" = ubuntu ]; then \
         groupmod --new-name developer ubuntu; \
+    fi && \
+    if getent passwd developer > /dev/null; then \
+        usermod --gid ${USER_GID} developer; \
     else \
-        groupadd --gid ${USER_GID} developer && \
         useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash developer; \
     fi && \
     [ "$(id -u developer):$(id -g developer)" = "${USER_UID}:${USER_GID}" ] && \
     mkdir -p /workspace/build /workspace/.ccache && \
-    chown -R developer:developer /workspace
+    chown -R ${USER_UID}:${USER_GID} /workspace
 
 # ── Configure ccache ──────────────────────────────────────────────────────
 ENV CCACHE_DIR=/workspace/.ccache

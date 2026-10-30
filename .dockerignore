@@ -16,8 +16,9 @@ cmake-build-*/
 *~
 .cache/
 
-# ── Docker (avoid recursive context) ──────────────────────────────────────
-docker-compose.yml
+# ── Docker ────────────────────────────────────────────────────────────────
+# docker-compose.yml stays in the context: the test image's end-to-end tests
+# read it (makefile_dev_user.py). Local override files stay out.
 docker-compose.*.yml
 .dockerignore
 

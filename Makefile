@@ -464,6 +464,7 @@ cuda-clean: ## Remove native build dir, simulation outputs, checkpoints, and vis
 docker-build-dev: ## Build development Docker image
 	@echo "==> Building dev image..."
 	docker build -f docker/Dockerfile.dev \
+		--build-arg USER_UID=$(HOST_UID) --build-arg USER_GID=$(HOST_GID) \
 		-t $(IMAGE_NAME):dev \
 		-t $(DOCKER_REGISTRY)/$(IMAGE_NAME):dev \
 		$(DOCKER_BUILD_ARGS) .
@@ -497,11 +498,11 @@ docker-run: ## Run production simulation in Docker container (results in ./outpu
 
 docker-shell: ## Open interactive shell in dev container
 	@echo "==> Launching dev shell..."
-	docker compose --profile dev run --rm dev /bin/bash
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev run --rm dev /bin/bash
 
 docker-compose-up: ## Start all services via docker-compose
 	@echo "==> Starting services..."
-	docker compose --profile dev up -d
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev up -d
 
 docker-compose-down: ## Stop all services and remove containers
 	@echo "==> Stopping services..."

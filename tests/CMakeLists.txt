@@ -167,6 +167,15 @@ add_test(NAME e2e.MakefileRunStatus
 )
 set_tests_properties(e2e.MakefileRunStatus PROPERTIES TIMEOUT 60)
 
+# The dev image is built for the host user: docker-compose.yml passes USER_UID and
+# USER_GID from HOST_UID and HOST_GID, and the Makefile's dev targets set them. Runs
+# `make -n` and reads docker-compose.yml with PyYAML (GNU make on PATH; no docker).
+add_test(NAME e2e.MakefileDevUser
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_dev_user.py
+            ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.MakefileDevUser PROPERTIES TIMEOUT 60)
+
 # `make cuda-visualize` renders a run into viz/<name of the run> however VIZ_IN
 # is spelled (trailing or repeated slashes, '.'). Runs `make -n` (GNU make on
 # PATH; no binary, docker or GPU).

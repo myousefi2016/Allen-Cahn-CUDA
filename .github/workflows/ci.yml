@@ -323,6 +323,18 @@ jobs:
         if: matrix.target == 'test'
         run: docker run --rm allen-cahn-cuda:test
 
+      # docker compose and make docker-build-dev build the dev image for the host
+      # user's IDs. 4321:100 takes a GID the base image already has (users): the
+      # account must end up with exactly these IDs.
+      - name: Build the dev image for another user (4321:100)
+        if: matrix.target == 'dev'
+        run: |
+          docker buildx build --load -f docker/Dockerfile.dev \
+            --build-arg USER_UID=4321 --build-arg USER_GID=100 -t allen-cahn-cuda:dev-4321 .
+          ids=$(docker run --rm --entrypoint sh allen-cahn-cuda:dev-4321 -c 'echo "$(id -un) $(id -u):$(id -g)"')
+          echo "$ids"
+          [ "$ids" = "developer 4321:100" ]
+
       # The make cuda-* targets build and test inside the cuda-dev image: build
       # the binary there from a copy of the checkout and run the end-to-end
       # tests (this runner has no GPU, so the two that run a simulation are
