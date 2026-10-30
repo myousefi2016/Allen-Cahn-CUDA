@@ -133,16 +133,6 @@ struct LaunchConfig {
         cfg.grid = dim3(static_cast<unsigned>((total_threads + block_size - 1) / block_size));
         return cfg;
     }
-
-    /// 3D launch config for structured grid.
-    static LaunchConfig for_3d(int Nx, int Ny, int Nz, dim3 block = {8, 8, 8}) {
-        LaunchConfig cfg;
-        cfg.block = block;
-        cfg.grid = dim3((static_cast<unsigned>(Nx) + block.x - 1) / block.x,
-                        (static_cast<unsigned>(Ny) + block.y - 1) / block.y,
-                        (static_cast<unsigned>(Nz) + block.z - 1) / block.z);
-        return cfg;
-    }
 };
 
 } // namespace ac::cuda
