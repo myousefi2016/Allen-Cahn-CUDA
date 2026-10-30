@@ -13,6 +13,7 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace ac {
 
@@ -24,17 +25,80 @@ static_assert(std::atomic<bool>::is_always_lock_free && std::atomic<int>::is_alw
 
 namespace {
 
-/// Throws if `field` holds a NaN or Inf: a diverged run must stop with an
-/// error instead of writing output and checkpoints of garbage (a resume
-/// would otherwise pick the corrupted checkpoint as the latest).
-void ensure_finite(const FieldData& field, const char* name, int step) {
+/// The state a field check sees, for the cause its error names.
+enum class FieldOrigin {
+    Restored, ///< a checkpoint's fields, as read
+    Start,    ///< the state the run starts from, after its boundary fill, before any step
+    Stepped,  ///< the state after one or more time steps
+};
+
+/// The cell of linear index i (FieldData's layout: z fastest) and where it lies: an
+/// interior cell, or a boundary cell, whose value the boundary fill sets, on one face, on
+/// the edge of two faces or at the corner of three. `boundary` tells which.
+std::string describe_cell(const FieldData& field, std::size_t i, bool& boundary) {
+    const auto ny = static_cast<std::size_t>(field.Ny());
+    const auto nz = static_cast<std::size_t>(field.Nz());
+    const int at[3] = {static_cast<int>(i / (ny * nz)), static_cast<int>((i / nz) % ny),
+                       static_cast<int>(i % nz)};
+    const int n[3] = {field.Nx(), field.Ny(), field.Nz()};
+    static constexpr const char* lo[3] = {"x_lo", "y_lo", "z_lo"};
+    static constexpr const char* hi[3] = {"x_hi", "y_hi", "z_hi"};
+    std::vector<std::string> faces;
+    for (int a = 0; a < 3; ++a) {
+        if (at[a] == 0)
+            faces.emplace_back(lo[a]);
+        else if (at[a] == n[a] - 1)
+            faces.emplace_back(hi[a]);
+    }
+    boundary = !faces.empty();
+    std::string cell = "(" + std::to_string(at[0]) + ", " + std::to_string(at[1]) + ", " +
+                       std::to_string(at[2]) + "), ";
+    switch (faces.size()) {
+    case 0:
+        return cell + "an interior cell";
+    case 1:
+        return cell + "a boundary cell on face " + faces[0];
+    case 2:
+        return cell + "a boundary cell on the edge of " + faces[0] + " and " + faces[1];
+    default:
+        return cell + "a boundary cell at the corner of " + faces[0] + ", " + faces[1] + " and " +
+               faces[2];
+    }
+}
+
+/// Throws if `field` holds a NaN or Inf: a run must stop with an error instead of writing
+/// output and checkpoints of garbage (a resume would otherwise pick the corrupted
+/// checkpoint as the latest). The error names the first such cell and, from `origin`,
+/// what put it there.
+void ensure_finite(const FieldData& field, const char* name, int step, FieldOrigin origin) {
     const Real* d = field.data();
     for (std::size_t i = 0; i < field.size(); ++i) {
-        if (!std::isfinite(d[i])) {
-            throw std::runtime_error(std::string(name) + " is not finite at step " +
-                                     std::to_string(step) + " (first at linear index " +
-                                     std::to_string(i) + "): the simulation diverged");
+        if (std::isfinite(d[i]))
+            continue;
+        bool boundary = false;
+        const std::string cell = describe_cell(field, i, boundary);
+        std::string cause;
+        switch (origin) {
+        case FieldOrigin::Restored:
+            cause = "the checkpoint holds a non-finite value";
+            break;
+        case FieldOrigin::Start:
+            // No step has run: an interior value is the initial or restored one, a boundary
+            // value the boundary fill of it. A face cell takes its face's fill of the
+            // adjacent interior value, c inner + gamma/(alpha + beta/h) for Robin, and an
+            // edge or corner cell the fills of its faces in turn, so their constants add up
+            // (validate() requires each to be finite; docs/THEORY.md 9.1).
+            cause = boundary ? "the boundary fill of the start state overflows the double range "
+                               "(an edge or corner cell composes the fills of its faces, whose "
+                               "constants add up)"
+                             : "the start state is not finite";
+            break;
+        case FieldOrigin::Stepped:
+            cause = "the simulation diverged";
+            break;
         }
+        throw std::runtime_error(std::string(name) + " is not finite at step " +
+                                 std::to_string(step) + " in cell " + cell + ": " + cause);
     }
 }
 
@@ -130,8 +194,10 @@ void SimulationEngine::run(Start start) {
     // diverged run as finished even when no output step caught it.
     copy_phi_if_needed(last_step);
     copy_u_if_needed(last_step);
-    ensure_finite(phi_host_, "phi", last_step);
-    ensure_finite(u_host_, "u", last_step);
+    const FieldOrigin end_state =
+        last_step == start_step_ ? FieldOrigin::Start : FieldOrigin::Stepped;
+    ensure_finite(phi_host_, "phi", last_step, end_state);
+    ensure_finite(u_host_, "u", last_step, end_state);
     if (vtk_writer_)
         vtk_writer_->flush();
 
@@ -196,8 +262,8 @@ void SimulationEngine::initialize_from_checkpoint(CheckpointIO::RestoreData data
                                  std::to_string(grid_.dx()) + ", " + std::to_string(grid_.dy()) +
                                  ", " + std::to_string(grid_.dz()) + ")");
     }
-    ensure_finite(data.phi, "phi", data.step);
-    ensure_finite(data.u, "u", data.step);
+    ensure_finite(data.phi, "phi", data.step, FieldOrigin::Restored);
+    ensure_finite(data.u, "u", data.step, FieldOrigin::Restored);
 
     phi_host_ = std::move(data.phi);
     u_host_ = std::move(data.u);
@@ -315,8 +381,9 @@ void SimulationEngine::copy_u_if_needed(int step) {
 void SimulationEngine::write_step(int step, double time, double dt, bool frame, bool checkpoint) {
     copy_phi_if_needed(step);
     copy_u_if_needed(step);
-    ensure_finite(phi_host_, "phi", step);
-    ensure_finite(u_host_, "u", step);
+    const FieldOrigin state = step == start_step_ ? FieldOrigin::Start : FieldOrigin::Stepped;
+    ensure_finite(phi_host_, "phi", step, state);
+    ensure_finite(u_host_, "u", step, state);
     VTKWriter::Checkpoint save;
     if (checkpoint) {
         save = [this, dt](int s, double t, std::span<const Real> phi, std::span<const Real> u) {

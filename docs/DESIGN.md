@@ -697,7 +697,7 @@ skipped with a warning
 
 | Condition | Detection | Result |
 |---|---|---|
-| NaN/Inf field | host scan before every output and checkpoint and after the last step; NaN-propagating `compute_max_dphi` (adaptive dt) and `compute_boundary_max_phi` (saturation guard) | `std::runtime_error`, exit 1, nothing of the diverged state written |
+| NaN/Inf field | host scan of a restored checkpoint, before every output and checkpoint and after the last step; NaN-propagating `compute_max_dphi` (adaptive dt) and `compute_boundary_max_phi` (saturation guard) | `std::runtime_error`, exit 1, nothing of the state written; the scan's error names the first such cell (its coordinates; interior, or the face, edge or corner of the boundary layer) and the cause: the checkpoint's data, the boundary fill of the start state before any step (an edge or corner composes its faces' fills), or a divergence |
 | `SIGINT` / `SIGTERM` | lock-free atomics set by the handler, checked after every step | output + checkpoint of the current step, exit 128 + signal if that step is before `max_steps` (`SimulationEngine::exit_status`); a run that reached `max_steps` is complete (exit 0) |
 | Solid reaches a wall | saturation guard every `saturation_check_freq` steps, and at a restored state | output + checkpoint, exit 0; a restart from a saturated state computes nothing |
 | An argument the command line does not take | `main` | usage, exit 1 (nothing is run) |

@@ -445,6 +445,82 @@ TEST_F(SimulationEngineTest, DivergedRunFailsEvenWithoutOutputSteps) {
     EXPECT_THROW(engine.run(), std::runtime_error);
 }
 
+// u's Robin data on every face at the edge of the double range (fuzz record 2068): each
+// face's constant gamma/(alpha + beta/h) = 7.76e307 is finite, so validate() accepts it,
+// an edge cell composes two face fills (1.53e308) and the corner (0, 0, 0) three
+// (2.26e308): u is infinite there from the boundary fill of the initial state, before any
+// step. The error names that cell and the fill; before, it said "(first at linear index
+// 0): the simulation diverged".
+TEST_F(SimulationEngineTest, StartStateOverflowNamesTheBoundaryCellAndItsFill) {
+    auto cfg = make_config(8, 5);
+    cfg.boundary.u_bc.type = BCType::Robin;
+    cfg.boundary.u_bc.alpha = 1.0 / 15.0;
+    cfg.boundary.u_bc.beta = 0.9;
+    cfg.boundary.u_bc.gamma = std::numeric_limits<double>::max();
+    ASSERT_NO_THROW(cfg.validate());
+
+    SimulationEngine engine(cfg);
+    try {
+        engine.run();
+        FAIL() << "a run whose start state is not finite finished without an error";
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find("u is not finite at step 0 in cell (0, 0, 0), a boundary cell at "
+                            "the corner of x_lo, y_lo and z_lo: the boundary fill of the start "
+                            "state overflows the double range"),
+                  std::string::npos)
+            << what;
+        EXPECT_EQ(what.find("diverged"), std::string::npos) << what;
+    }
+    EXPECT_FALSE(std::filesystem::exists(cfg.output.output_dir / "output_0.vts"));
+}
+
+// A checkpoint whose u holds a NaN in an interior cell is refused as it is restored; the
+// error names the cell and the checkpoint, not a divergence.
+TEST_F(SimulationEngineTest, RestoredNonFiniteFieldNamesTheCellAndTheCheckpoint) {
+    auto cfg = make_config(8, 5);
+    const Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    phi.fill(-1.0);
+    u.fill(-0.8);
+    u(2, 3, 4) = std::numeric_limits<double>::quiet_NaN();
+    std::filesystem::create_directories(cfg.checkpoint.checkpoint_dir);
+    const auto file = cfg.checkpoint.checkpoint_dir / "checkpoint_3.acbin";
+    CheckpointIO::write(file, 3, 0.003, cfg.time.dt, grid, phi, u);
+    cfg.checkpoint.restart_file = file;
+
+    SimulationEngine engine(cfg);
+    try {
+        engine.run();
+        FAIL() << "a checkpoint holding a NaN was restored";
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find("u is not finite at step 3 in cell (2, 3, 4), an interior cell: "
+                            "the checkpoint holds a non-finite value"),
+                  std::string::npos)
+            << what;
+    }
+}
+
+// A run that diverges after its first steps keeps "the simulation diverged" and names the
+// cell (the dt of DivergedRunFailsWithoutWritingItsState).
+TEST_F(SimulationEngineTest, DivergedRunNamesTheCell) {
+    auto cfg = make_config(8, 1000);
+    cfg.time.dt = 1.0;
+    cfg.time.exit_on_saturation = false;
+
+    SimulationEngine engine(cfg);
+    try {
+        engine.run();
+        FAIL() << "a diverged run finished without an error";
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find(" in cell ("), std::string::npos) << what;
+        EXPECT_NE(what.find(": the simulation diverged"), std::string::npos) << what;
+        EXPECT_EQ(what.find("at step 0 "), std::string::npos) << what;
+    }
+}
+
 // phi()/u() hold the final state after run(), not the initial condition.
 TEST_F(SimulationEngineTest, RunLeavesFinalStateOnHost) {
     auto cfg = make_config(12, 0);
