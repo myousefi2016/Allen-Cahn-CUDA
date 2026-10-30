@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <optional>
 #include <span>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -77,14 +78,27 @@ SimulationEngine::~SimulationEngine() {
     }
 }
 
-void SimulationEngine::run() {
+void SimulationEngine::run(Start start) {
     auto wall_start = std::chrono::high_resolution_clock::now();
 
-    if (checkpoint_mgr_->restart_requested()) {
-        initialize_from_checkpoint();
-    } else {
-        initialize_fields();
+    if (start == Start::ResumeLatest && checkpoint_mgr_->restart_requested()) {
+        throw std::invalid_argument("--resume restores the newest intact checkpoint itself: "
+                                    "checkpoint.restart_file must not be set as well");
     }
+    std::optional<CheckpointIO::RestoreData> data;
+    if (checkpoint_mgr_->restart_requested()) {
+        data = checkpoint_mgr_->restore();
+    } else if (start == Start::ResumeLatest) {
+        data = checkpoint_mgr_->restore_latest();
+        if (!data)
+            spdlog::info("No checkpoint of this run's grid in {} reads back intact: starting at "
+                         "step 0",
+                         config_.checkpoint.checkpoint_dir.string());
+    }
+    if (data)
+        initialize_from_checkpoint(std::move(*data));
+    else
+        initialize_fields();
 
     // Upload to GPU
     solver_->initialize(phi_host_, u_host_);
@@ -98,8 +112,8 @@ void SimulationEngine::run() {
     // again: the guard checks only every saturation_check_freq steps, so the steps up to
     // its next check would grow the crystal further into the wall, write another frame
     // and checkpoint, and rotate away the checkpoints from before wall contact.
-    const bool saturated = config_.time.exit_on_saturation &&
-                           checkpoint_mgr_->restart_requested() && check_saturation(start_step_);
+    const bool saturated =
+        config_.time.exit_on_saturation && restored_ && check_saturation(start_step_);
     if (saturated) {
         spdlog::warn("The restored state at step {} is saturated (phi > {:.3f} next to a wall): "
                      "nothing to compute",
@@ -160,8 +174,8 @@ void SimulationEngine::initialize_fields() {
     spdlog::info("Initial conditions: tanh-profile seed, r0={}, W0={}, u=-{:.3f}", r0, W0, delta);
 }
 
-void SimulationEngine::initialize_from_checkpoint() {
-    auto data = checkpoint_mgr_->restore();
+void SimulationEngine::initialize_from_checkpoint(CheckpointIO::RestoreData data) {
+    restored_ = true;
 
     if (data.grid.Nx() != grid_.Nx() || data.grid.Ny() != grid_.Ny() ||
         data.grid.Nz() != grid_.Nz()) {

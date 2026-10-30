@@ -104,6 +104,17 @@ set_tests_properties(e2e.SignalExitStatus PROPERTIES
     TIMEOUT 600
 )
 
+# A retry of the shipped Kubernetes Job (its container arguments, k8s/base/job.yaml)
+# continues the interrupted run from its checkpoint instead of starting over.
+add_test(NAME e2e.KubernetesJobResumes
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/k8s_job_resume.py
+            $<TARGET_FILE:allen-cahn-cuda> ${PROJECT_SOURCE_DIR}
+            ${CMAKE_CURRENT_BINARY_DIR}/e2e_k8s_job_resume)
+set_tests_properties(e2e.KubernetesJobResumes PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 600
+)
+
 # Only the documented command lines are accepted; any other argument is an error,
 # not ignored (no GPU needed: every case ends before a run).
 add_test(NAME e2e.CommandLineArguments

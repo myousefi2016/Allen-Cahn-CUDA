@@ -73,6 +73,13 @@ CheckpointIO::RestoreData CheckpointManager::restore() const {
         return CheckpointIO::read(file);
     }
 
+    if (auto latest = restore_latest())
+        return std::move(*latest);
+    throw std::runtime_error("No checkpoint of this run's grid in " +
+                             params_.checkpoint_dir.string() + " reads back intact");
+}
+
+std::optional<CheckpointIO::RestoreData> CheckpointManager::restore_latest() const {
     // The newest checkpoint of this run's grid that reads back intact. One of another grid
     // (retention leaves those in the directory) or a damaged one (header, size or CRC) is
     // skipped with a warning, and the next older one is tried.
@@ -96,8 +103,7 @@ CheckpointIO::RestoreData CheckpointManager::restore() const {
             spdlog::warn("Skipping checkpoint {}: {}", path.string(), e.what());
         }
     }
-    throw std::runtime_error("No checkpoint of this run's grid in " +
-                             params_.checkpoint_dir.string() + " reads back intact");
+    return std::nullopt;
 }
 
 bool CheckpointManager::of_this_grid(const CheckpointIO::Header& header) const {

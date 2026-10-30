@@ -6,6 +6,7 @@
 #include "io/CheckpointIO.hpp"
 
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -31,6 +32,10 @@ public:
     /// checkpoint in checkpoint_dir of this run's grid that reads back intact
     /// (older ones are tried past a damaged one or one of another grid).
     [[nodiscard]] CheckpointIO::RestoreData restore() const;
+
+    /// The newest checkpoint in checkpoint_dir of this run's grid that reads back intact
+    /// (older ones are tried past a damaged one or one of another grid), or none.
+    [[nodiscard]] std::optional<CheckpointIO::RestoreData> restore_latest() const;
 
     /// True when checkpoint.restart_file is configured. The file is not
     /// checked here: restore() throws if it is missing, so a mistyped path

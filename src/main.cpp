@@ -21,12 +21,17 @@ static void print_usage(const char* prog) {
     std::cout << "Allen-Cahn CUDA Phase-Field Simulation v2.0.0\n"
               << "Usage: " << prog << " [config.json]\n"
               << "       " << prog << " --validate-config config.json\n"
+              << "       " << prog << " --resume config.json\n"
               << "\n"
               << "If no config file is given, loads config/default.json or\n"
               << "../config/default.json if one exists, else uses compiled-in defaults.\n"
               << "--validate-config parses and validates the file (unknown keys,\n"
               << "ranges, stability rules) without touching the GPU; if it is valid,\n"
               << "prints its dt stability limits (\"none\": no limit) and exits 0.\n"
+              << "--resume runs config.json from the newest checkpoint of its grid in\n"
+              << "checkpoint_dir that reads back intact, or from step 0 if there is none\n"
+              << "(checkpoint.restart_file must not be set): a scheduler that restarts\n"
+              << "an interrupted job continues it.\n"
               << "Any other arguments are an error (exit 1), never ignored.\n"
               << "See config/default.json for an example configuration.\n";
 }
@@ -36,6 +41,7 @@ int main(int argc, char* argv[]) {
         ac::Logger::init(spdlog::level::info);
 
         ac::SimulationConfig config;
+        auto start = ac::SimulationEngine::Start::AsConfigured;
 
         if (argc > 1) {
             std::string arg = argv[1];
@@ -53,9 +59,16 @@ int main(int argc, char* argv[]) {
                 std::cout << "valid: " << argv[2] << "\n" << ac::stability_limits_report(checked);
                 return EXIT_SUCCESS;
             }
-            // A run takes one argument: any further one would be ignored (a swapped
-            // `config.json --validate-config` started a run instead of validating).
-            if (argc != 2) {
+            if (arg == "--resume") {
+                if (argc != 3) {
+                    print_usage(argv[0]);
+                    return EXIT_FAILURE;
+                }
+                start = ac::SimulationEngine::Start::ResumeLatest;
+                arg = argv[2];
+            } else if (argc != 2) {
+                // A run takes one argument: any further one would be ignored (a swapped
+                // `config.json --validate-config` started a run instead of validating).
                 std::cerr << "unexpected argument after " << arg << ": " << argv[2] << "\n\n";
                 print_usage(argv[0]);
                 return EXIT_FAILURE;
@@ -90,7 +103,7 @@ int main(int argc, char* argv[]) {
         sigaction(SIGTERM, &sa, nullptr);
 
         ac::SimulationEngine engine(std::move(config));
-        engine.run();
+        engine.run(start);
 
         // A run stopped by a signal before max_steps wrote a checkpoint of that step but did
         // not finish: report it like a signal-terminated process (130 SIGINT, 143 SIGTERM)

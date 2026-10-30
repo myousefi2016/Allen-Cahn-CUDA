@@ -56,7 +56,12 @@ spec:
           # `latest` moves with every release, so pull on each run instead
           # of reusing whatever a node cached.
           imagePullPolicy: Always
+          # --resume: a pod that replaces an interrupted one (SIGTERM on a node
+          # drain, backoffLimit retries) continues from the newest intact
+          # checkpoint in checkpoint_dir instead of starting over at step 0,
+          # whose first checkpoint would rotate the interrupted pod's away.
           args:
+            - "--resume"
             - "/config/simulation.json"
           securityContext:
             allowPrivilegeEscalation: false

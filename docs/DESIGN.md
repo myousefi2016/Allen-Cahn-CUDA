@@ -649,7 +649,14 @@ stability limits like every adapted step (with a warning if that changes
 it). A restart is requested iff
 `checkpoint.restart_file` is set; if that file does not exist the run
 fails (`CheckpointManager::restore`) instead of cold-starting, which
-would otherwise overwrite and rotate away the real checkpoints.
+would otherwise overwrite and rotate away the real checkpoints. The
+command line `allen-cahn-cuda --resume config.json`
+(`SimulationEngine::Start::ResumeLatest`) instead restores the newest
+checkpoint of the run's grid in `checkpoint_dir` that reads back intact
+(`CheckpointManager::restore_latest`), or starts at step 0 if there is none;
+`restart_file` must not be set with it. The Kubernetes Job runs this way, so
+a retry continues the interrupted pod's run. A restored state that is
+saturated (the saturation guard's final checkpoint) is not advanced.
 
 ### 8.4 Rolling retention
 

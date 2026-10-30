@@ -273,6 +273,46 @@ TEST_F(SimulationEngineTest, RunThatReachesItsEndIsComplete) {
     EXPECT_EQ(engine.exit_status(15), 0);
 }
 
+// --resume (Start::ResumeLatest): a job that a scheduler restarts continues
+// from the newest checkpoint of its grid that reads back intact; with none it
+// starts at step 0, and with a restart_file set as well it is an error. A cold
+// start at the retry used to rewrite step 2 and rotate away checkpoint_4
+// ("newer than the checkpoint just written").
+TEST_F(SimulationEngineTest, ResumeLatestContinuesFromTheNewestIntactCheckpoint) {
+    auto cfg = make_config(8, 4);
+    cfg.time.exit_on_saturation = false; // the seed reaches the walls of the 8^3 box
+    cfg.checkpoint.frequency = 2;
+    cfg.checkpoint.keep_last = 5;
+    cfg.output.frequency = 2;
+    {
+        SimulationEngine first(cfg);
+        first.run();
+    }
+    const auto ck = cfg.checkpoint.checkpoint_dir;
+    ASSERT_TRUE(CheckpointIO::is_valid_checkpoint(ck / "checkpoint_4.acbin"));
+    std::filesystem::remove(cfg.output.output_dir / "output_0.vts");
+
+    cfg.time.max_steps = 6;
+    SimulationEngine resumed(cfg);
+    resumed.run(SimulationEngine::Start::ResumeLatest);
+    EXPECT_TRUE(CheckpointIO::is_valid_checkpoint(ck / "checkpoint_4.acbin"));
+    EXPECT_TRUE(CheckpointIO::is_valid_checkpoint(ck / "checkpoint_6.acbin"));
+    EXPECT_FALSE(std::filesystem::exists(cfg.output.output_dir / "output_0.vts"))
+        << "the resumed run started over at step 0";
+    EXPECT_EQ(CheckpointIO::read(ck / "checkpoint_6.acbin").step, 6);
+
+    // No checkpoint of this grid: a cold start.
+    std::filesystem::remove_all(test_dir_);
+    SimulationEngine fresh(cfg);
+    fresh.run(SimulationEngine::Start::ResumeLatest);
+    EXPECT_TRUE(std::filesystem::exists(cfg.output.output_dir / "output_0.vts"));
+    EXPECT_TRUE(CheckpointIO::is_valid_checkpoint(ck / "checkpoint_6.acbin"));
+
+    cfg.checkpoint.restart_file = ck / "checkpoint_6.acbin";
+    SimulationEngine both(cfg);
+    EXPECT_THROW(both.run(SimulationEngine::Start::ResumeLatest), std::invalid_argument);
+}
+
 // The saturation guard's final checkpoint is a saturated state. A resume from
 // it used to compute up to saturation_check_freq further steps into the wall,
 // write another frame and checkpoint, and rotate away the checkpoints from

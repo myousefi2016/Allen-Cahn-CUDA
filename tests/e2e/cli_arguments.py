@@ -2,6 +2,7 @@
 """The binary takes only its documented command lines and rejects any other.
 
   allen-cahn-cuda [config.json] | -h | --help | --validate-config config.json
+                | --resume config.json
 
 An argument after them used to be ignored: `allen-cahn-cuda config.json
 --validate-config`, with the two swapped, started a GPU run that wrote output
@@ -38,6 +39,8 @@ def main() -> int:
         ([c, "extra"], 1, "unexpected argument after"),
         (["--validate-config", c, "extra"], 1, "Usage:"),
         (["--help", "extra"], 1, "Usage:"),
+        (["--resume"], 1, "Usage:"),
+        (["--resume", c, "extra"], 1, "Usage:"),
         (["--help"], 0, "Usage:"),
         (["--validate-config", c], 0, "valid: "),
     ]

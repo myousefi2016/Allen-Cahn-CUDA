@@ -30,8 +30,16 @@ public:
     explicit SimulationEngine(SimulationConfig config);
     ~SimulationEngine();
 
+    /// How run() starts: as the configuration says (from checkpoint.restart_file if it
+    /// is set, else at step 0), or from the newest checkpoint of this run's grid in
+    /// checkpoint_dir that reads back intact, at step 0 if there is none (`--resume`: a
+    /// job a scheduler restarts after an interruption continues instead of starting over
+    /// and rotating away the checkpoints it had). ResumeLatest with a restart_file set is
+    /// an error (std::invalid_argument).
+    enum class Start { AsConfigured, ResumeLatest };
+
     /// Run the full simulation from start (or restart) to completion.
-    void run();
+    void run(Start start = Start::AsConfigured);
 
     /// Whether run() stopped for a shutdown request before reaching max_steps: then a
     /// checkpoint of the step it stopped at was written and a resume continues the run.
@@ -52,7 +60,7 @@ public:
 
 private:
     void initialize_fields();
-    void initialize_from_checkpoint();
+    void initialize_from_checkpoint(CheckpointIO::RestoreData data);
     /// Runs the steps; returns the last step executed (start_step_ if none).
     int time_loop();
     /// Enqueue the state of `step` with the writer: as an output frame when `frame`, then
@@ -85,6 +93,7 @@ private:
     std::unique_ptr<VTKWriter> vtk_writer_;
 
     int start_step_ = 0;
+    bool restored_ = false; ///< run() started from a checkpoint
     bool interrupted_ = false;
     double start_time_ = 0.0;
     int last_phi_d2h_step_ = -1;
