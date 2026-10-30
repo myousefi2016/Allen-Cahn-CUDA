@@ -29,6 +29,10 @@ DOCKER_BUILD_ARGS  ?=
 # Kubernetes
 K8S_NAMESPACE_DEV  ?= allen-cahn-dev
 K8S_NAMESPACE_PROD ?= allen-cahn-prod
+# The labels of the simulation Job's pod template (k8s/base/job.yaml), which its pods
+# carry. kustomize's `labels` (managed-by, version, environment) set no includeTemplates,
+# so they reach only the resources' metadata, never a pod.
+K8S_POD_SELECTOR   ?= app.kubernetes.io/name=allen-cahn-cuda,app.kubernetes.io/component=simulation
 KUSTOMIZE          ?= kubectl kustomize
 KUBECTL            ?= kubectl
 
@@ -375,32 +379,8 @@ cuda-watch-dendrite: ## Tail run_long.log (only useful after 'nohup make cuda-ru
 	  exit 1; \
 	fi
 
-cuda-status-dendrite: ## Show progress of the long run (latest checkpoint, frame count, ETA)
-	@printf "==> Long-run status (target: %s)\n" $(LONG_CONFIG)
-	@CFG='$(LONG_CONFIG)'; \
-	TARGET=$$(python3 -c "import json; print(json.load(open('$$CFG'))['time']['max_steps'])"); \
-	CKPT=$$(python3 -c "import json; print(json.load(open('$$CFG'))['checkpoint']['checkpoint_dir'])"); \
-	OUT=$$(python3 -c "import json; print(json.load(open('$$CFG'))['output']['output_dir'])"); \
-	echo "  Target steps:        $$TARGET"; \
-	if [ -d "$$CKPT" ]; then \
-	  echo "  Checkpoints ($$CKPT):"; \
-	  ls -lh "$$CKPT"/checkpoint_*.acbin 2>/dev/null | awk '{printf "    %s  %s\n", $$5, $$NF}' | sort -t/ -k3 || echo "    (none yet)"; \
-	  LATEST=$$(ls "$$CKPT"/checkpoint_*.acbin 2>/dev/null | sed 's/.*checkpoint_\([0-9]*\)\.acbin/\1/' | sort -n | tail -1); \
-	  if [ -n "$$LATEST" ]; then \
-	    PCT=$$(python3 -c "print(f'{100*$$LATEST/$$TARGET:.1f}')"); \
-	    echo "  Latest step:         $$LATEST / $$TARGET ($$PCT%)"; \
-	  fi; \
-	else \
-	  echo "  Checkpoints:         (no $$CKPT/ yet)"; \
-	fi; \
-	if [ -d "$$OUT" ]; then \
-	  N_VTS=$$(ls "$$OUT"/output_*.vts 2>/dev/null | wc -l); \
-	  echo "  VTK frames written:  $$N_VTS ($$OUT)"; \
-	fi
-	@if [ -f $(LONG_LOG) ]; then \
-	  echo "  Last log line:"; \
-	  tail -1 $(LONG_LOG) | sed 's/^/    /'; \
-	fi
+cuda-status-dendrite: ## Show the long run's checkpoints, the one a resume restarts from, and its frames
+	@python3 scripts/run_status.py $(LONG_CONFIG) $(LONG_LOG)
 
 cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
 	$(CUDA_DOCKER_RUN_IT) bash
@@ -554,12 +534,14 @@ k8s-status: ## Show status of all Allen-Cahn k8s resources
 	@echo "==> Prod environment ($(K8S_NAMESPACE_PROD)):"
 	-$(KUBECTL) get all -n $(K8S_NAMESPACE_PROD) 2>/dev/null || echo "    Namespace not found or not accessible."
 
-k8s-logs: ## Show logs from running pods
+# kubectl's own messages (No resources found, no cluster) are shown; a failure in one
+# namespace does not stop the other (the leading -).
+k8s-logs: ## Show the logs of the simulation Job's pods (dev and prod namespaces)
 	@echo "==> Fetching logs from dev pods..."
-	-$(KUBECTL) logs -n $(K8S_NAMESPACE_DEV) -l app.kubernetes.io/managed-by=kustomize --tail=100 --all-containers 2>/dev/null || true
+	-$(KUBECTL) logs -n $(K8S_NAMESPACE_DEV) -l $(K8S_POD_SELECTOR) --tail=100 --all-containers --prefix
 	@echo ""
 	@echo "==> Fetching logs from prod pods..."
-	-$(KUBECTL) logs -n $(K8S_NAMESPACE_PROD) -l app.kubernetes.io/managed-by=kustomize --tail=100 --all-containers 2>/dev/null || true
+	-$(KUBECTL) logs -n $(K8S_NAMESPACE_PROD) -l $(K8S_POD_SELECTOR) --tail=100 --all-containers --prefix
 
 # ============================================================================
 # Utility Targets

@@ -149,6 +149,24 @@ add_test(NAME e2e.MakefileRunSignals
 )
 set_tests_properties(e2e.MakefileRunSignals PROPERTIES TIMEOUT 120)
 
+# `make k8s-logs` selects the simulation Job's pods (the labels of its pod template)
+# in both overlays' namespaces. Runs `make -n` and reads the manifests with PyYAML
+# (GNU make on PATH; no cluster, kubectl or docker).
+add_test(NAME e2e.MakefileK8sLogs
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_k8s_logs.py
+            ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.MakefileK8sLogs PROPERTIES TIMEOUT 60)
+
+# `make cuda-status-dendrite` lists the checkpoints in step order, names the one a
+# resume restarts from and counts the frames, on a temporary configuration (runs the
+# target for real: it only reads files; GNU make and python3 on PATH).
+add_test(NAME e2e.MakefileRunStatus
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_run_status.py
+            ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.MakefileRunStatus PROPERTIES TIMEOUT 60)
+
 # `make cuda-visualize` renders a run into viz/<name of the run> however VIZ_IN
 # is spelled (trailing or repeated slashes, '.'). Runs `make -n` (GNU make on
 # PATH; no binary, docker or GPU).
