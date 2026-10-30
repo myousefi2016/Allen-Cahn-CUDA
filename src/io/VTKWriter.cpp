@@ -183,6 +183,7 @@ void VTKWriter::write_vtk_file(const WriteJob& job) {
     writer->SetInputData(sg);
     // Write() returns 1 on success; the error code names the cause (e.g. out
     // of disk space). A failed file must never be renamed into place.
+    // A failed or unpublishable file is removed: a partial snapshot only takes space.
     if (writer->Write() != 1 || writer->GetErrorCode() != vtkErrorCode::NoError) {
         const unsigned long code = writer->GetErrorCode();
         std::error_code ec;
@@ -190,8 +191,13 @@ void VTKWriter::write_vtk_file(const WriteJob& job) {
         throw std::runtime_error("VTK write of " + tmp_filename +
                                  " failed: " + vtkErrorCode::GetStringFromErrorCode(code));
     }
-
-    std::filesystem::rename(tmp_filename, filename);
+    try {
+        std::filesystem::rename(tmp_filename, filename);
+    } catch (...) {
+        std::error_code ec;
+        std::filesystem::remove(tmp_filename, ec);
+        throw;
+    }
     spdlog::info("Wrote VTK file: {} (step={}, time={:.4f})", filename, job.step, job.time);
 #else
     spdlog::warn("VTK support not compiled in, falling back to raw output");
@@ -202,18 +208,28 @@ void VTKWriter::write_vtk_file(const WriteJob& job) {
 void VTKWriter::write_raw_file(const WriteJob& job) {
     std::string base = (params_.output_dir / ("output_" + std::to_string(job.step))).string();
 
+    // The file is renamed into place only once close() has flushed it without an error:
+    // a write smaller than the stream's buffer (8 KiB in libstdc++) reaches the file only
+    // there. A failed or unpublishable file is removed (a partial snapshot only takes
+    // space).
     auto write_atomic = [](const std::string& path, const void* data, std::size_t bytes) {
-        std::string tmp = path + ".tmp";
+        const std::string tmp = path + ".tmp";
         std::ofstream ofs(tmp, std::ios::binary);
         if (!ofs.is_open()) {
             throw std::runtime_error("Failed to open file: " + tmp);
         }
-        ofs.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
-        if (!ofs.good()) {
-            throw std::runtime_error("Failed to write file: " + tmp);
+        try {
+            ofs.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
+            ofs.close();
+            if (ofs.fail()) {
+                throw std::runtime_error("Failed to write file: " + tmp);
+            }
+            std::filesystem::rename(tmp, path);
+        } catch (...) {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            throw;
         }
-        ofs.close();
-        std::filesystem::rename(tmp, path);
     };
 
     write_atomic(base + "_phi.raw", job.phi_data.data(), job.phi_data.size() * sizeof(Real));

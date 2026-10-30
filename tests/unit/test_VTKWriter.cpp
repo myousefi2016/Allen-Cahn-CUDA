@@ -273,4 +273,72 @@ TEST_F(VTKWriterTest, FailedVtkWriteIsNotPublished) {
     EXPECT_FALSE(fs::exists(fs::symlink_status(test_dir_ / "output_0.vts")))
         << "a failed write was published as output_0.vts";
 }
+
+// A VTS file that cannot be renamed into place (a directory holds its name)
+// is removed: before, output_0.vts.tmp stayed on disk and nothing removed it.
+TEST_F(VTKWriterTest, VtsThatCannotBePublishedLeavesNoTemporaryFile) {
+    Grid grid(Dim3{8, 8, 8}, Spacing{1.0, 1.0, 1.0});
+    OutputParams params;
+    params.output_dir = test_dir_;
+    params.format = "vts";
+    VTKWriter writer(grid, params);
+    FieldData phi(grid, "phi"), u(grid, "u");
+    fill(phi, u);
+
+    fs::create_directories(test_dir_ / "output_0.vts" / "keep");
+    writer.write_async(0, 0.0, phi, u);
+    EXPECT_THROW(writer.flush(), std::runtime_error);
+    EXPECT_FALSE(fs::exists(fs::symlink_status(test_dir_ / "output_0.vts.tmp")));
+    EXPECT_TRUE(fs::is_directory(test_dir_ / "output_0.vts" / "keep"));
+}
 #endif
+
+// A raw field smaller than the stream's buffer (8 KiB in libstdc++; 8^3 cells
+// are 4096 bytes) reaches its file only when close() flushes it. Here the
+// temporary file is /dev/full, so that flush fails with ENOSPC: close() was
+// not checked and the empty file was published as output_0_phi.raw, the
+// write reported as done. The failure must surface and leave no file behind.
+TEST_F(VTKWriterTest, FailedFlushOfASmallRawFieldIsNotPublished) {
+    ASSERT_TRUE(fs::exists("/dev/full")) << "the test needs /dev/full";
+    Grid grid(Dim3{8, 8, 8}, Spacing{1.0, 1.0, 1.0});
+    OutputParams params;
+    params.output_dir = test_dir_;
+    params.format = "raw";
+    VTKWriter writer(grid, params);
+    FieldData phi(grid, "phi"), u(grid, "u");
+    fill(phi, u);
+
+    fs::create_symlink("/dev/full", test_dir_ / "output_0_phi.raw.tmp");
+    writer.write_async(0, 0.0, phi, u);
+    EXPECT_THROW(writer.flush(), std::runtime_error);
+    EXPECT_FALSE(fs::exists(fs::symlink_status(test_dir_ / "output_0_phi.raw")))
+        << "a failed write was published as output_0_phi.raw";
+    EXPECT_FALSE(fs::exists(fs::symlink_status(test_dir_ / "output_0_phi.raw.tmp")));
+}
+
+// Every failed raw write removes its temporary file: a write that fails (a
+// 16^3 field, 32 KiB, goes to /dev/full past the stream's buffer) and a file
+// that cannot be renamed into place (a directory holds its name). Before, the
+// partial output_0_phi.raw.tmp stayed on disk and nothing removed it.
+TEST_F(VTKWriterTest, FailedRawWritesLeaveNoTemporaryFile) {
+    ASSERT_TRUE(fs::exists("/dev/full")) << "the test needs /dev/full";
+    Grid grid(Dim3{16, 16, 16}, Spacing{1.0, 1.0, 1.0});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    fill(phi, u);
+    for (const bool rename_fails : {false, true}) {
+        SCOPED_TRACE(rename_fails ? "rename fails" : "write fails");
+        const auto dir = test_dir_ / (rename_fails ? "rename" : "write");
+        OutputParams params;
+        params.output_dir = dir;
+        params.format = "raw";
+        VTKWriter writer(grid, params); // a writer keeps its first error: one per case
+        if (rename_fails)
+            fs::create_directories(dir / "output_0_phi.raw" / "keep");
+        else
+            fs::create_symlink("/dev/full", dir / "output_0_phi.raw.tmp");
+        writer.write_async(0, 0.0, phi, u);
+        EXPECT_THROW(writer.flush(), std::runtime_error);
+        EXPECT_FALSE(fs::exists(fs::symlink_status(dir / "output_0_phi.raw.tmp")));
+        EXPECT_EQ(fs::is_directory(dir / "output_0_phi.raw" / "keep"), rename_fails);
+    }
+}

@@ -362,7 +362,7 @@ def main(argv: list[str]) -> int:
     crc_note = "CRC32 verified" if hdr.data_crc32 else "no CRC32 stored"
     sys.stderr.write(f"==> Latest checkpoint: {latest.name} "
                      f"(step={step}, time={hdr.time:.4f}, "
-                     f"size={expected / (1024 * 1024):.1f} MB, {crc_note})\n")
+                     f"size={expected / 1e6:.1f} MB, {crc_note})\n")
 
     # Inject restart_file into a deep copy and write to <base>_resume.json
     cfg.setdefault("checkpoint", {})

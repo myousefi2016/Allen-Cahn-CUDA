@@ -605,6 +605,10 @@ concatenated field bytes; the table is generated once in
 5. `rename(path.tmp, path)` (atomic on POSIX).
 6. `open(parent_dir)` + `fsync` to make the rename durable.
 
+A failure in steps 3 to 5 removes `path.tmp` before it throws: the partial
+file is as large as the checkpoint, and retention counts only
+`checkpoint_<step>.acbin`, so nothing else would remove it.
+
 ### 8.3 Read protocol
 
 `CheckpointIO::read` validates magic, version, `num_fields`, dimensions of at
@@ -701,7 +705,11 @@ Key invariants:
   crash mid-write never leaves a corrupted `.vts`
   (`VTKWriter::write_vtk_file`).
 - Raw output uses `std::ofstream` + atomic rename for the same reason
-  (`VTKWriter::write_raw_file`).
+  (`VTKWriter::write_raw_file`); the file is renamed only after `close()`
+  has flushed it without an error (a field smaller than the stream's
+  buffer, 8 KiB in libstdc++, reaches the file only there).
+- A failed or unpublishable output file (VTS or raw) is removed before the
+  error is reported.
 - Field statistics (min, max, mean, L2-norm) are cached by
   `step:fieldname` in an `LRUCache<string, FieldStatistics>`
   (`VTKWriter::compute_statistics`).

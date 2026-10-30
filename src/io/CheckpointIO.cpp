@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <unistd.h>
 #include <vector>
 
@@ -69,6 +70,15 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
     if (fd < 0) {
         throw std::runtime_error("Cannot open checkpoint file for writing: " + tmp_path.string());
     }
+    // Every later failure removes the partial file (as large as the checkpoint: 3.46 GB at
+    // 600^3), which nothing else would: retention counts only checkpoint_<step>.acbin.
+    auto fail = [&](const std::string& message) {
+        if (fd >= 0)
+            ::close(fd);
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+        throw std::runtime_error(message);
+    };
 
     Header hdr{};
     hdr.Nx = grid.Nx();
@@ -95,8 +105,7 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
             if (n < 0) {
                 if (errno == EINTR)
                     continue;
-                ::close(fd);
-                throw std::runtime_error("Failed writing checkpoint: " + tmp_path.string());
+                fail("Failed writing checkpoint: " + tmp_path.string());
             }
             p += n;
             len -= static_cast<std::size_t>(n);
@@ -107,14 +116,20 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
     write_all(phi.data(), phi.size() * sizeof(Real));
     write_all(u.data(), u.size() * sizeof(Real));
 
-    if (::fsync(fd) != 0) {
-        ::close(fd);
-        throw std::runtime_error("fsync failed for checkpoint: " + tmp_path.string());
-    }
+    if (::fsync(fd) != 0)
+        fail("fsync failed for checkpoint: " + tmp_path.string());
+    // fsync succeeded, so the data is stored; close() releases the descriptor whatever it
+    // returns (Linux).
     ::close(fd);
+    fd = -1;
 
     // Atomically rename the temporary file to the final path
-    std::filesystem::rename(tmp_path, path);
+    std::error_code rename_error;
+    std::filesystem::rename(tmp_path, path, rename_error);
+    if (rename_error) {
+        fail("Cannot rename checkpoint " + tmp_path.string() + " to " + path.string() + ": " +
+             rename_error.message());
+    }
 
     // fsync the parent directory so the rename is durable
     int dir_fd = ::open(path.parent_path().c_str(), O_RDONLY);
@@ -123,9 +138,10 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
         ::close(dir_fd);
     }
 
-    spdlog::info(
-        "Checkpoint written: {} (step={}, time={:.4f}, size={:.1f} MB)", path.string(), step, time,
-        static_cast<double>(sizeof(Header) + 2 * phi.size() * sizeof(Real)) / (1024.0 * 1024.0));
+    // MB = 10^6 bytes, as the documented checkpoint sizes.
+    spdlog::info("Checkpoint written: {} (step={}, time={:.4f}, size={:.1f} MB)", path.string(),
+                 step, time,
+                 static_cast<double>(sizeof(Header) + 2 * phi.size() * sizeof(Real)) / 1e6);
 }
 
 CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) {

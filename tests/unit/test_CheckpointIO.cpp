@@ -12,6 +12,10 @@
 #include <gtest/gtest.h>
 #include <iterator>
 #include <limits>
+#include <memory>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -65,6 +69,48 @@ TEST_F(CheckpointIOTest, WriteAndRead) {
                 EXPECT_DOUBLE_EQ(data.phi(x, y, z), phi(x, y, z));
                 EXPECT_DOUBLE_EQ(data.u(x, y, z), u(x, y, z));
             }
+}
+
+// A failed checkpoint write removes its temporary file, as large as the
+// checkpoint (3.46 GB at 600^3), which retention never counts: a write that
+// fails (the temporary file is /dev/full: ENOSPC) and a file that cannot be
+// renamed into place (a directory holds its name). Before, both stayed on disk.
+TEST_F(CheckpointIOTest, FailedWritesLeaveNoTemporaryFile) {
+    ASSERT_TRUE(std::filesystem::exists("/dev/full")) << "the test needs /dev/full";
+    namespace fs = std::filesystem;
+    Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    const auto path = test_dir_ / "checkpoint_5.acbin";
+    const auto tmp = test_dir_ / "checkpoint_5.acbin.tmp";
+
+    fs::create_symlink("/dev/full", tmp);
+    EXPECT_THROW(CheckpointIO::write(path, 5, 0.5, 0.01, grid, phi, u), std::runtime_error);
+    EXPECT_FALSE(fs::exists(fs::symlink_status(tmp)));
+    EXPECT_FALSE(fs::exists(fs::symlink_status(path)));
+
+    fs::create_directories(path / "keep");
+    EXPECT_THROW(CheckpointIO::write(path, 5, 0.5, 0.01, grid, phi, u), std::runtime_error);
+    EXPECT_FALSE(fs::exists(fs::symlink_status(tmp)));
+    EXPECT_TRUE(fs::is_directory(path / "keep"));
+}
+
+// The log gives the size in MB of 10^6 bytes, as the documented checkpoint
+// sizes do: a 64^3 checkpoint, 128 + 2 * 64^3 * 8 = 4194432 bytes, is 4.2 MB
+// (it was logged as "4.0 MB", its size in MiB).
+TEST_F(CheckpointIOTest, LoggedSizeIsInMegabytes) {
+    auto stream = std::make_shared<std::ostringstream>();
+    auto logger = std::make_shared<spdlog::logger>(
+        "capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(*stream));
+    logger->set_level(spdlog::level::info);
+    const auto previous = spdlog::default_logger();
+    spdlog::set_default_logger(logger);
+    Grid grid(Dim3{64, 64, 64}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    CheckpointIO::write(test_dir_ / "checkpoint_3.acbin", 3, 0.03, 0.01, grid, phi, u);
+    spdlog::set_default_logger(previous);
+    EXPECT_EQ(std::filesystem::file_size(test_dir_ / "checkpoint_3.acbin"), 4194432u);
+    EXPECT_NE(stream->str().find("(step=3, time=0.0300, size=4.2 MB)"), std::string::npos)
+        << stream->str();
 }
 
 TEST_F(CheckpointIOTest, InvalidFile) {

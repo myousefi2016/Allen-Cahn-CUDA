@@ -388,7 +388,9 @@ in-flight jobs would exceed `max_queue_depth_`
 (`VTKWriter::write_async` in `VTKWriter.cpp`).
 
 Crash-safety: every write goes to `<file>.tmp` first and is renamed
-atomically. Raw writes use `std::ofstream` (`VTKWriter::write_raw_file`).
+atomically once it is complete (for raw writes, which use `std::ofstream`
+in `VTKWriter::write_raw_file`, once `close()` has flushed it); a failed
+write removes its `<file>.tmp`.
 
 ---
 

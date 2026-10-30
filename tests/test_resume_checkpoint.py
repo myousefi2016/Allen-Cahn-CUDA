@@ -23,6 +23,8 @@
 #  9a. given only the config, as the Makefile's resume targets call it, the
 #      helper searches the config's own checkpoint_dir
 #  10. checkpoints of another spacing, or with NaN spacing, are skipped
+#  11. a config with a key given twice in one object exits 2
+#  12. the checkpoint's size is reported in MB of 10^6 bytes
 #
 # Run:  python3 tests/test_resume_checkpoint.py   (stdlib only; exit 0 = pass)
 # ============================================================================
@@ -351,6 +353,18 @@ class ResumeHelperTest(unittest.TestCase):
             self.assertFalse((self.work / "config" / "run_resume.json").exists())
         self.write_config(self.config)
         self.assert_resumes_from(100)
+
+    # 12 ---------------------------------------------------------------------
+    def test_reports_the_size_in_megabytes(self) -> None:
+        # MB = 10^6 bytes, as in the binary's log and the documented sizes: a
+        # 64^3 checkpoint, 128 + 2 * 64^3 * 8 = 4194432 bytes, is 4.2 MB (it
+        # was reported as 4.0 MB, its size in MiB).
+        self.write_config({**self.config,
+                           "grid": {**self.config["grid"], "Nx": 64, "Ny": 64, "Nz": 64}})
+        write_checkpoint(self.ckpt, 100, grid=(64, 64, 64))
+        res = self.run_helper()
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("(step=100, time=0.5000, size=4.2 MB, CRC32 verified)", res.stderr)
 
 
 if __name__ == "__main__":
