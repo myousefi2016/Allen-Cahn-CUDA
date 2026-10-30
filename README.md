@@ -809,8 +809,8 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 
 | Suite             | Files | ctest tests |
 |-------------------|-------|-------------|
-| Unit tests        | 29    | 369         |
-| Integration tests | 8     | 19          |
+| Unit tests        | 29    | 370         |
+| Integration tests | 8     | 17          |
 | End-to-end tests  | 11    | 11          |
 
 ```bash
@@ -851,7 +851,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_ConcurrentMap.cpp`      | Striped concurrent map operations under contention                               |
 | `test_Logger.cpp`             | spdlog init idempotency, level changes                                           |
 | `test_DeviceField.cu`         | RAII allocation, async H2D/D2H, swap, large allocs                               |
-| `test_Laplacian.cu`           | 7- and 27-point isotropic Laplacian on analytic quadratic / linear / constant fields |
+| `test_Laplacian.cu`           | 7- and 27-point isotropic Laplacian on analytic quadratic / linear / constant fields; the 27-point impulse response: Patra–Karttunen weights, ±1 reach, M0 = 0, M2 = 2/h², isotropic h² error (M4 = 3 M22) |
 | `test_Gradient.cu`            | 2nd- and 4th-order central-difference gradient kernels                           |
 | `test_Anisotropy.cu`          | A(n), dFunc, dF/dphi; face flux = ∂f/∂∇φ; ∇·F second-order (all ε) and = W₀²·7-point Laplacian at ε = 0; every A(n) and τ the GPU computes lies in the validated relaxation-time range |
 | `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin (also with a tiny denominator, at the edges of the double range, and its ghost factor as the Willmore solve uses it), per-face mixed, interior unchanged |
@@ -875,7 +875,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_EnergyConservation.cu`  | 100 Euler steps of a uniform liquid (16³, φ = −1, u = −0.8, Dirichlet at those values) leave φ within 0.01 of −1; after 20 Euler steps from a radius-3 ball, φ and u are finite and, if the mean of (φ + 1)/2 changed by at least 0.01, Σu changed in the same direction |
 | `test_SchemeComparison.cu`    | Euler vs Heun vs RK4 agreement; at 3× the explicit thermal limit `validate()` rejects Euler, which overflows, and IMEX stays finite |
 | `test_CheckpointRestart.cu`   | Checkpoint at midpoint then restart matches uninterrupted run                    |
-| `test_StencilComparison.cu`   | 7-point vs 27-point: bounded fields, smoother 27-pt interface, same physics      |
+| `test_StencilComparison.cu`   | The stencil option end to end: with φ the liquid fixed point, a Dirichlet sine mode of u decays by the selected stencil's exact eigenvalue (long-double reference within a derived rounding bound) in Euler, Heun, RK4 and IMEX, and the two stencils are told apart |
 | `test_AnisotropyForce.cu`     | Seed growth favours <100> increasingly with ε; grid anisotropy at ε = 0 is < 2% and vanishes under refinement |
 | `test_WillmoreRefinement.cu`  | At ε = 0.12 grid refinement does not converge without the Willmore term and converges with it |
 
