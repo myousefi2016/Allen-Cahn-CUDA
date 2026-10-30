@@ -444,6 +444,43 @@ TEST(JacobiStoppingRule, RoundingAtTheToleranceThrows) {
     expect_rule_throws(huge, 0.0, 0.0, "rounding bound");
 }
 
+// When the rounding term exceeds the tolerance, the message tells whether a
+// smaller dt can certify the solve: as dt -> 0 the term falls to gamma m /
+// (1 - gamma), which at m above tol (1 - gamma) / gamma (25735 for 7 points)
+// exceeds the tolerance at every dt, and the old advice "reduce dt" was wrong
+// (record 346 of the fuzz campaign, max |u| = 8.47e15 from delta 1e16).
+// Below it the message gives the factor s / s_max that dt must at least shrink by.
+TEST(JacobiStoppingRule, RoundingMessageSaysWhetherASmallerStepCanCertify) {
+    const double tol = 1e-10, g = gamma_of(35);
+    const double m_edge = tol * (1 - g) / g;
+    JacobiStoppingRule hopeless(0.43, 35, tol);
+    try {
+        (void)hopeless.converged(10, {0.0, 8471519747172330.0});
+        ADD_FAILURE() << "accepted";
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find("no time step certifies it"), std::string::npos) << what;
+        EXPECT_NE(what.find("max |u| must stay below 2.573e+04"), std::string::npos) << what;
+        EXPECT_EQ(what.find("reduce dt"), std::string::npos) << what;
+        EXPECT_EQ(what.find("smaller by a factor"), std::string::npos) << what;
+    }
+    // m below the edge: a smaller s certifies; s_max solves bound(0, m) = tol.
+    const double m = 0.5 * m_edge;
+    const double s_max = (tol * (1 - g) - g * m) / (g * (3 * m + 2 * tol));
+    JacobiStoppingRule at_this_dt(4 * s_max, 35, tol);
+    try {
+        (void)at_this_dt.converged(10, {0.0, m});
+        ADD_FAILURE() << "accepted";
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find("smaller by a factor above s / s_max = 4.000e+00"), std::string::npos)
+            << what;
+        EXPECT_EQ(what.find("no time step certifies it"), std::string::npos) << what;
+    }
+    JacobiStoppingRule fine(0.99 * s_max, 35, tol);
+    EXPECT_LT(fine.bound(0.0, m), tol);
+}
+
 // In exact arithmetic the change shrinks by at least the factor s/(1+s) per
 // sweep; a change that is not smaller than at the previous check ends the
 // solve with an error.

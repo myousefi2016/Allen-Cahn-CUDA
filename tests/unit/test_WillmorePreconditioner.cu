@@ -662,6 +662,70 @@ TEST_F(WillmorePreconditionerTest, NonFiniteStateThrows) {
     EXPECT_THROW((void)willmore_spectrum(cfg, faces, cfg.time.dt, 0.0, 0.5), std::runtime_error);
 }
 
+// A step that cannot proceed names its cause exactly. The right-hand side's
+// norm: the state not finite, lambda u beyond the double range, another
+// (phase-field) term beyond it, or finite components whose squares overflow
+// (before, every case read "right-hand side is not finite"). The relaxation
+// times: tau0 itself, or, for a valid configuration, a gradient whose fourth
+// powers overflow A(n) (before: "non-finite phase field?", although a NaN
+// phase field gives a finite A(n)). A dt for which tau/dt overflows is named.
+TEST_F(WillmorePreconditionerTest, FailedStepNamesItsCause) {
+    const SimulationConfig cfg =
+        small_config(7, 6, 8, PerFaceBoundary::uniform(bc_of(BCType::Neumann)));
+    const Grid grid = cfg.make_grid();
+    struct Case {
+        const char* what;
+        double phi, u;
+        const char* needle;
+    };
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const Case cases[] = {
+        {"phi NaN", nan, 0.0, "the state itself is not finite"},
+        {"u DBL_MAX", 0.0, std::numeric_limits<double>::max(),
+         "lambda u, the coupling's factor, is beyond the double range"},
+        {"phi 4e61", 4e61, 0.0, "a phase-field term of r"},
+        {"phi 1e40", 1e40, 0.0, "every component is finite"},
+        {"u 1e300", 0.0, 1e300, "every component is finite"},
+        {"phi inf", std::numeric_limits<double>::infinity(), 0.0,
+         "at some interior cell the central-difference gradient of phi has an infinite component"},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.what);
+        FieldData phi(grid, "phi"), u(grid, "u");
+        random_state(phi, u, 1);
+        if (c.phi != 0.0 || std::isnan(c.phi))
+            phi(3, 3, 3) = c.phi;
+        if (c.u != 0.0)
+            u(3, 3, 3) = c.u;
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        try {
+            solver.step(cfg.time.dt);
+            ADD_FAILURE() << "the step succeeded";
+        } catch (const std::runtime_error& e) {
+            EXPECT_NE(std::string(e.what()).find(c.needle), std::string::npos) << e.what();
+        }
+    }
+    const PerFaceBoundary faces = PerFaceBoundary::uniform(bc_of(BCType::Neumann));
+    auto message = [&](const SimulationConfig& config, double dt, double lo, double hi) {
+        try {
+            (void)willmore_spectrum(config, faces, dt, lo, hi);
+        } catch (const std::runtime_error& e) {
+            return std::string(e.what());
+        }
+        return std::string("no error");
+    };
+    EXPECT_NE(message(cfg, cfg.time.dt, 0.3, nan).find("the central-difference gradient"),
+              std::string::npos);
+    auto infinite_tau0 = cfg;
+    infinite_tau0.physics.d0 = 5e-324;
+    EXPECT_NE(message(infinite_tau0, cfg.time.dt, 0.3, nan).find("tau0 = inf is not finite"),
+              std::string::npos);
+    EXPECT_NE(message(cfg, 5e-324, 0.3, 0.5)
+                  .find("tau/dt is beyond the double range at dt = 4.9406564584124654e-324"),
+              std::string::npos);
+}
+
 // The single-precision kernels cover the interior with a (z, y) thread grid.
 // One block row covers 8 Y rows and gridDim.y is limited to 65535, so above
 // Ny - 2 = 8 * 65535 interior rows the Y rows are covered by a grid-stride

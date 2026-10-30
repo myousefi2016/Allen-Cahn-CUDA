@@ -1473,7 +1473,13 @@ iterate the rule cannot accept:
   heat);
 - the rounding term alone, bound at d = 0, reaches 1e-10 — at
   (1 + 3s)·m ≥ 2.6·10⁴ (7-point) or 1.1·10⁴ (27-point): no number of
-  sweeps certifies the tolerance; Δt must be smaller;
+  sweeps certifies the tolerance. The term grows with s and falls to
+  γ_K m/(1 − γ_K) as Δt → 0, so above m = 1e-10 (1 − γ_K)/γ_K (25735
+  for 7 points, 11259 for 27) no Δt certifies this magnitude of u and the
+  message says so (|u| that large comes from δ, the u boundary data or the
+  latent heat of a phase field outside [−1, 1]); below it the message gives
+  the factor s/s_max, s_max the root of the rounding term = 1e-10, that Δt
+  must at least shrink by;
 - d did not decrease between two checks: in exact arithmetic it shrinks by
   at least the factor q¹⁰, so rounding stopped the iteration above the
   tolerance.

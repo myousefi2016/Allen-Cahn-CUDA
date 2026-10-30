@@ -58,11 +58,30 @@ bool JacobiStoppingRule::converged(int sweeps, const JacobiChange& c) {
         return true;
     const double rounding = bound(0.0, magnitude);
     if (rounding >= tolerance_) {
+        const std::string what = "IMEX thermal solve: the rounding bound " + sci(rounding) +
+                                 " of the Jacobi sweeps reaches the tolerance " + sci(tolerance_) +
+                                 " (s = " + sci(s_) + ", max |u| = " + sci(magnitude) + ")";
+        // bound(0, m) grows with s = dt D (sum of weights); as dt -> 0 it falls to
+        // gamma m / (1 - gamma). Above the tolerance no step certifies this |u|; below it,
+        // s must fall below s_max, the root of bound(0, m) = tolerance.
+        const double at_any_dt = gamma_ * magnitude / (1.0 - gamma_);
+        if (at_any_dt > tolerance_) {
+            throw std::runtime_error(
+                what + ", and at this max |u| no time step certifies it: the rounding term is " +
+                "at least gamma max|u| / (1 - gamma) = " + sci(at_any_dt) +
+                " at every dt, so max |u| must stay below " +
+                sci(tolerance_ * (1.0 - gamma_) / gamma_) +
+                "; |u| that large comes from physics.delta, the u boundary data, or the latent "
+                "heat of a phase field outside [-1, 1] (docs/THEORY.md 10.2)");
+        }
+        const double s_max = (tolerance_ * (1.0 - gamma_) - gamma_ * magnitude) /
+                             (gamma_ * (3.0 * magnitude + 2.0 * tolerance_));
         throw std::runtime_error(
-            "IMEX thermal solve: the rounding bound " + sci(rounding) +
-            " of the Jacobi sweeps reaches the tolerance " + sci(tolerance_) + " (s = " + sci(s_) +
-            ", max |u| = " + sci(magnitude) +
-            "): no number of sweeps certifies it; reduce dt (docs/THEORY.md 10.2)");
+            what + ": no number of sweeps certifies it at this dt; the rounding term alone " +
+            "falls below the tolerance only for a dt smaller by a factor above s / s_max = " +
+            sci(s_ / s_max) +
+            ", and the change between sweeps must then fall below it as well "
+            "(docs/THEORY.md 10.2)");
     }
     if (!(change < previous_change_)) {
         throw std::runtime_error(

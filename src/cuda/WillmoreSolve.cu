@@ -5,11 +5,50 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
 namespace ac::cuda {
+
+namespace {
+
+/// v with 17 significant digits (std::to_string prints 1e-9 as 0.000000).
+std::string g17(double v) {
+    std::ostringstream os;
+    os << std::setprecision(17) << v;
+    return os.str();
+}
+
+/// Why the relaxation times of a Willmore step are not positive finite doubles. tau0 or
+/// the range of tau0 A(n)^2 over the orientations (relaxation_time_range) when the
+/// configuration is the cause, which validate() rejects; otherwise the state: tau leaves
+/// that range only where compute_An's arithmetic overflows, at a central-difference
+/// gradient with an infinite component or a component whose fourth power is beyond the
+/// double range (about 1.16e77). A NaN gradient takes compute_An's zero-gradient branch
+/// and gives a finite A.
+std::string tau_range_failure(const SimulationConfig& config, double tau_min, double tau_max) {
+    const std::string range = "Willmore solve: the relaxation times tau0 A(n)^2 of the interior "
+                              "cells span [" +
+                              g17(tau_min) + ", " + g17(tau_max) + "], not positive finite doubles";
+    const double tau0 = config.physics.tau0();
+    if (!(std::isfinite(tau0) && tau0 > 0.0))
+        return range + ": tau0 = " + g17(tau0) + " is not finite and positive";
+    const RelaxationTimeRange r = relaxation_time_range(tau0, config.physics.epsilon);
+    if (!(r.hi <= std::numeric_limits<double>::max()) || !(r.lo > 0.0)) {
+        return range + ": tau0 = " + g17(tau0) + " gives tau0 A(n)^2 in [" + g17(r.lo) + ", " +
+               g17(r.hi) + "] over the orientations, outside the positive doubles";
+    }
+    return range + ": at some interior cell the central-difference gradient of phi has an "
+                   "infinite component, or one whose fourth power is beyond the double range "
+                   "(about 1.16e77), where A(n) is NaN or infinite: phi or its boundary values "
+                   "are out of range, or the phase field diverged (a NaN phase field gives a "
+                   "finite A(n))";
+}
+
+} // namespace
 
 // ── Spectral bounds ────────────────────────────────────────────────────────
 
@@ -96,9 +135,11 @@ WillmoreSpectrum willmore_spectrum(const SimulationConfig& config, const PerFace
     if (!(beta > 0.0) || !(dt > 0.0))
         throw std::invalid_argument("willmore_spectrum: requires willmore_beta > 0 and dt > 0");
     if (!(tau_min > 0.0) || !(tau_max >= tau_min) || !std::isfinite(tau_max))
-        throw std::runtime_error("Willmore solve: tau range [" + std::to_string(tau_min) + ", " +
-                                 std::to_string(tau_max) +
-                                 "] is not finite and positive (non-finite phase field?)");
+        throw std::runtime_error(tau_range_failure(config, tau_min, tau_max));
+    if (!std::isfinite(tau_min / dt)) {
+        throw std::runtime_error("Willmore solve: tau/dt is beyond the double range at dt = " +
+                                 g17(dt) + " (tau from " + g17(tau_min) + ")");
+    }
     const int n[3] = {config.grid.Nx - 2, config.grid.Ny - 2, config.grid.Nz - 2};
     const double h[3] = {config.grid.dx, config.grid.dy, config.grid.dz};
 
@@ -185,7 +226,7 @@ ChebyshevPlan chebyshev_plan(const WillmoreSpectrum& spectrum, double tol) {
     if (!(k_real < static_cast<double>(std::numeric_limits<int>::max() / 2)))
         throw std::runtime_error("chebyshev_plan: the Willmore operator is too ill-conditioned "
                                  "(b/a = " +
-                                 std::to_string(b / a) + ") for a polynomial preconditioner");
+                                 g17(b / a) + ") for a polynomial preconditioner");
     int k = std::max(1, static_cast<int>(std::ceil(k_real)));
     while (k > 1 && meets(k - 1))
         --k;
@@ -232,6 +273,64 @@ template <typename F> void for_each_domain(const std::vector<WillmoreDomain>& do
         CUDA_CHECK(cudaSetDevice(d.device_id));
         f(*d.solver);
     }
+}
+
+/// Why the squared norm of the right-hand side r = div F - dF/dphi - beta M is not finite,
+/// from r, phi and u over the interior cells the domains own (downloaded on this error path
+/// only; r reads u at the cell itself): the state is not finite; lambda u, which the kernel
+/// forms first in the coupling lambda u (1 - phi^2)^2, is beyond the double range; another
+/// term overflows (each involves phi); or r is finite and the sum of its squares overflows.
+std::string rhs_failure(const std::vector<WillmoreDomain>& domains) {
+    auto nan_max = [](double a, double b) {
+        return std::isnan(a) || std::isnan(b) ? std::numeric_limits<double>::quiet_NaN()
+                                              : std::max(a, b);
+    };
+    double r_max = 0.0, coupling_max = 0.0, phi_max = 0.0, u_max = 0.0, lambda = 0.0;
+    for (const auto& d : domains) {
+        CUDA_CHECK(cudaSetDevice(d.device_id));
+        const CudaSolver& solver = *d.solver;
+        const KernelParams& p = solver.params();
+        lambda = p.lambda;
+        const std::vector<double> r = solver.willmore_download(CudaSolver::CgVector::R);
+        const Grid grid(Dim3{p.Nx, p.Ny, p.Nz}, Spacing{p.dx, p.dy, p.dz});
+        FieldData phi(grid, "phi"), u(grid, "u");
+        solver.copy_phi_to_host(phi);
+        solver.copy_u_to_host(u);
+        for (int x = d.plane_begin; x < d.plane_end; ++x)
+            for (int y = 1; y < p.Ny - 1; ++y)
+                for (int z = 1; z < p.Nz - 1; ++z) {
+                    const std::size_t c =
+                        (static_cast<std::size_t>(x) * p.Ny + static_cast<std::size_t>(y)) * p.Nz +
+                        static_cast<std::size_t>(z);
+                    r_max = nan_max(r_max, std::fabs(r[c]));
+                    coupling_max = nan_max(coupling_max, std::fabs(p.lambda * u(x, y, z)));
+                    phi_max = nan_max(phi_max, std::fabs(phi(x, y, z)));
+                    u_max = nan_max(u_max, std::fabs(u(x, y, z)));
+                }
+    }
+    const std::string what = "Willmore solve: the right-hand side r = div F - dF/dphi - beta M "
+                             "is not finite in norm";
+    if (!std::isfinite(phi_max) || !std::isfinite(u_max)) {
+        return what + ": the state itself is not finite (max |phi| = " + g17(phi_max) +
+               ", max |u| = " + g17(u_max) + " over the interior cells): the simulation diverged";
+    }
+    if (!std::isfinite(r_max)) {
+        if (!std::isfinite(coupling_max)) {
+            return what +
+                   ": lambda u, the coupling's factor, is beyond the double range at an "
+                   "interior cell (max |u| = " +
+                   g17(u_max) + ", lambda = " + g17(lambda) +
+                   "): the temperature, from physics.delta or the u boundary data, is too large";
+        }
+        return what +
+               ": a phase-field term of r (div F, the double well, the coupling lambda u "
+               "(1 - phi^2)^2 or beta M) is beyond the double range at an interior cell, "
+               "with lambda u finite (max |phi| = " +
+               g17(phi_max) + ", max |u| = " + g17(u_max) + "): the phase field is too large";
+    }
+    return what + ": every component is finite (max |r| = " + g17(r_max) +
+           ") but the sum of their squares is beyond the double range (max |phi| = " +
+           g17(phi_max) + ", max |u| = " + g17(u_max) + " over the interior cells)";
 }
 
 /// Effective (per-face) phi BCs of the global configuration.
@@ -299,13 +398,13 @@ WillmoreSolveStats solve_willmore_step(const std::vector<WillmoreDomain>& domain
 
     const double bb = global_dot(domains, global_Nx, V::R, V::R);
     if (!std::isfinite(bb))
-        throw std::runtime_error("Willmore solve: right-hand side is not finite");
+        throw std::runtime_error(rhs_failure(domains));
     if (bb > 0.0) {
         const double target = kWillmoreCgTolerance * std::sqrt(bb);
         auto require_positive = [](double v, const char* what, int k) {
             if (!(v > 0.0))
                 throw std::runtime_error(std::string("Willmore CG breakdown: ") + what + " = " +
-                                         std::to_string(v) + " at iteration " + std::to_string(k) +
+                                         g17(v) + " at iteration " + std::to_string(k) +
                                          " (operator or preconditioner not positive "
                                          "definite, or non-finite data)");
         };
@@ -349,7 +448,7 @@ WillmoreSolveStats solve_willmore_step(const std::vector<WillmoreDomain>& domain
         if (!converged) {
             throw std::runtime_error(
                 "Willmore CG did not converge in " + std::to_string(kWillmoreCgMaxIterations) +
-                " iterations (relative residual " + std::to_string(stats.relative_residual) + ")");
+                " iterations (relative residual " + g17(stats.relative_residual) + ")");
         }
     }
     for_each_domain(domains, [](CudaSolver& s) { s.willmore_finish(); });
