@@ -797,7 +797,6 @@ graph TB
         S["spdlog"]
         G["GoogleTest"]
         V["VTK 9 (optional)"]
-        H["HDF5 (optional)"]
         Cuda["CUDA Toolkit"]
     end
 
@@ -807,7 +806,6 @@ graph TB
     Cu --> Cuda
     I --> C
     I -.optional.-> V
-    I -.optional.-> H
     E --> C
     E --> Cu
     E --> I

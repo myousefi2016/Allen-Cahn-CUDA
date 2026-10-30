@@ -28,7 +28,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         git \
         pkg-config \
         libvtk9-dev \
-        libhdf5-dev \
         ca-certificates \
         python3 \
         python3-yaml \
@@ -76,7 +75,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         cmake \
         libvtk9.1 \
         libvtk9-dev \
-        libhdf5-dev \
         libgomp1 \
         make \
         python3 \

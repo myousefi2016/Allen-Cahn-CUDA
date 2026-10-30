@@ -14,7 +14,6 @@ namespace ac {
 
 /// Binary checkpoint I/O for saving and restoring simulation state.
 /// Uses a simple binary format with a header for portability.
-/// When HDF5 is available, uses HDF5 format instead.
 class CheckpointIO {
 public:
     /// The format write() produces: version 2, whose header_crc32 covers the header.

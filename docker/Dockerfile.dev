@@ -37,8 +37,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         pkg-config \
         # VTK 9 development libraries
         libvtk9-dev \
-        # HDF5 development libraries
-        libhdf5-dev \
         # Useful development utilities
         gdb \
         valgrind \

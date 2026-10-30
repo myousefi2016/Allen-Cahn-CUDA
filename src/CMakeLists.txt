@@ -56,12 +56,6 @@ if(AC_HAS_VTK)
     target_compile_definitions(ac_io PUBLIC AC_HAS_VTK=1)
 endif()
 
-if(AC_HAS_HDF5)
-    target_link_libraries(ac_io PUBLIC ${HDF5_LIBRARIES})
-    target_include_directories(ac_io PUBLIC ${HDF5_INCLUDE_DIRS})
-    target_compile_definitions(ac_io PUBLIC AC_HAS_HDF5=1)
-endif()
-
 # ── Simulation engine library ──────────────────────────────────────────────
 add_library(ac_engine STATIC
     core/SimulationEngine.cu

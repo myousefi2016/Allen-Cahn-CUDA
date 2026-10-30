@@ -106,7 +106,6 @@ graph LR
     json["nlohmann_json"]
     cuda["CUDA Toolkit"]
     vtk["VTK 9 (optional)"]
-    hdf5["HDF5 (optional)"]
 
     accore --> aclog
     accore --> json
@@ -114,7 +113,6 @@ graph LR
     accuda --> cuda
     acio --> accore
     acio -.optional.-> vtk
-    acio -.optional.-> hdf5
     acengine --> accore
     acengine --> accuda
     acengine --> acio
@@ -482,7 +480,6 @@ graph TB
     end
     subgraph System["System (find_package)"]
         V["VTK 9 (optional)"]
-        H["HDF5 (optional)"]
         Cuda["CUDA Toolkit"]
     end
 
@@ -492,7 +489,6 @@ graph TB
     Cu --> Cuda
     I --> C
     I -.optional.-> V
-    I -.optional.-> H
     E --> C
     E --> Cu
     E --> I

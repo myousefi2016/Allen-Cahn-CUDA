@@ -45,16 +45,6 @@ if(NOT spdlog_FOUND)
     FetchContent_MakeAvailable(spdlog)
 endif()
 
-# ── HDF5 (optional, for checkpoint I/O) ────────────────────────────────────
-find_package(HDF5 QUIET COMPONENTS CXX)
-if(HDF5_FOUND)
-    set(AC_HAS_HDF5 ON)
-    message(STATUS "Found HDF5 ${HDF5_VERSION}")
-else()
-    set(AC_HAS_HDF5 OFF)
-    message(STATUS "HDF5 not found -- checkpoint I/O will use raw binary format")
-endif()
-
 # ── GoogleTest (for tests) ──────────────────────────────────────────────────
 if(AC_BUILD_TESTS)
     find_package(GTest 1.14 QUIET)

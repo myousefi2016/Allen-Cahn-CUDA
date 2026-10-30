@@ -52,7 +52,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             cmake ninja-build gcc-13 g++-13 clang-tidy-18 \
-            libvtk9-dev libhdf5-dev \
+            libvtk9-dev \
             git ca-certificates python3 python3-yaml
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
@@ -107,7 +107,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             cmake ninja-build gcc-13 g++-13 \
-            libvtk9-dev libhdf5-dev \
+            libvtk9-dev \
             git ca-certificates python3 python3-yaml
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
@@ -160,7 +160,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             cmake ninja-build gcc-13 g++-13 \
-            libvtk9-dev libhdf5-dev \
+            libvtk9-dev \
             git ca-certificates python3 python3-yaml
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100

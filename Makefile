@@ -79,7 +79,7 @@ LARGE_CONFIG       ?= config/run_dendrite_large.json
 LARGE_LOG          ?= run_large.log
 
 # Prebuilt CUDA dev image — built once by `make cuda-image`, reused by every
-# cuda-* target. This bakes cmake, ninja, gcc-13, VTK, HDF5 into the image so
+# cuda-* target. This bakes cmake, ninja, gcc-13, VTK into the image so
 # individual build / test / run invocations don't pay the ~60s apt-install cost.
 CUDA_DEV_IMAGE        ?= allen-cahn-cuda-dev:local
 CUDA_DEV_DOCKERFILE   ?= docker/Dockerfile.cuda-dev

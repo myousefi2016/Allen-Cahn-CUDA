@@ -25,7 +25,6 @@ RUN apt-get update && \
         git \
         pkg-config \
         libvtk9-dev \
-        libhdf5-dev \
         ca-certificates \
         # ---- Python + headless OpenGL for visualization ------------------
         python3 \

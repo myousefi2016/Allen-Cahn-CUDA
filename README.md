@@ -223,7 +223,6 @@ Halo width is 1 because every stencil reads ±1 cell: the Allen–Cahn operator 
 | VTK              | ≥ 9.0         | Optional | Required for `.vts` output             |
 | Python 3 with PyYAML | 3.12, 3.14 tested | Tests | The end-to-end tests (`tests/e2e`); CMake's FindPython3 picks the interpreter, `-DPython3_EXECUTABLE=` chooses one that has PyYAML |
 | GNU make         | 4.3, 4.4.1 tested | Tests | The end-to-end tests of the Makefile's targets |
-| HDF5             | any           | Optional | Optional checkpoint backend            |
 
 ---
 
@@ -807,7 +806,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   nvidia/cuda:12.6.0-devel-ubuntu24.04 bash -c '
     apt-get update && apt-get install -y --no-install-recommends \
       cmake ninja-build gcc-13 g++-13 git pkg-config \
-      libvtk9-dev libhdf5-dev ca-certificates python3 python3-yaml &&
+      libvtk9-dev ca-certificates python3 python3-yaml &&
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 &&
     update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 &&
     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
