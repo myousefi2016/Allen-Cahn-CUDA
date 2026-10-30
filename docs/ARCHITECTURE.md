@@ -523,17 +523,19 @@ CMake presets (see `CMakePresets.json`):
 
 ## 11. CI/CD Pipeline
 
-`/.github/workflows/ci.yml` defines six jobs:
+`/.github/workflows/ci.yml` defines eight jobs, on pushes to `master`, `main` and
+`feature/**` and on pull requests to `master` and `main`:
 
 | Job              | Runner          | What it does                                                              |
 |------------------|-----------------|---------------------------------------------------------------------------|
-| `format-check`   | `ubuntu-latest` | `clang-format-18 --dry-run --Werror` over `src/` and `tests/`             |
-| `clang-tidy`     | CUDA dev container | Generates compile_commands and runs `clang-tidy-18` (warnings non-blocking) |
-| `build-and-test` | self-hosted GPU | Matrix of Debug / Release × CUDA 12.6.0; full `ctest` run                 |
-| `build-cpu-only` | `ubuntu-latest` | Build-only sanity check (no GPU tests)                                    |
-| `docker-build`   | `ubuntu-latest` | Multi-target build of `dev`, `test`, `prod` Dockerfiles via Buildx        |
+| `format-check`   | `ubuntu-latest` | `clang-format-18 --dry-run --Werror` over the C++ and CUDA sources of `src/` and `tests/` |
+| `clang-tidy`     | `ubuntu-latest`, `nvidia/cuda:12.6.0-devel` container | Generates compile_commands and runs `clang-tidy-18` on the `.cpp` / `.hpp` files of `src/`; advisory: warnings do not fail it, and no job depends on it |
+| `build-and-test` | self-hosted GPU | Debug and Release with CUDA 12.6.0, configured with the README's command; the unit, integration and end-to-end tests with `AC_REQUIRE_GPU=1` |
+| `build-cpu-only` | `ubuntu-latest`, `nvidia/cuda:12.6.0-devel` container | Release build and every `ctest` test: the CPU tests run, the CUDA tests and the e2e tests that run a simulation are reported as Skipped |
+| `viz-smoke`      | `ubuntu-latest` | The visualizer's `--self-test` and `tests/visualize_smoke.py` (Xvfb), and the resume helper's and GPU-runner guard's tests |
+| `docker-build`   | `ubuntu-latest` | Buildx build of the `dev`, `test`, `prod` and `cuda-dev` Dockerfiles, a check of each image's user and writable directories, and the `test` image's suite (no GPU) |
 | `k8s-validate`   | `ubuntu-latest` | `kubectl kustomize` of `k8s/base` and both overlays, each to a file (a render error or an empty render fails the step), then `kubeconform` (offline, no API server required); kubectl and kubeconform are pinned releases checked against their published SHA-256 |
-| `release-docker` | `ubuntu-latest` | On `main` push only: build & push `ghcr.io/...` production image           |
+| `release-docker` | `ubuntu-latest` | On a push to the default branch (`master`), after every job but `clang-tidy`: build & push the `ghcr.io/...` production image |
 
 The `k8s-validate` job uses `kubeconform` because `kubectl apply
 --dry-run=client` always tries to contact the API server for resource

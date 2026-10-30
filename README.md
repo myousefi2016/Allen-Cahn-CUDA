@@ -48,7 +48,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and seven end-to-end tests (four of the binary, three of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
-- **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
+- **CI/CD**: GitHub Actions: the full suite in Debug and Release on a self-hosted GPU runner, the CPU tests without a GPU, a clang-format gate and an advisory clang-tidy run, the visualizer's smoke test, the `dev` / `test` / `prod` / `cuda-dev` Docker builds (the `test` image runs its suite), and K8s manifest validation via `kubeconform` (offline).
 
 ---
 
@@ -792,11 +792,11 @@ meant to exercise the GPU cannot pass by skipping:
 AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 ```
 
-| Suite             | Files | Status            |
-|-------------------|-------|-------------------|
-| Unit tests        | 27    | ✅ all passing     |
-| Integration tests | 8     | ✅ all passing     |
-| End-to-end tests  | 4     | ✅ all passing     |
+| Suite             | Files | ctest tests |
+|-------------------|-------|-------------|
+| Unit tests        | 29    | 356         |
+| Integration tests | 8     | 19          |
+| End-to-end tests  | 7     | 7           |
 
 ```bash
 git clone https://github.com/myousefi2016/Allen-Cahn-CUDA.git
