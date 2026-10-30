@@ -455,7 +455,7 @@ telescopes to the boundary), which matches no boundary condition of the
 continuous problem. Measured on a 24³ grid with `h = 0.4`, periodic `x_lo`
 and zero-flux `x_hi`:
 
-| Faces on X | `|y·Lx − x·Ly| / (|y| |Lx|)` | change of `Σu` after 200 steps of pure diffusion, per unit of initial bump content |
+| Faces on X | `\|y·Lx − x·Ly\| / (\|y\| \|Lx\|)` | change of `Σu` after 200 steps of pure diffusion, per unit of initial bump content |
 |---|---|---|
 | both zero-flux | 9e-19 | ≤ 7e-13 |
 | both periodic | 8e-19 | ≤ 7e-13 |

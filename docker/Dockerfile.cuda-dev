@@ -37,6 +37,9 @@ RUN apt-get update && \
         # PyYAML: the end-to-end tests that read the k8s manifests (make cuda-test,
         # cuda-test-e2e, cuda-all), as the CI images install it
         python3-yaml \
+        # cmark-gfm (GitHub's Markdown parser): the end-to-end test of the
+        # documentation's tables, as the CI images install it
+        cmark-gfm \
         xvfb \
         libgl1 \
         libglu1-mesa \

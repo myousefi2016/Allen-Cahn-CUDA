@@ -45,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe LRU cache** (`std::shared_mutex`) for the VTK writer's field statistics. `src/core/` also holds a striped concurrent map (16 shards) and a spatial hash (FNV-1a 3D bucketing); the program uses neither, and only their unit tests include them.
-- **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and eleven end-to-end tests (four of the binary, six of the Makefile's targets and docker-compose.yml, one of the documentation); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and twelve end-to-end tests (four of the binary, six of the Makefile's targets and docker-compose.yml, two of the documentation); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions: the full suite in Debug and Release on a self-hosted GPU runner, the CPU tests without a GPU, a clang-format gate and an advisory clang-tidy run, the visualizer's smoke test, the `dev` / `test` / `prod` / `cuda-dev` Docker builds (the `test` image runs its suite), and K8s manifest validation via `kubeconform` (offline).
@@ -231,6 +231,7 @@ Halo width is 1 because every stencil reads ±1 cell: the Allen–Cahn operator 
 | VTK              | ≥ 9.0         | Optional | Required for `.vts` output             |
 | Python 3 with PyYAML | 3.12, 3.14 tested | Tests | The end-to-end tests (`tests/e2e`); CMake's FindPython3 picks the interpreter, `-DPython3_EXECUTABLE=` chooses one that has PyYAML |
 | GNU make         | 4.3, 4.4.1 tested | Tests | The end-to-end tests of the Makefile's targets |
+| cmark-gfm        | 0.29.0.gfm.6, 0.29.0.gfm.13 tested | Tests | The end-to-end test of the documentation's tables (`tests/e2e/docs_tables.py`): GitHub's Markdown parser, Debian and Ubuntu package `cmark-gfm` |
 
 ---
 
@@ -795,9 +796,10 @@ The suite has three `ctest` groups, selectable with `-R "^unit[.]"`,
 drive the built binary, check the Makefile's resume, visualization,
 simulation, `k8s-logs` and dev-image targets with `make -n` (and
 docker-compose.yml) and its `cuda-status-dendrite` target (GNU make), and
-check this section's inventory against the build. The table below gives the
-files and ctest tests of each group. It is verified on an NVIDIA RTX 4090
-(compute 8.9) with CUDA 13.2.
+check this section's inventory against the build and the documentation's
+tables (as GitHub renders them). The table below gives the files and ctest
+tests of each group. It is verified on an NVIDIA RTX 4090 (compute 8.9)
+with CUDA 13.2.
 
 Without a usable GPU the CUDA tests are reported as *Skipped*. Set
 `AC_REQUIRE_GPU=1` on a GPU machine to turn that into a failure, so a job
@@ -811,7 +813,7 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 |-------------------|-------|-------------|
 | Unit tests        | 29    | 380         |
 | Integration tests | 8     | 18          |
-| End-to-end tests  | 11    | 11          |
+| End-to-end tests  | 12    | 12          |
 
 ```bash
 git clone https://github.com/myousefi2016/Allen-Cahn-CUDA.git
@@ -863,7 +865,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer, no boundary cell (every face held at its own Dirichlet value) and no halo; `validate()` rejects exactly the splits the solver rejects; engine runs: the engine builds the multi-GPU solver (its log), an adaptive run, and the saturation guard at every step stops a three-domain run at the step of the single-GPU run when the solid reaches x_lo, x_hi or y_hi, each read by a different domain |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states, a failed step naming its cause; every step of the single-precision Chebyshev recurrence equals the plan's step in every interior cell, within its derived rounding bound |
-| `test_SimulationEngine.cu`    | Engine init, IC, checkpoints, raw frames and restarts (`restart_file` and `--resume`) carrying exactly the φ and u of their step against a solver stepped alongside, adaptive dt (each step's dt from the change of φ in the step before, 0.9 tolerance / max|Δφ| within [0.5, 1.5] times the last dt, bit for bit; clamped to [dt_min, dt_max], then capped at the stability limits, also the checkpoint's dt at a restart; growth when φ is at rest), short run, saturation stop (a restart from a saturated state computes nothing), shutdown (interrupted only before `max_steps`), `--resume` (the newest intact checkpoint, step 0 without one), divergence errors, no checkpoint before the frames up to its step (also at a shutdown or saturation), a failed checkpoint stops the run, restart-file and spacing checks (the spacing of every axis), dt after a restart |
+| `test_SimulationEngine.cu`    | Engine init, IC, checkpoints, raw frames and restarts (`restart_file` and `--resume`) carrying exactly the φ and u of their step against a solver stepped alongside, adaptive dt (each step's dt from the change of φ in the step before, 0.9 tolerance / max\|Δφ\| within [0.5, 1.5] times the last dt, bit for bit; clamped to [dt_min, dt_max], then capped at the stability limits, also the checkpoint's dt at a restart; growth when φ is at rest), short run, saturation stop (a restart from a saturated state computes nothing), shutdown (interrupted only before `max_steps`), `--resume` (the newest intact checkpoint, step 0 without one), divergence errors, no checkpoint before the frames up to its step (also at a shutdown or saturation), a failed checkpoint stops the run, restart-file and spacing checks (the spacing of every axis), dt after a restart |
 | `test_VTKWriter.cpp`          | Async and synchronous writes, raw output (each file holds its own field in that order, bit for bit) and VTS output, VTS topology, write failures reported (never a published broken file, also when only `close()` fails, and no temporary file left), statistics cache |
 
 ### Integration tests (`tests/integration/`, 8 files)
@@ -892,6 +894,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` run the binary with `--resume` and the run's config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), and a dry run runs nothing: no recipe line of these targets or their prerequisites is one make runs under `-n` (from make's data base), and `make -n` calls neither docker nor python3 (recording stubs) and leaves `config/` as it was; without docker |
 | `makefile_run_signals.py` | Every target that runs the simulation in a container (`cuda-run` and the targets that use it, the long and large runs and their resume targets, `cuda-dendrite-demo`, `cuda-all`; the list is checked against make's data base) gives the binary itself as the container's command, right after the dev image, as the calling user, and the dev image keeps the entrypoint that execs its command, so Ctrl-C and `docker stop` reach the binary's handlers; checked with `make -n` and a recording docker stub, without docker |
 | `makefile_viz_out.py` | `make cuda-visualize` renders into `viz/<name of the run>` however `VIZ_IN` is spelled (`out/run_vtk`, `out/run_vtk/`, `out/run_vtk//`, `out/run_vtk/.`, `./out/run_vtk`, an absolute path), and `VIZ_ROOT` and `VIZ_OUT` override it; checked with `make -n`, without docker |
+| `docs_tables.py` | Every table of README.md, `docs/*.md`, `ci/**/*.md` and `.github/**/*.md` keeps its columns as GitHub renders it: cmark-gfm (GitHub's Markdown parser) finds the tables, and every row must have its header's number of cells (GFM starts a cell at every `\|` that no backslash precedes, also in a code span, drops the cells beyond the header's and pads a shorter row), counted as cmark-gfm counts them and checked against the cells it kept; no paragraph line may be a delimiter row (a header whose delimiter row has another number of cells makes no table); README.md and the three documents of `docs/` must be present; without a GPU |
 | `readme_test_inventory.py` | This section's inventory is the build's: the summary table's files and ctest tests of each group, the unit and integration headings, one row per test file, the project tree's test lines and the feature list's test-suite entry (files of each group, end-to-end tests and how many test the binary, the Makefile and the documentation, by script name), against the `unit_tests` and `integration_tests` sources and the tests ctest lists; every test source in `tests/unit` and `tests/integration` is built, and every script in `tests/e2e` is a test or imported by one; without a GPU, and reported as Skipped in a build that has not built `unit_tests` or `integration_tests` |
 | `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config` and prints its thermal and phase-field dt limits for its scheme and stencil; a `time.dt` equal to a printed limit (thermal, phase-field, adaptive cap) is accepted and one double above it rejected, and an infinite limit prints as `none`; a misspelled key, integer fields that are not ints (64.5 cells, 4294967297 steps) and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs, `saturation_check_freq` 0) are rejected; the runs from the repository root use their own output and checkpoint directories |
 
@@ -930,7 +933,7 @@ Allen-Cahn-CUDA/
 │   ├── integration/           # 8 integration-test files
 │   ├── e2e/                   # signal_exit.py, cli_arguments.py, k8s_job_resume.py, validate_shipped_configs.py,
 │   │                          # makefile_dev_user.py, makefile_k8s_logs.py, makefile_resume_call.py, makefile_run_signals.py, makefile_run_status.py, makefile_viz_out.py,
-│   │                          # readme_test_inventory.py,
+│   │                          # docs_tables.py, readme_test_inventory.py,
 │   │                          # makefile_common.py (what the Makefile tests share)
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   ├── test_resume_checkpoint.py  # resume helper: checkpoint choice and config rewrite

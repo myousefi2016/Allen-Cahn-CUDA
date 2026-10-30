@@ -200,3 +200,12 @@ set_tests_properties(e2e.ReadmeTestInventory PROPERTIES
     SKIP_RETURN_CODE 77
     TIMEOUT 60
 )
+
+# Every table of the documentation (README.md, docs/, ci/, .github/) keeps its
+# columns as GitHub renders it: cmark-gfm (GitHub's Markdown parser, on PATH)
+# finds the tables, and every '|' no backslash precedes starts a cell (no GPU).
+add_test(NAME e2e.DocsTableColumns
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/docs_tables.py
+            ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.DocsTableColumns PROPERTIES TIMEOUT 60)
