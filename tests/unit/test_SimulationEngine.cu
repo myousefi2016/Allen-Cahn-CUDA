@@ -731,31 +731,182 @@ TEST_F(SimulationEngineTest, AdaptiveDtGrowsToTheCapWhenPhiIsAtRest) {
     EXPECT_EQ(expected, cap) << "the run is too short to reach the cap";
 }
 
-// The first step after an adaptive restart obeys the same bounds as every
-// adapted step: the checkpoint's dt is clamped to [dt_min, dt_max] and then
-// capped at cfl_safety times the stability limits (a checkpoint written with
-// another configuration's dt, here 1.0, would otherwise run unchecked).
+// Each adapted step follows the change of phi in the step before it (docs/THEORY.md
+// 10.3): ratio = adaptive_tolerance / max|dphi|, dt_n = dt_{n-1} min(1.5, max(0.5,
+// 0.9 ratio)), clamped to [dt_min, dt_max], then capped at cfl_safety times the
+// stability limits. max|dphi| is CudaSolver::compute_max_dphi after step n - 1:
+// max |phi_{n-1} - phi_{n-2}| over every cell, boundary cells included. Every step here
+// writes a checkpoint, so the test takes max|dphi| on the host from the stored phi of
+// steps n - 1 and n - 2 (step 0: a run of no steps, the initial condition after the
+// boundary fill, as the solver holds it before step 1) and dt_n from the stored dt_{n-1}.
+// A difference of two doubles is correctly rounded on the GPU and on the host alike, |.|
+// and max are exact, and the controller's roundings (the division, 0.9 * ratio, the
+// product with dt) are the same IEEE operations in THEORY's order here: dt_n must match
+// bit for bit, and as each step starts from the stored dt of the step before, nothing
+// accumulates. Two runs of a seed growing into the melt with tolerance 0.002 (the default
+// is 0.01): from dt = 0.004 the first steps change phi by several times the tolerance and
+// dt halves before it follows 0.9 tolerance / max|dphi|; from dt = 1e-5 phi changes by
+// far less than 0.6 times the tolerance and dt grows by 1.5 while phi moves, then follows
+// it. Each run must show both of its branches at steps where neither [dt_min, dt_max] nor
+// the cap changed dt, so that the factor alone set it.
+TEST_F(SimulationEngineTest, AdaptiveDtFollowsTheToleranceWhenPhiMoves) {
+    const int N = 16, steps = 30;
+    auto base = make_config(N, steps);
+    base.physics.delta = 0.55;
+    base.boundary.u_bc.value = -0.55; // the walls keep the initial u = -delta
+    base.initial.seed_radius = 1.2;   // the walls are 3.0 from the centre
+    base.time.scheme = TimeScheme::Heun;
+    base.time.adaptive = true;
+    base.time.adaptive_tolerance = 0.002;
+    base.time.dt_min = 1e-6;
+    base.time.dt_max = 0.02;
+    base.time.exit_on_saturation = false; // every run reaches max_steps
+    base.checkpoint.frequency = 1;
+    base.checkpoint.keep_last = steps;
+    const double tol = base.time.adaptive_tolerance;
+    const double cap =
+        base.time.cfl_safety * std::min(thermal_dt_limit(base), phase_field_dt_limit(base));
+
+    auto ic_cfg = base;
+    ic_cfg.time.max_steps = 0;
+    ic_cfg.output.output_dir = test_dir_ / "ic";
+    ic_cfg.checkpoint.checkpoint_dir = test_dir_ / "ic_ckpt";
+    SimulationEngine ic(ic_cfg);
+    ic.run();
+    const std::vector<double> phi0(ic.phi().data(), ic.phi().data() + ic.phi().size());
+
+    struct Start {
+        const char* name;
+        double dt;    // time.dt, the first step's
+        bool shrinks; // the factor 0.5 sets some step; otherwise 1.5 while phi moves
+    };
+    for (const auto& start : {Start{"shrink", 0.004, true}, Start{"grow", 1e-5, false}}) {
+        SCOPED_TRACE(start.name);
+        auto cfg = base;
+        cfg.time.dt = start.dt;
+        cfg.output.output_dir = test_dir_ / (std::string("out_") + start.name);
+        cfg.checkpoint.checkpoint_dir = test_dir_ / (std::string("ckpt_") + start.name);
+        ASSERT_NO_THROW(cfg.validate());
+        SimulationEngine engine(cfg);
+        engine.run();
+
+        int halved = 0, proportional = 0, grown = 0; // steps the factor alone set
+        std::vector<double> before, last = phi0;     // phi of steps n - 2 and n - 1
+        double last_dt = 0.0, last_time = 0.0;
+        for (int step = 1; step <= steps; ++step) {
+            const auto file =
+                cfg.checkpoint.checkpoint_dir / ("checkpoint_" + std::to_string(step) + ".acbin");
+            ASSERT_TRUE(CheckpointIO::is_valid_checkpoint(file)) << file;
+            const auto data = CheckpointIO::read(file);
+            double expected = cfg.time.dt; // the first step is not adapted
+            if (step > 1) {
+                double max_dphi = 0.0;
+                for (std::size_t i = 0; i < last.size(); ++i)
+                    max_dphi = std::max(max_dphi, std::abs(last[i] - before[i]));
+                const double ratio = tol / max_dphi;
+                const double unclamped = last_dt * std::min(1.5, std::max(0.5, 0.9 * ratio));
+                expected = std::min(std::clamp(unclamped, cfg.time.dt_min, cfg.time.dt_max), cap);
+                if (expected == unclamped && std::isfinite(ratio)) {
+                    if (0.9 * ratio < 0.5)
+                        ++halved;
+                    else if (0.9 * ratio > 1.5)
+                        ++grown;
+                    else
+                        ++proportional;
+                }
+            }
+            EXPECT_EQ(data.dt, expected) << "step " << step;
+            EXPECT_EQ(data.time, last_time + data.dt) << "step " << step;
+            last_dt = data.dt;
+            last_time = data.time;
+            before.swap(last);
+            last.assign(data.phi.data(), data.phi.data() + data.phi.size());
+        }
+        EXPECT_GE(proportional, 1) << "no step where dt followed 0.9 tolerance / max|dphi|";
+        EXPECT_GE(start.shrinks ? halved : grown, 1)
+            << (start.shrinks ? "no step at the factor 0.5"
+                              : "no step at the factor 1.5 while phi moved");
+    }
+}
+
+// The first step after an adaptive restart obeys the same bounds as every adapted step
+// (adapt_time_step): the checkpoint's dt is clamped to [dt_min, dt_max] and then capped at
+// cfl_safety times the stability limits. A checkpoint's dt comes from a file, written by
+// another configuration or before dt_min or dt_max changed, which validate() never sees.
+// Each case restarts the liquid at rest from step 10 at time 0.1 (phi = -1, u = -0.8, its
+// Dirichlet value): max|dphi| = 0, so the adapted step 12 is 1.5 times step 11 before its
+// bounds.
+//   - dt_max above the cap, checkpoint dt 1.0: steps 11 and 12 run at the cap.
+//   - dt_max = cap / 2, which validate() accepts, and a checkpoint dt of 3/4 of the cap
+//     (between dt_max and the cap) or 1.0: both steps run at dt_max, not at the checkpoint's
+//     dt or the cap; step 12 too, as 1.5 dt_max = 3/4 of the cap is above dt_max.
+//   - checkpoint dt dt_min / 2: step 11 runs at dt_min, step 12 at 1.5 dt_min.
+//   - dt_min = 2 cap, which validate() rejects (the engine must not depend on that, as in
+//     AdaptiveStepsNeverExceedTheStabilityCap): the cap is applied after the clamp, so both
+//     steps run at the cap, not at dt_min.
 TEST_F(SimulationEngineTest, AdaptiveRestartIsCappedLikeEveryAdaptedStep) {
-    auto cfg = make_config(8, 11);
-    cfg.time.adaptive = true;
-    cfg.checkpoint.frequency = 11;
-    std::filesystem::create_directories(cfg.checkpoint.checkpoint_dir);
-    Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
+    auto base = make_config(8, 12);
+    base.time.adaptive = true;
+    base.checkpoint.frequency = 1;
+    base.checkpoint.keep_last = 2;
+    const double cap =
+        base.time.cfl_safety * std::min(thermal_dt_limit(base), phase_field_dt_limit(base));
+    const double dt_min = base.time.dt_min, dt_max = base.time.dt_max; // 1e-6, 0.1
+    ASSERT_LT(cap, dt_max);
+    ASSERT_LT(dt_min, cap / 2);
+
+    struct Case {
+        const char* name;
+        double dt_min, dt_max; // the configuration's bounds
+        bool valid;            // validate() accepts the configuration
+        double checkpoint_dt;  // the dt the checkpoint was written with
+        double step11, step12; // the dt of each step after the restart
+    };
+    const Case cases[] = {
+        {"dt_max above the cap, checkpoint dt 1.0", dt_min, dt_max, true, 1.0, cap, cap},
+        {"dt_max below the cap, checkpoint dt between them", dt_min, cap / 2, true, 0.75 * cap,
+         cap / 2, cap / 2},
+        {"dt_max below the cap, checkpoint dt 1.0", dt_min, cap / 2, true, 1.0, cap / 2, cap / 2},
+        {"checkpoint dt below dt_min", dt_min, dt_max, true, dt_min / 2, dt_min, 1.5 * dt_min},
+        {"dt_min above the cap", 2 * cap, 4 * cap, false, cap / 2, cap, cap},
+    };
+    const Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
     FieldData phi(grid, "phi"), u(grid, "u");
     phi.fill(-1.0);
     u.fill(-0.8);
-    const auto file = test_dir_ / "foreign_dt.acbin";
-    CheckpointIO::write(file, 10, 0.1, 1.0, grid, phi, u);
-    cfg.checkpoint.restart_file = file;
-    const double cap =
-        cfg.time.cfl_safety * std::min(thermal_dt_limit(cfg), phase_field_dt_limit(cfg));
-    ASSERT_LT(cap, cfg.time.dt_max);
+    for (std::size_t i = 0; i < std::size(cases); ++i) {
+        const Case& c = cases[i];
+        SCOPED_TRACE(c.name);
+        auto cfg = base;
+        cfg.time.dt_min = c.dt_min;
+        cfg.time.dt_max = c.dt_max;
+        cfg.output.output_dir = test_dir_ / ("out_" + std::to_string(i));
+        cfg.checkpoint.checkpoint_dir = test_dir_ / ("ckpt_" + std::to_string(i));
+        std::filesystem::create_directories(cfg.checkpoint.checkpoint_dir);
+        if (c.valid) {
+            EXPECT_NO_THROW(cfg.validate());
+        } else {
+            EXPECT_THROW(cfg.validate(), std::invalid_argument);
+        }
+        // The limits depend on the scheme, the stencil, the spacing and the physics only.
+        ASSERT_EQ(cfg.time.cfl_safety * std::min(thermal_dt_limit(cfg), phase_field_dt_limit(cfg)),
+                  cap);
+        ASSERT_NE(c.step11, c.checkpoint_dt) << "the bounds leave this checkpoint's dt as it is";
+        const auto file = test_dir_ / ("restart_" + std::to_string(i) + ".acbin");
+        CheckpointIO::write(file, 10, 0.1, c.checkpoint_dt, grid, phi, u);
+        cfg.checkpoint.restart_file = file;
 
-    SimulationEngine engine(cfg);
-    engine.run();
-    const auto next = CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_11.acbin");
-    EXPECT_EQ(next.dt, cap);
-    EXPECT_EQ(next.time, 0.1 + cap);
+        SimulationEngine engine(cfg);
+        engine.run();
+        const auto first =
+            CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_11.acbin");
+        const auto second =
+            CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_12.acbin");
+        EXPECT_EQ(first.dt, c.step11);
+        EXPECT_EQ(first.time, 0.1 + c.step11);
+        EXPECT_EQ(second.dt, c.step12);
+        EXPECT_EQ(second.time, (0.1 + c.step11) + c.step12);
+    }
 }
 
 TEST_F(SimulationEngineTest, ConfigValidationRejectsInvalid) {
