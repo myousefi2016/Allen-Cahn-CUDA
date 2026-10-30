@@ -10,7 +10,9 @@ Checked:
   * docker-compose.yml's dev service passes USER_UID and USER_GID from HOST_UID and
     HOST_GID (1000 when unset);
   * `make -n docker-shell` and `make -n docker-compose-up` run docker compose with
-    HOST_UID and HOST_GID set to the caller's IDs (as `make docker-run` does);
+    HOST_UID and HOST_GID set to the caller's IDs (as `make docker-run` does) and with
+    --build: compose builds a service's image only when it is missing, so without it
+    an allencahn-cuda:dev built before for other IDs (1000 by default) is reused;
   * `make -n docker-build-dev` passes --build-arg USER_UID and USER_GID with them.
 `make -n` prints these recipe lines without running them; a recording docker stub
 first on PATH would show a run.
@@ -83,6 +85,19 @@ def main() -> int:
                 if prefix != [f"HOST_UID={uid}", f"HOST_GID={gid}"]:
                     errors.append(f"make -n {target}: docker compose runs with {prefix}, expected "
                                   f"HOST_UID={uid} HOST_GID={gid}")
+                # The options of its subcommand: the words after `run` up to the service,
+                # or after `up`.
+                sub = "run" if target == "docker-shell" else "up"
+                options = []
+                if sub in w:
+                    for word in w[w.index(sub) + 1:]:
+                        if not word.startswith("-"):
+                            break
+                        options.append(word)
+                if "--build" not in options:
+                    errors.append(f"make -n {target}: docker compose {sub} without --build "
+                                  f"({' '.join(w[w.index('docker'):])}): an existing image "
+                                  f"built for other IDs is reused")
         if log.exists() and log.read_text().strip():
             errors.append("make -n ran docker: " + "; ".join(
                 " ".join(json.loads(l)) for l in log.read_text().splitlines()))

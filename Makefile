@@ -496,13 +496,13 @@ docker-run: ## Run production simulation in Docker container (results in ./outpu
 	@mkdir -p output
 	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile prod run --rm prod
 
-docker-shell: ## Open interactive shell in dev container
+docker-shell: ## Open interactive shell in dev container (image rebuilt for your user IDs)
 	@echo "==> Launching dev shell..."
-	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev run --rm dev /bin/bash
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev run --rm --build dev /bin/bash
 
-docker-compose-up: ## Start all services via docker-compose
+docker-compose-up: ## Start all services via docker-compose (dev image rebuilt for your user IDs)
 	@echo "==> Starting services..."
-	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev up -d
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev up -d --build
 
 docker-compose-down: ## Stop all services and remove containers
 	@echo "==> Stopping services..."

@@ -708,8 +708,10 @@ between them.
 ## Docker
 
 ```bash
-# Development environment (mounts source, ccache)
-docker compose --profile dev up
+# Development environment (mounts source, ccache), its user built with your IDs:
+make docker-shell                                # a shell in it (make docker-compose-up: detached)
+# or, without make:
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile dev up --build
 
 # Run the test suite
 docker compose --profile test up
@@ -722,7 +724,7 @@ docker compose --profile prod run prod /app/config/default.json
 
 | File                          | Purpose                                                                                |
 |-------------------------------|----------------------------------------------------------------------------------------|
-| `docker/Dockerfile.dev`       | Full CUDA 12.6 development environment, source mount expected; its non-root user `developer` takes the host user's IDs (`USER_UID`, `USER_GID`, which `docker compose` and `make docker-build-dev` pass), so the mounted checkout is writable |
+| `docker/Dockerfile.dev`       | Full CUDA 12.6 development environment, source mount expected; its non-root user `developer` gets the IDs the image is built with (`USER_UID`, `USER_GID`), so the mounted checkout is writable when they are the host user's: `make docker-build-dev`, `make docker-shell` and `make docker-compose-up` build it with them, `docker compose` with `HOST_UID` and `HOST_GID` (1000 when unset), and only when the image is missing or `--build` is given |
 | `docker/Dockerfile.prod`      | Multi-stage builder + minimal runtime (non-root)                                       |
 | `docker/Dockerfile.test`      | Builds debug and runs the whole `ctest` suite (unit, integration, end-to-end, from the source tree it carries) as its entrypoint; without a GPU the CUDA tests and the e2e tests that run a simulation are reported as Skipped |
 | `docker/Dockerfile.cuda-dev`  | Prebuilt dev image used by the `make cuda-*` targets (saves apt-install per invocation) |
@@ -888,7 +890,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at; a `SIGTERM` once it has logged its last step leaves the run complete (exit 0) |
 | `cli_arguments.py` | Only the documented command lines are accepted: an argument after them (`config.json --validate-config`, `config.json extra`, `--help extra`, `--resume` without a file or with two) is an error that starts nothing, without a GPU |
 | `k8s_job_resume.py` | A retry of the shipped Kubernetes Job, run with `job.yaml`'s container arguments on a small copy of the base payload, continues from the interrupted pod's checkpoint and keeps it |
-| `makefile_dev_user.py` | The dev image is built for the host user: `docker-compose.yml`'s dev service passes `USER_UID` and `USER_GID` from `HOST_UID` and `HOST_GID`, `make docker-shell` and `make docker-compose-up` set those, and `make docker-build-dev` passes the build arguments; checked with `make -n` and PyYAML, without docker |
+| `makefile_dev_user.py` | The dev image is built for the host user: `docker-compose.yml`'s dev service passes `USER_UID` and `USER_GID` from `HOST_UID` and `HOST_GID`, `make docker-shell` and `make docker-compose-up` set those and pass `--build` (compose reuses an existing image otherwise), and `make docker-build-dev` passes the build arguments; checked with `make -n` and PyYAML, without docker |
 | `makefile_k8s_logs.py` | `make k8s-logs` selects the simulation Job's pods: its `-l` selector's labels are those of the Job's pod template (`k8s/base/job.yaml`; kustomize's `labels` do not reach pods), in the dev and prod overlays' namespaces; checked with `make -n` and PyYAML, without a cluster |
 | `makefile_run_status.py` | `make cuda-status-dendrite` on a temporary configuration: "(no <dir>/ yet)" and "(none yet)", the checkpoints in step order, the one a resume restarts from (past one cut short) with its header's step and time, the frames and the last log line, and `max_steps` as an upper bound with no percentage |
 | `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` run the binary with `--resume` and the run's config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), and a dry run runs nothing: no recipe line of these targets or their prerequisites is one make runs under `-n` (from make's data base), and `make -n` calls neither docker nor python3 (recording stubs) and leaves `config/` as it was; without docker |

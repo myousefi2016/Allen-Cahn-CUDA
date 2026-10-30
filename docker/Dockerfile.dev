@@ -5,7 +5,7 @@
 # Source code is mounted as a volume at /workspace -- nothing is COPY'd.
 #
 # Usage:
-#   docker compose --profile dev up dev
+#   make docker-shell            (built for your user IDs; docker-compose.yml's dev service)
 #   docker run --gpus all -v $(pwd):/workspace -it allencahn-cuda:dev
 # ============================================================================
 
@@ -59,9 +59,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN cmake --version | head -1
 
 # ── Create non-root developer user ────────────────────────────────────────
-# `developer` gets exactly USER_UID:USER_GID, the host user's IDs (docker-compose.yml and
-# `make docker-build-dev` pass them), so the checkout bind-mounted at /workspace is
-# readable and writable as on the host. The base image already holds user and group
+# `developer` gets exactly USER_UID:USER_GID, the IDs the image is built with: the host
+# user's from `make docker-build-dev`, `make docker-shell` and `make docker-compose-up`,
+# HOST_UID and HOST_GID (1000 when unset) from a plain `docker compose`. With the host
+# user's IDs the checkout bind-mounted at /workspace is readable and writable as on the
+# host. The base image already holds user and group
 # `ubuntu` at 1000 and system groups below 1000 (users is 100): an account that owns
 # USER_UID is renamed developer (keeping its IDs and home, dropping the supplementary
 # groups it carries: adm, sudo, ...), a group that owns USER_GID is reused (renamed

@@ -323,9 +323,10 @@ jobs:
         if: matrix.target == 'test'
         run: docker run --rm allen-cahn-cuda:test
 
-      # docker compose and make docker-build-dev build the dev image for the host
-      # user's IDs. 4321:100 takes a GID the base image already has (users): the
-      # account must end up with exactly these IDs.
+      # The dev image's user gets the IDs it is built with (make docker-build-dev,
+      # docker-shell and docker-compose-up pass the host user's). 4321:100 takes a
+      # GID the base image already has (users): the account must end up with
+      # exactly these IDs.
       - name: Build the dev image for another user (4321:100)
         if: matrix.target == 'dev'
         run: |
