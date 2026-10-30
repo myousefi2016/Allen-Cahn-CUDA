@@ -200,10 +200,12 @@ TEST(StabilityLimits, ValidateRejectsAdaptiveSettingsAboveTheCap) {
     cfg.time.dt_min = std::nextafter(cap, 1.0);
     expect_invalid(cfg, "time.dt_min");
     cfg.time.dt_min = 1e-6;
-    for (double bad : {0.0, -0.5, 1.0000001, std::numeric_limits<double>::quiet_NaN()}) {
+    for (double bad : {0.0, -0.5, 1.0000001}) {
         cfg.time.cfl_safety = bad;
         expect_invalid(cfg, "cfl_safety must be in (0, 1]");
     }
+    cfg.time.cfl_safety = std::numeric_limits<double>::quiet_NaN();
+    expect_invalid(cfg, "time.cfl_safety = nan is not a finite number");
     cfg.time.cfl_safety = 1.0;
     EXPECT_NO_THROW(cfg.validate());
 }

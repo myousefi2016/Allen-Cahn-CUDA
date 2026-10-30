@@ -10,6 +10,7 @@ add_library(ac_core STATIC
     core/SimulationConfig.cpp
     core/Grid.cpp
     core/FieldData.cpp
+    core/KernelRanges.cpp
     core/LiquidModes.cpp
     core/StabilityLimits.cpp
 )

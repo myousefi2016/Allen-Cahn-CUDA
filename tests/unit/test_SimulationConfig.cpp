@@ -1,3 +1,4 @@
+#include "core/KernelRanges.hpp"
 #include "core/SimulationConfig.hpp"
 #include "logging/Logger.hpp"
 
@@ -537,7 +538,7 @@ TEST_F(SimulationConfigTest, PerFaceMustNameAllSixFacesAndNothingElse) {
 
 TEST_F(SimulationConfigTest, PerFaceParsesEveryFace) {
     const std::string json = R"({"boundary": {
-        "phi": {"x_lo": {"type": "neumann", "flux": 0.5}, "x_hi": {"type": "dirichlet", "value": -0.9},
+        "phi": {"x_lo": {"type": "neumann", "flux": 0.0}, "x_hi": {"type": "dirichlet", "value": -0.9},
                 "y_lo": {"type": "periodic"}, "y_hi": {"type": "periodic"},
                 "z_lo": {"type": "robin", "alpha": 1.0, "beta": 0.5, "gamma": 0.2},
                 "z_hi": {"type": "neumann"}},
@@ -546,7 +547,7 @@ TEST_F(SimulationConfigTest, PerFaceParsesEveryFace) {
     ASSERT_TRUE(cfg.boundary.per_face);
     const auto& f = cfg.boundary.phi_faces.faces;
     EXPECT_EQ(f[0].type, BCType::Neumann);
-    EXPECT_DOUBLE_EQ(f[0].flux, 0.5);
+    EXPECT_DOUBLE_EQ(f[0].flux, 0.0);
     EXPECT_EQ(f[1].type, BCType::Dirichlet);
     EXPECT_DOUBLE_EQ(f[1].value, -0.9);
     EXPECT_EQ(f[2].type, BCType::Periodic);
@@ -560,6 +561,13 @@ TEST_F(SimulationConfigTest, PerFaceParsesEveryFace) {
         EXPECT_EQ(face.type, BCType::Dirichlet);
         EXPECT_DOUBLE_EQ(face.value, -0.7);
     }
+    // A face's flux is parsed (phi's must be 0: PhaseFieldBoundaryDataStaysInItsRange).
+    const auto u_flux = SimulationConfig::from_json_string(R"({"boundary": {"u": {
+        "x_lo": {"type": "neumann", "flux": 0.5}, "x_hi": {"type": "neumann"},
+        "y_lo": {"type": "neumann"}, "y_hi": {"type": "neumann"},
+        "z_lo": {"type": "neumann"}, "z_hi": {"type": "neumann"}}}})");
+    EXPECT_EQ(u_flux.boundary.u_faces.faces[0].type, BCType::Neumann);
+    EXPECT_DOUBLE_EQ(u_flux.boundary.u_faces.faces[0].flux, 0.5);
 }
 
 // A periodic BC identifies the two faces of an axis. With only one of them
@@ -607,10 +615,9 @@ TEST_F(SimulationConfigTest, ParsesWillmoreBeta) {
     EXPECT_DOUBLE_EQ(cfg.physics.epsilon, 0.12);
 }
 
-// Each Willmore rule rejects on its own, with its own message: a negative (or
-// NaN) willmore_beta at an epsilon where the epsilon rule cannot fire,
-// epsilon > 1/15 without willmore_beta, and willmore_beta > 0 with a fully
-// explicit scheme.
+// Each Willmore rule rejects on its own, with its own message: a negative
+// willmore_beta (a NaN one is not a finite number) at an epsilon where the epsilon rule cannot
+// fire, epsilon > 1/15 without willmore_beta, and willmore_beta > 0 with a fully explicit scheme.
 TEST_F(SimulationConfigTest, EachWillmoreRuleRejectsOnItsOwn) {
     expect_rejected(R"({"physics": {"epsilon": 0.05, "willmore_beta": -0.5}})",
                     {"willmore_beta must be >= 0"});
@@ -621,7 +628,8 @@ TEST_F(SimulationConfigTest, EachWillmoreRuleRejectsOnItsOwn) {
         nan_beta.validate();
         ADD_FAILURE() << "NaN willmore_beta accepted";
     } catch (const std::invalid_argument& e) {
-        EXPECT_NE(std::string(e.what()).find("willmore_beta must be >= 0"), std::string::npos)
+        EXPECT_NE(std::string(e.what()).find("physics.willmore_beta = nan is not a finite number"),
+                  std::string::npos)
             << e.what();
     }
     expect_rejected(R"({"physics": {"epsilon": 0.12}})", {"exceeds 1/15", "willmore_beta"});
@@ -637,9 +645,10 @@ TEST_F(SimulationConfigTest, EachWillmoreRuleRejectsOnItsOwn) {
 // are accepted.
 TEST_F(SimulationConfigTest, RobinCoefficientsMustNotHaveOppositeSigns) {
     static constexpr const char* face_names[] = {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"};
-    auto robin = [](const std::string& alpha, const std::string& beta) {
+    auto robin = [](const std::string& alpha, const std::string& beta,
+                    const std::string& gamma = "0.5") {
         return R"({"type": "robin", "alpha": )" + alpha + R"(, "beta": )" + beta +
-               R"(, "gamma": 0.5})";
+               R"(, "gamma": )" + gamma + "}";
     };
     auto per_face = [&](int robin_face, const std::string& bc) {
         std::string s = "{";
@@ -665,15 +674,21 @@ TEST_F(SimulationConfigTest, RobinCoefficientsMustNotHaveOppositeSigns) {
                                 {"Robin BC for " + field + " face " + std::to_string(i) + ":",
                                  "opposite signs"});
         }
+        // gamma 0.5 with alpha 0 is a flux 0.5 / beta, which takes phi outside its range
+        // (PhaseFieldBoundaryDataStaysInItsRange); phi's faces here have no flux.
+        const std::string gamma = field == "phi" ? "0.0" : "0.5";
         for (const auto& [a, b] : same) {
-            EXPECT_NO_THROW((void)SimulationConfig::from_json_string(with(robin(a, b))))
+            EXPECT_NO_THROW((void)SimulationConfig::from_json_string(with(robin(a, b, gamma))))
                 << field << " alpha " << a << " beta " << b;
             for (int i = 0; i < 6; ++i)
                 EXPECT_NO_THROW(
-                    (void)SimulationConfig::from_json_string(with(per_face(i, robin(a, b)))))
+                    (void)SimulationConfig::from_json_string(with(per_face(i, robin(a, b, gamma)))))
                     << field << " face " << i << " alpha " << a << " beta " << b;
         }
     }
+    for (const char* alpha : {"0.0", "-0.0"})
+        expect_rejected(R"({"boundary": {"phi": )" + robin(alpha, "1.0") + "}}",
+                        {"Robin BC for phi:", "with alpha = 0 the face prescribes the flux"});
 }
 
 // A Robin face is filled with its coefficients scaled by a power of two
@@ -699,8 +714,13 @@ TEST_F(SimulationConfigTest, RobinCoefficientsAtTheEdgesOfTheDoubleRange) {
             (void)SimulationConfig::from_json_string(with(field, 4.0, "0.0", "5e-324", "0.0")));
         EXPECT_NO_THROW(
             (void)SimulationConfig::from_json_string(with(field, 0.4, "1e-300", "0.0", "1e-300")));
-        EXPECT_NO_THROW((void)SimulationConfig::from_json_string(
-            with(field, 0.4, "0.00146484375", "0.0", "1.7555597020139804e+305")));
+        // The Dirichlet value 1.2e308 lies outside phi's range [-1, 1].
+        if (field == "u")
+            EXPECT_NO_THROW((void)SimulationConfig::from_json_string(
+                with(field, 0.4, "0.00146484375", "0.0", "1.7555597020139804e+305")));
+        else
+            expect_rejected(with(field, 0.4, "0.00146484375", "0.0", "1.7555597020139804e+305"),
+                            {"Robin BC for phi:", "the range of the phase field"});
         expect_rejected(with(field, 0.4, "1e-200", "0.0", "1e200"),
                         {"Robin BC for " + field + ":", "gamma/(alpha + beta/h) overflows"});
         expect_rejected(with(field, 4.0, "0.0", "5e-324", "0.5"),
@@ -785,6 +805,288 @@ TEST_F(SimulationConfigTest, ScaledRobinCoefficients) {
         EXPECT_THROW((void)scaled_robin(a, 0.4), std::invalid_argument) << bad;
         EXPECT_THROW((void)scaled_robin(b, 0.4), std::invalid_argument) << bad;
     }
+}
+
+namespace {
+
+/// validate() must throw invalid_argument whose message contains every needle.
+void expect_invalid(const SimulationConfig& cfg, std::initializer_list<std::string> needles) {
+    try {
+        cfg.validate();
+        ADD_FAILURE() << "accepted";
+    } catch (const std::invalid_argument& e) {
+        for (const auto& n : needles)
+            EXPECT_NE(std::string(e.what()).find(n), std::string::npos)
+                << "message \"" << e.what() << "\" lacks \"" << n << "\"";
+    }
+}
+
+/// Default physics with W0 = d0 = D = a1 = 1 and beta0 = 0, so that tau0 = a2 and
+/// lambda = 1 (docs/THEORY.md 5).
+SimulationConfig unit_constants() {
+    SimulationConfig cfg;
+    cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 8;
+    cfg.physics.W0 = cfg.physics.d0 = cfg.physics.D = cfg.physics.a1 = 1.0;
+    cfg.physics.beta0 = 0.0;
+    cfg.physics.a2 = 1.0;
+    cfg.time.dt = 1e-3;
+    return cfg;
+}
+
+} // namespace
+
+// Every real parameter must be a finite number. JSON cannot hold NaN or an
+// infinity, but a configuration built in code can, and a NaN passes the
+// comparisons that should reject it: a NaN D or d0, epsilon, dt, a spacing or
+// a seed radius was accepted (and an infinite dt where no stability limit
+// applies).
+TEST_F(SimulationConfigTest, RealParametersMustBeFinite) {
+    const std::pair<const char*, double* (*)(SimulationConfig&)> fields[] = {
+        {"physics.delta", [](SimulationConfig& c) { return &c.physics.delta; }},
+        {"physics.epsilon", [](SimulationConfig& c) { return &c.physics.epsilon; }},
+        {"physics.W0", [](SimulationConfig& c) { return &c.physics.W0; }},
+        {"physics.beta0", [](SimulationConfig& c) { return &c.physics.beta0; }},
+        {"physics.D", [](SimulationConfig& c) { return &c.physics.D; }},
+        {"physics.d0", [](SimulationConfig& c) { return &c.physics.d0; }},
+        {"physics.a1", [](SimulationConfig& c) { return &c.physics.a1; }},
+        {"physics.a2", [](SimulationConfig& c) { return &c.physics.a2; }},
+        {"physics.willmore_beta", [](SimulationConfig& c) { return &c.physics.willmore_beta; }},
+        {"grid.dx", [](SimulationConfig& c) { return &c.grid.dx; }},
+        {"grid.dy", [](SimulationConfig& c) { return &c.grid.dy; }},
+        {"grid.dz", [](SimulationConfig& c) { return &c.grid.dz; }},
+        {"time.dt", [](SimulationConfig& c) { return &c.time.dt; }},
+        {"time.dt_min", [](SimulationConfig& c) { return &c.time.dt_min; }},
+        {"time.dt_max", [](SimulationConfig& c) { return &c.time.dt_max; }},
+        {"time.adaptive_tolerance", [](SimulationConfig& c) { return &c.time.adaptive_tolerance; }},
+        {"time.cfl_safety", [](SimulationConfig& c) { return &c.time.cfl_safety; }},
+        {"time.saturation_threshold",
+         [](SimulationConfig& c) { return &c.time.saturation_threshold; }},
+        {"initial.seed_radius", [](SimulationConfig& c) { return &c.initial.seed_radius; }},
+    };
+    const double bad[] = {std::numeric_limits<double>::quiet_NaN(),
+                          std::numeric_limits<double>::infinity(),
+                          -std::numeric_limits<double>::infinity()};
+    for (const auto& [name, of] : fields) {
+        for (const double v : bad) {
+            SimulationConfig cfg;
+            cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 8;
+            *of(cfg) = v;
+            std::ostringstream text;
+            text << std::setprecision(17) << v;
+            SCOPED_TRACE(std::string(name) + " = " + text.str());
+            expect_invalid(cfg,
+                           {std::string(name) + " = " + text.str() + " is not a finite number"});
+        }
+    }
+}
+
+// The derived constants as the kernels receive them, tau0 = W0^3 a1 a2/(d0 D)
+// + W0^2 beta0/d0 and lambda = W0 a1/d0, must be finite and positive: d0 or D
+// subnormal made tau0 infinite (the first step then divides by it), and a2 = 0,
+// a2 < 0 or a negative beta0 removed or reversed the relaxation where the
+// Willmore term left no phase-field limit to catch it (review3 #36).
+TEST_F(SimulationConfigTest, RelaxationTimeAndCouplingMustBeFiniteAndPositive) {
+    const std::string tau0 = "the relaxation time tau0 = W0^3 a1 a2 / (d0 D) + W0^2 beta0 / d0 is ";
+    expect_rejected(R"({"physics": {"D": 5e-324, "a1": 1e300}})", {tau0 + "inf"});
+    expect_rejected(R"({"physics": {"d0": 5e-324}})", {tau0 + "inf"});
+    expect_rejected(R"({"physics": {"epsilon": 0.12, "willmore_beta": 0.6, "a2": 0.0}})",
+                    {tau0 + "0 ", "finite and positive"});
+    expect_rejected(R"({"physics": {"epsilon": 0.12, "willmore_beta": 0.6, "beta0": -1.0}})",
+                    {tau0 + "-1.4", "finite and positive"});
+    expect_rejected(R"({"physics": {"a2": -0.5}})", {tau0 + "-0.4", "finite and positive"});
+    const std::string lambda = "the coupling constant lambda = W0 a1 / d0 is ";
+    expect_rejected(R"({"physics": {"a1": -0.8, "a2": -0.64}})",
+                    {lambda + "-1.6", "finite and positive"});
+    expect_rejected(R"({"physics": {"a1": 1e308, "a2": 1e-308}})", {lambda + "inf"});
+    // A positive subnormal coupling is a value, not a rounding to 0: lambda =
+    // 0.01 / 1e308 = 1e-310 with tau0 = 0.01 1e300 / (1e308 1e-10) = 1.
+    auto tiny = unit_constants();
+    tiny.physics.a1 = 0.01;
+    tiny.physics.d0 = 1e308;
+    tiny.physics.a2 = 1e300;
+    tiny.physics.D = 1e-10;
+    ASSERT_EQ(std::fpclassify(tiny.physics.lambda()), FP_SUBNORMAL);
+    EXPECT_NO_THROW(tiny.validate());
+}
+
+// A cold start sets u = -delta: lambda delta must be a finite double, or the
+// coupling lambda u (1 - phi^2)^2 is infinite or NaN in every interior cell at
+// the first step (records 85 and 347 of the fuzz campaign). The edge is exact:
+// the largest delta with a finite product is accepted, the next one rejected,
+// and a restart, which takes u from the checkpoint, is not affected.
+TEST_F(SimulationConfigTest, ColdStartTemperatureTimesCouplingMustBeFinite) {
+    for (const char* delta : {"1.7976931348623157e308", "-1.7976931348623157e308"})
+        expect_rejected(std::string(R"({"physics": {"delta": )") + delta + "}}",
+                        {"physics.delta = ", "lambda delta is not a finite double"});
+    SimulationConfig cfg;
+    cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 8;
+    const double lambda = cfg.physics.lambda();
+    double edge = std::numeric_limits<double>::max() / lambda;
+    while (!std::isfinite(lambda * edge))
+        edge = std::nextafter(edge, 0.0);
+    while (std::isfinite(lambda * std::nextafter(edge, 2 * edge)))
+        edge = std::nextafter(edge, 2 * edge);
+    cfg.physics.delta = edge;
+    EXPECT_NO_THROW(cfg.validate());
+    cfg.physics.delta = std::nextafter(edge, 2 * edge);
+    expect_invalid(cfg, {"lambda delta is not a finite double"});
+    cfg.checkpoint.restart_file = std::filesystem::path("checkpoints/checkpoint_100.acbin");
+    EXPECT_NO_THROW(cfg.validate());
+}
+
+// The phase field's boundary data must keep phi in its range [-1, 1]: a
+// Dirichlet |value| <= 1, a Neumann flux of 0 and a Robin |gamma| <= |alpha|,
+// the exact condition for the face's fill to map [-1, 1] into itself. Ten
+// configurations of the fuzz campaign with Robin phi faces far outside the
+// range were accepted and failed at run time (tau NaN where the gradient
+// overflows A(n), latent heat beyond the Jacobi rounding bound, or a
+// divergence). The same data stay valid for u.
+TEST_F(SimulationConfigTest, PhaseFieldBoundaryDataStaysInItsRange) {
+    const double above_one = std::nextafter(1.0, 2.0);
+    auto num = [](double v) {
+        std::ostringstream os;
+        os << std::setprecision(17) << v;
+        return os.str();
+    };
+    auto dirichlet = [&](double v) { return R"({"type": "dirichlet", "value": )" + num(v) + "}"; };
+    auto neumann = [&](double q) { return R"({"type": "neumann", "flux": )" + num(q) + "}"; };
+    auto robin = [&](double a, double b, double g) {
+        return R"({"type": "robin", "alpha": )" + num(a) + R"(, "beta": )" + num(b) +
+               R"(, "gamma": )" + num(g) + "}";
+    };
+    const std::string inside[] = {
+        dirichlet(-1.0), dirichlet(0.0),    dirichlet(1.0),           neumann(0.0),
+        neumann(-0.0),   robin(1, 0.5, 1),  robin(1, 0.5, -1),        robin(-1, -0.5, 0.9),
+        robin(0, 1, 0),  robin(0, 1, -0.0), robin(1e-300, 0, -1e-300)};
+    const std::string outside[] = {dirichlet(above_one),
+                                   dirichlet(-above_one),
+                                   dirichlet(70.0),
+                                   neumann(1e-300),
+                                   neumann(-0.5),
+                                   robin(1, 0.5, above_one),
+                                   robin(-1, -0.5, -above_one),
+                                   robin(0, 1, 0.5),
+                                   robin(0.0149, 0.05, 10),
+                                   robin(1e-16, -0.0, 0.001),
+                                   robin(1e-300, 0.001, -1e300)};
+    auto uniform = [](const std::string& field, const std::string& bc) {
+        return R"({"boundary": {")" + field + "\": " + bc + "}}";
+    };
+    auto on_face = [](const std::string& field, const std::string& bc) {
+        std::string s = R"({"boundary": {")" + field + "\": {";
+        for (const std::string face : {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"})
+            s += (face == "x_lo" ? "" : ", ") + ("\"" + face + "\": ") +
+                 (face == "y_hi" ? bc : std::string(R"({"type": "neumann"})"));
+        return s + "}}}";
+    };
+    for (const auto& bc : inside) {
+        for (const std::string field : {"phi", "u"}) {
+            EXPECT_NO_THROW((void)SimulationConfig::from_json_string(uniform(field, bc))) << bc;
+            EXPECT_NO_THROW((void)SimulationConfig::from_json_string(on_face(field, bc))) << bc;
+        }
+    }
+    for (const auto& bc : outside) {
+        SCOPED_TRACE(bc);
+        expect_rejected(uniform("phi", bc), {"BC for phi:", "the range of the phase field"});
+        expect_rejected(on_face("phi", bc), {"BC for phi face 3:", "the range of the phase field"});
+        EXPECT_NO_THROW((void)SimulationConfig::from_json_string(uniform("u", bc)));
+        EXPECT_NO_THROW((void)SimulationConfig::from_json_string(on_face("u", bc)));
+    }
+}
+
+// The single-precision Willmore preconditioner divides every cell by
+// tau/dt + willmore_beta d_L: willmore_beta d_L must be a finite float, or
+// every preconditioned residual is 0 or NaN (record 407, willmore_beta 1e150).
+// The edge is exact: the largest willmore_beta with a finite float product is
+// accepted and the next double rejected, with the d_L the solver uses.
+TEST_F(SimulationConfigTest, WillmoreDiagonalFitsSinglePrecision) {
+    SimulationConfig cfg;
+    cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 8;
+    cfg.physics.epsilon = 0.12;
+    const double h[3] = {cfg.grid.dx, cfg.grid.dy, cfg.grid.dz};
+    const double d_L = willmore_interior_diagonal(cfg.physics.W0, h);
+    double edge = static_cast<double>(std::numeric_limits<float>::max()) / d_L;
+    while (!std::isfinite(static_cast<float>(edge * d_L)))
+        edge = std::nextafter(edge, 0.0);
+    while (std::isfinite(static_cast<float>(std::nextafter(edge, 2 * edge) * d_L)))
+        edge = std::nextafter(edge, 2 * edge);
+    cfg.physics.willmore_beta = edge;
+    EXPECT_NO_THROW(cfg.validate()) << "willmore_beta " << edge;
+    cfg.physics.willmore_beta = std::nextafter(edge, 2 * edge);
+    expect_invalid(cfg, {"willmore_beta d_L = ", "beyond single precision"});
+    expect_rejected(R"({"physics": {"epsilon": 0.12, "willmore_beta": 1e150}})",
+                    {"willmore_beta d_L = ", "beyond single precision"});
+}
+
+// Each Willmore step stores tau/dt per cell as a float and adds the float
+// willmore_beta d_L: their float sum must be finite at the largest relaxation
+// time and the smallest step (time.dt, and time.dt_min with adaptive steps).
+// Record 332 (dt = 5e-324, tau/dt beyond the double range) and record 4 (D =
+// 1e-300, tau0 = 5.6e299) were accepted. The edge is exact in tau0 at eps = 0,
+// where A = 1 and tau = tau0.
+TEST_F(SimulationConfigTest, WillmorePreconditionerDiagonalAtTheSmallestStep) {
+    auto cfg = unit_constants();
+    cfg.physics.epsilon = 0.0;
+    cfg.physics.willmore_beta = 0.25;
+    cfg.time.dt = 0.0078125;
+    const double h[3] = {cfg.grid.dx, cfg.grid.dy, cfg.grid.dz};
+    const float beta_dL = static_cast<float>(0.25 * willmore_interior_diagonal(cfg.physics.W0, h));
+    auto diagonal = [&](double tau0) {
+        return static_cast<float>(tau0 * (1.0 / cfg.time.dt)) + beta_dL;
+    };
+    double edge = static_cast<double>(std::numeric_limits<float>::max()) * cfg.time.dt;
+    while (!std::isfinite(diagonal(edge)))
+        edge = std::nextafter(edge, 0.0);
+    while (std::isfinite(diagonal(std::nextafter(edge, 2 * edge))))
+        edge = std::nextafter(edge, 2 * edge);
+    cfg.physics.a2 = edge; // tau0 = a2
+    EXPECT_NO_THROW(cfg.validate()) << "tau0 " << edge;
+    cfg.physics.a2 = std::nextafter(edge, 2 * edge);
+    expect_invalid(cfg, {"at the smallest step dt = 0.0078125 (time.dt)", "float sum"});
+    // Adaptive steps go down to dt_min.
+    cfg.physics.a2 = edge;
+    cfg.time.adaptive = true;
+    cfg.time.dt_min = cfg.time.dt / 2;
+    expect_invalid(cfg, {"at the smallest step dt = 0.00390625", "time.dt_min"});
+    expect_rejected(
+        R"({"physics": {"epsilon": 0.12, "willmore_beta": 0.25},
+                        "time": {"dt": 5e-324}})",
+        {"at the smallest step dt = 4.9406564584124654e-324", "beyond the double range as well"});
+    expect_rejected(R"({"physics": {"epsilon": 0.12, "willmore_beta": 0.25, "D": 1e-300},
+                        "time": {"dt": 0.000625}})",
+                    {"at the smallest step dt = 0.00062500000000000001", "float sum"});
+}
+
+// The relaxation time tau = (tau0 A) A must be a positive finite double for
+// every orientation as the kernel computes it: tau0 = DBL_MAX (record 476) or
+// 0.88 DBL_MAX at eps 0.15 (record 633) overflowed along <100>, where A = 1 + eps,
+// and froze those cells or made the Willmore range NaN; tau0 = 5e-324 at
+// eps 0.3 rounds to tau = 0 along <111>. The edges are exact in tau0 for the
+// range relaxation_time_range gives (test_KernelRanges), and at eps = 0
+// (A = 1) tau0 = DBL_MAX is accepted.
+TEST_F(SimulationConfigTest, RelaxationTimeOfEveryOrientationIsAPositiveDouble) {
+    auto cfg = unit_constants();
+    cfg.physics.epsilon = 0.05;
+    double edge = std::numeric_limits<double>::max() / 1.1025;
+    while (!(relaxation_time_range(edge, 0.05).hi <= std::numeric_limits<double>::max()))
+        edge = std::nextafter(edge, 0.0);
+    while (relaxation_time_range(std::nextafter(edge, 2 * edge), 0.05).hi <=
+           std::numeric_limits<double>::max())
+        edge = std::nextafter(edge, 2 * edge);
+    cfg.physics.a2 = edge;
+    cfg.time.dt = 1e-3;
+    EXPECT_NO_THROW(cfg.validate()) << "tau0 " << edge;
+    cfg.physics.a2 = std::nextafter(edge, std::numeric_limits<double>::infinity());
+    expect_invalid(cfg, {"the relaxation time tau0 A(n)^2 overflows"});
+    cfg.physics.a2 = std::numeric_limits<double>::max();
+    cfg.physics.epsilon = 0.0;
+    EXPECT_NO_THROW(cfg.validate());
+
+    auto low = unit_constants();
+    low.physics.epsilon = 0.3;
+    low.physics.willmore_beta = 1.0;
+    low.physics.a2 = 5e-324;
+    expect_invalid(low, {"the relaxation time tau0 A(n)^2 underflows to 0"});
 }
 
 // The parameters a BC type uses must be finite. JSON cannot express NaN or an

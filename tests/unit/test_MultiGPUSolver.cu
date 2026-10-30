@@ -373,8 +373,8 @@ TEST_F(MultiGPUSolverTest, ValidateRejectsExactlyTheSplitsTheSolverRejects) {
 
 // The saturation guard's reduction reads the interior cells next to the
 // walls (layers 1 and N-2 of each axis), not the boundary cells: those hold
-// the boundary condition. A Dirichlet face at phi = +5, far above every
-// interior value, must not show; the result is the exact maximum over the
+// the boundary condition. A Dirichlet face at phi = +1, above every interior
+// value (they are drawn from [-1, 1)), must not show; the result is the exact maximum over the
 // layers next to the walls, on one GPU and split into two and three domains
 // (only the physical X walls count). With zero-flux faces every boundary cell
 // is a copy of a cell next to a wall, so there the maximum over the boundary
@@ -390,7 +390,7 @@ TEST_F(MultiGPUSolverTest, BoundaryMaxReadsTheCellsNextToTheWalls) {
     };
     const BoundaryConfig zero_flux = bc(BCType::Neumann, 0.0, 1.0, 0.0);
     for (bool all_zero_flux : {false, true}) {
-        SCOPED_TRACE(all_zero_flux ? "zero-flux faces" : "Dirichlet +5, Robin, zero-flux faces");
+        SCOPED_TRACE(all_zero_flux ? "zero-flux faces" : "Dirichlet +1, Robin, zero-flux faces");
         SimulationConfig cfg;
         cfg.grid.Nx = 12;
         cfg.grid.Ny = 7;
@@ -403,9 +403,9 @@ TEST_F(MultiGPUSolverTest, BoundaryMaxReadsTheCellsNextToTheWalls) {
             cfg.boundary.phi_faces = PerFaceBoundary::uniform(zero_flux);
         else
             cfg.boundary.phi_faces.faces = {
-                bc(BCType::Dirichlet, 5.0, 1.0, 0.0), zero_flux,
+                bc(BCType::Dirichlet, 1.0, 1.0, 0.0), zero_flux,
                 bc(BCType::Robin, 0.0, 1.0, 0.5),     zero_flux,
-                bc(BCType::Dirichlet, 5.0, 1.0, 0.0), bc(BCType::Dirichlet, 5.0, 1.0, 0.0)};
+                bc(BCType::Dirichlet, 1.0, 1.0, 0.0), bc(BCType::Dirichlet, 1.0, 1.0, 0.0)};
         cfg.boundary.u_faces = PerFaceBoundary::uniform(zero_flux);
         cfg.validate();
         const Grid grid = cfg.make_grid();

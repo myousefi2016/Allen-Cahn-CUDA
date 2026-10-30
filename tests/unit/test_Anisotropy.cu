@@ -1,4 +1,5 @@
 #include "common/Gpu.hpp"
+#include "core/KernelRanges.hpp"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/DeviceField.cuh"
 #include "cuda/Kernels.cuh"
@@ -6,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <gtest/gtest.h>
 #include <limits>
@@ -34,6 +36,18 @@ __global__ void test_an_kernel(const double* __restrict__ gradients, // [phix, p
     double phiy = gradients[i * 3 + 1];
     double phiz = gradients[i * 3 + 2];
     results[i] = compute_An(phix, phiy, phiz, epsilon);
+}
+
+/// tau = (tau0 A) A as allen_cahn_tau computes it, for each gradient.
+__global__ void test_tau_kernel(const double* __restrict__ gradients, double* __restrict__ an,
+                                double* __restrict__ tau, double epsilon, double tau0, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N)
+        return;
+    const double a =
+        compute_An(gradients[i * 3], gradients[i * 3 + 1], gradients[i * 3 + 2], epsilon);
+    an[i] = a;
+    tau[i] = tau0 * a * a;
 }
 
 __global__ void test_dfunc_kernel(const double* __restrict__ inputs, // [l, m, n] x N
@@ -162,6 +176,59 @@ TEST_F(AnisotropyTest, AlwaysPositive) {
 }
 
 // Test: dFunc(0,0,0) should return 0
+// validate() bounds the relaxation time of every orientation with
+// relaxation_time_range (core/KernelRanges.cpp), derived from compute_An's
+// operations: every A the GPU computes, for the axes, face and body diagonals
+// and 200000 random gradients from just above the zero-gradient threshold to
+// 1e70 (also with subnormal components), lies in [a_lo, a_hi], and at the
+// largest tau0 whose range stays finite no GPU tau overflows.
+TEST_F(AnisotropyTest, RelaxationTimeRangeContainsTheKernelsValues) {
+    std::vector<double> grads;
+    for (const double m : {1.0000000000000001e-15, 1e-10, 1e-3, 0.4, 1.0, 7.0, 1e5, 1e40, 1e70}) {
+        for (const double v : {m, 0.0, 0.0, 0.0, -m, 0.0,    m,      m, 0.0,        m,  m,
+                               m, -m,  m,   -m,  m,  1e-300, 5e-324, m, m * 1e-160, 0.0})
+            grads.push_back(v);
+    }
+    std::uint64_t state = 20261030;
+    auto uniform = [&state] {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<double>(state >> 11) / 9007199254740992.0;
+    };
+    for (int i = 0; i < 200000; ++i) {
+        const double scale = std::pow(10.0, -14.0 + 84.0 * uniform());
+        for (int d = 0; d < 3; ++d)
+            grads.push_back(scale * (2.0 * uniform() - 1.0));
+    }
+    const int N = static_cast<int>(grads.size() / 3);
+    DeviceField<double> d_grads(grads.size()), d_an(N), d_tau(N);
+    d_grads.copy_from_host(grads.data());
+    const auto cfg = LaunchConfig::for_1d(static_cast<std::size_t>(N), 256);
+    for (const double eps : {0.0, 0.05, 1.0 / 15.0, 0.12, 0.3, std::nextafter(1.0 / 3.0, 0.0)}) {
+        SCOPED_TRACE(eps);
+        // The largest tau0 whose range stays finite.
+        double tau0 = std::numeric_limits<double>::max() / ((1.0 + eps) * (1.0 + eps));
+        while (!(relaxation_time_range(tau0, eps).hi <= std::numeric_limits<double>::max()))
+            tau0 = std::nextafter(tau0, 0.0);
+        const RelaxationTimeRange r = relaxation_time_range(tau0, eps);
+        test_tau_kernel<<<cfg.grid, cfg.block>>>(d_grads.data(), d_an.data(), d_tau.data(), eps,
+                                                 tau0, N);
+        CUDA_CHECK(cudaGetLastError());
+        std::vector<double> an(N), tau(N);
+        d_an.copy_to_host(an.data());
+        d_tau.copy_to_host(tau.data());
+        int outside = 0;
+        for (int i = 0; i < N; ++i) {
+            if (!(an[i] >= r.a_lo && an[i] <= r.a_hi) || !std::isfinite(tau[i]) ||
+                !(tau[i] >= r.lo && tau[i] <= r.hi)) {
+                if (outside++ < 5)
+                    ADD_FAILURE() << "gradient " << i << ": A = " << an[i] << ", tau = " << tau[i]
+                                  << " outside A in [" << r.a_lo << ", " << r.a_hi << "]";
+            }
+        }
+        EXPECT_EQ(outside, 0);
+    }
+}
+
 TEST_F(AnisotropyTest, dFuncZero) {
     std::vector<double> inputs = {0.0, 0.0, 0.0};
 

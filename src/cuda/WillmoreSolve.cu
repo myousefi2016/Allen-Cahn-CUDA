@@ -1,3 +1,4 @@
+#include "core/KernelRanges.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "cuda/WillmoreSolve.cuh"
@@ -102,16 +103,12 @@ WillmoreSpectrum willmore_spectrum(const SimulationConfig& config, const PerFace
     const double h[3] = {config.grid.dx, config.grid.dy, config.grid.dz};
 
     WillmoreSpectrum s;
-    double sum_inv_h2 = 0.0, sum_inv_h4 = 0.0;
     for (int axis = 0; axis < 3; ++axis) {
         double lo = 0.0, hi = 0.0;
         second_difference_bounds(n[axis], phi_faces.get(axis, 0), phi_faces.get(axis, 1), h[axis],
                                  lo, hi);
         s.lap_min += lo;
         s.lap_max += hi;
-        const double inv_h2 = 1.0 / (h[axis] * h[axis]);
-        sum_inv_h2 += inv_h2;
-        sum_inv_h4 += inv_h2 * inv_h2;
     }
     const double W2 = config.physics.W0 * config.physics.W0;
     const double B_lo = W2 * s.lap_min - 2.0, B_hi = W2 * s.lap_max - 2.0;
@@ -121,9 +118,8 @@ WillmoreSpectrum willmore_spectrum(const SimulationConfig& config, const PerFace
     // Interior diagonal of L = W0^4 lap^2 - 4 W0^2 lap + 4 for the 7-point
     // lap: diag(lap) = -s1, diag(lap^2) = s1^2 + 2 sum_d 1/h_d^4 (a row of
     // lap^2 away from the boundary; any positive constant keeps D SPD, and the
-    // bounds below are derived for this one).
-    const double s1 = 2.0 * sum_inv_h2;
-    s.d_L = W2 * W2 * (s1 * s1 + 2.0 * sum_inv_h4) + 4.0 * W2 * s1 + 4.0;
+    // bounds below are derived for this one). validate() checks the same double.
+    s.d_L = willmore_interior_diagonal(config.physics.W0, h);
 
     auto g = [&](double tau, double l) {
         return (tau / dt + beta * l) / (tau / dt + beta * s.d_L);

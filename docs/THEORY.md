@@ -635,6 +635,17 @@ precision. A step from φ = 2⁻¹⁵⁰ψ (ψ of order 1), whose right-hand sid
 (‖b‖ = 4.8 · 10⁻⁴²) lies entirely below single precision's normal range,
 gives the same bits as one from φ = 2⁻⁴⁰ψ (‖b‖ = 6.2 · 10⁻⁹), scaled by 2¹¹⁰
 (`TinyRightHandSideGivesTheScaledIncrementBitwise`).
+The operator itself is not scaled: every cell stores τ/Δt as a float and the
+polynomial divides by the float sum τ/Δt + β d_L, so `validate()` requires
+β d_L and that sum to be finite floats (below 2¹²⁸ − 2¹⁰³) at the largest
+relaxation time any orientation reaches (τ₀A(n)², as the kernel rounds it,
+`relaxation_time_range`) and the smallest step (Δt, and with adaptive
+stepping Δt_min). Each rounding involved is monotone, so this decides every
+cell and every step. Past either, every preconditioned residual of the
+affected cells is 0 or NaN, and the solve breaks down at its first iteration
+(β = 10¹⁵⁰, or Δt = 5 · 10⁻³²⁴, or τ₀ = 5.6 · 10²⁹⁹ from D = 10⁻³⁰⁰, in
+a fuzz campaign of accepted configurations). The bound assumes subnormal
+floats are kept (`AC_CUDA_FAST_MATH` off, the default).
 
 **Double-precision stencils.** The double-precision Willmore stencils multiply
 by 1/h² and 1/dt computed once on the host instead of dividing. On GPUs with
@@ -717,6 +728,17 @@ Real tau0()   const {
 
 The first term of `τ₀` is the diffusive contribution; the second adds the
 kinetic-undercooling correction, active when `β₀ ≠ 0`.
+
+`validate()` requires both as the kernels receive them to be finite and
+positive. `τ₀` divides every phase-field increment and `λ` multiplies
+`u (1 − φ²)²` in `∂F/∂φ` at every interior cell, so an infinite one (`d₀` or
+`D` subnormal) makes the first step non-finite, and `τ₀ ≤ 0` (`a₂ ≤ 0`, or a
+negative `β₀` beyond the diffusive term) removes or reverses the relaxation.
+`a₁ = 5√2/8` is a ratio of positive integrals, and `λ ≤ 0` removes or
+reverses the coupling of `u` to `φ`. The relaxation time of every interface
+orientation, `τ₀A(n)²` with `A(n)` from `1 − 5ε/3` (along ⟨111⟩) to `1 + ε`
+(along ⟨100⟩), must be a positive finite double as the kernel rounds it,
+and on a cold start, where `u = −δ` (§5.1), so must `λδ`.
 
 ### 5.1 Initial conditions
 
@@ -1128,6 +1150,22 @@ limit of §10.1 and the Jacobi bound of §10.2 fail: a 32³ run (h = 0.4,
 D = 2) with one u face α = −1.1, β = 0.4 (c = −10) reaches NaN within 100
 steps under Euler and under IMEX at Δt = 0.01, below the explicit limit
 0.0133 of §10.1; with α = +1.1 (c = 0.48) both run normally.
+
+For φ the boundary data must also keep the order parameter in its range
+[−1, 1] (−1 liquid, +1 solid). Every fill is affine in the adjacent interior
+value with a factor c ∈ [0, 1]: a Dirichlet ghost is the value, a Neumann
+ghost φ[interior] + flux·h, a Robin ghost c·φ[interior] + γ/(α + β/h) with
+1 − c = α/(α + β/h). Such a map takes [−1, 1] into itself exactly when it
+takes ±1 into it, which is |value| ≤ 1, flux = 0 and |γ| ≤ |α| (for every h
+and β), and the same holds in the kernel's arithmetic, whose operations are
+monotone and odd. `validate()` requires exactly that (Robin(α, 0, γ) is the
+Dirichlet value γ/α and Robin(0, β, γ) the flux γ/β, so the three conditions
+are one). A face outside it holds the wall's φ beyond the double well, where
+the reaction no longer restores φ: ten configurations of a fuzz campaign
+with such Robin faces (γ/α from 671 to beyond the double range) failed at
+run time, by a NaN relaxation time where the gradient's fourth powers
+overflow A(n), by the latent heat of the wall exceeding the IMEX Jacobi
+rounding bound, or by a divergence within three steps.
 
 ### 9.2 Per-Face Configuration
 

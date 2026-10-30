@@ -1,5 +1,6 @@
 #include "core/SimulationConfig.hpp"
 
+#include "core/KernelRanges.hpp"
 #include "core/StabilityLimits.hpp"
 
 #include <algorithm>
@@ -497,6 +498,36 @@ SimulationConfig SimulationConfig::from_json_string(const std::string& json_str)
 }
 
 void SimulationConfig::validate() const {
+    // Every real parameter must be a finite number. A JSON file cannot hold NaN or an
+    // infinity (the parser rejects a number beyond the double range), but a configuration
+    // built in code can, and a NaN passes every comparison below that it fails to satisfy.
+    const std::pair<const char*, Real> reals[] = {
+        {"physics.delta", physics.delta},
+        {"physics.epsilon", physics.epsilon},
+        {"physics.W0", physics.W0},
+        {"physics.beta0", physics.beta0},
+        {"physics.D", physics.D},
+        {"physics.d0", physics.d0},
+        {"physics.a1", physics.a1},
+        {"physics.a2", physics.a2},
+        {"physics.willmore_beta", physics.willmore_beta},
+        {"grid.dx", grid.dx},
+        {"grid.dy", grid.dy},
+        {"grid.dz", grid.dz},
+        {"time.dt", time.dt},
+        {"time.dt_min", time.dt_min},
+        {"time.dt_max", time.dt_max},
+        {"time.adaptive_tolerance", time.adaptive_tolerance},
+        {"time.cfl_safety", time.cfl_safety},
+        {"time.saturation_threshold", time.saturation_threshold},
+        {"initial.seed_radius", initial.seed_radius},
+    };
+    for (const auto& [name, value] : reals) {
+        if (!std::isfinite(value))
+            throw std::invalid_argument(std::string(name) + " = " + digits17(value) +
+                                        " is not a finite number");
+    }
+
     // Grid validation
     if (grid.Nx < 3 || grid.Ny < 3 || grid.Nz < 3) {
         throw std::invalid_argument("Grid dimensions must be >= 3");
@@ -532,6 +563,63 @@ void SimulationConfig::validate() const {
     }
     if (!(physics.willmore_beta >= 0.0))
         throw std::invalid_argument("physics.willmore_beta must be >= 0");
+    // The derived constants of the model (docs/THEORY.md 5) as the kernels receive them
+    // (KernelParams::from_config): finite and positive. The relaxation time divides every
+    // phase-field increment, and lambda multiplies u (1 - phi^2)^2 in dF/dphi at every
+    // interior cell, so a non-finite one makes the first step non-finite, and tau0 <= 0
+    // reverses or removes the relaxation. a1 = 5 sqrt(2)/8 is a ratio of positive
+    // integrals, so lambda <= 0 (a1 <= 0, or W0 a1 / d0 rounding to 0) reverses or removes
+    // the coupling of u to phi.
+    const std::string constants =
+        " (W0 = " + digits17(physics.W0) + ", a1 = " + digits17(physics.a1) +
+        ", a2 = " + digits17(physics.a2) + ", d0 = " + digits17(physics.d0) +
+        ", D = " + digits17(physics.D) + ", beta0 = " + digits17(physics.beta0) + ")";
+    if (const double tau0 = physics.tau0(); !(std::isfinite(tau0) && tau0 > 0.0)) {
+        throw std::invalid_argument(
+            "physics: the relaxation time tau0 = W0^3 a1 a2 / (d0 D) + W0^2 beta0 / d0 is " +
+            digits17(tau0) + constants +
+            "; it must be finite and positive (docs/THEORY.md 3.1, 5)");
+    }
+    if (const double lambda = physics.lambda(); !(std::isfinite(lambda) && lambda > 0.0)) {
+        throw std::invalid_argument("physics: the coupling constant lambda = W0 a1 / d0 is " +
+                                    digits17(lambda) + constants +
+                                    "; it must be finite and positive (docs/THEORY.md 2, 5)");
+    }
+    // A cold start sets u = -delta everywhere (docs/THEORY.md 5.1): lambda u must be a
+    // finite double there, or the force is infinite or NaN in every interior cell at the
+    // first step. This decides only the first step: a finite lambda delta near the double
+    // range can still overflow later sums.
+    if (!checkpoint.restart_file.has_value() && !std::isfinite(physics.lambda() * physics.delta)) {
+        throw std::invalid_argument(
+            "physics.delta = " + digits17(physics.delta) +
+            ": the initial temperature u = -delta makes the coupling lambda u (1 - phi^2)^2 of "
+            "the phase-field force overflow: lambda delta is not a finite double (lambda = W0 "
+            "a1 / d0 = " +
+            digits17(physics.lambda()) +
+            "), so the force is infinite or NaN in every interior cell at the first step "
+            "(docs/THEORY.md 2, 5.1)");
+    }
+    // The relaxation time tau = (tau0 A) A of every interface orientation, as the kernel
+    // computes it (relaxation_time_range), must be a positive finite double: an infinite
+    // tau stops the phase field there, a zero one divides it by 0. The range holds for
+    // every gradient whose fourth powers stay finite; beyond that the field has diverged.
+    const RelaxationTimeRange taus = relaxation_time_range(physics.tau0(), physics.epsilon);
+    if (!(taus.hi <= std::numeric_limits<double>::max())) {
+        throw std::invalid_argument(
+            "physics: the relaxation time tau0 A(n)^2 overflows: tau0 = " +
+            digits17(physics.tau0()) + " and the kernel's A(n) reaches " + digits17(taus.a_hi) +
+            " (1 + eps along <100>, with rounding), so tau = (tau0 A) A reaches " +
+            digits17(taus.hi) +
+            "; tau must be finite for every interface orientation (docs/THEORY.md 4.1, 5)");
+    }
+    if (!(taus.lo > 0.0)) {
+        throw std::invalid_argument(
+            "physics: the relaxation time tau0 A(n)^2 underflows to 0: tau0 = " +
+            digits17(physics.tau0()) + " and the kernel's A(n) down to " + digits17(taus.a_lo) +
+            " (1 - 5 eps / 3 along <111>, with rounding) give tau = (tau0 A) A = " +
+            digits17(taus.lo) +
+            "; tau must be positive for every interface orientation (docs/THEORY.md 4.1, 5)");
+    }
     // Above 1/15 the Hessian of the gradient energy 1/2 W0^2 A(p)^2 |p|^2 is
     // indefinite (first along <100>): the Allen-Cahn equation has negative
     // diffusion there and its discrete solutions do not converge under grid
@@ -551,6 +639,24 @@ void SimulationConfig::validate() const {
             "physics.willmore_beta > 0 requires time.scheme \"euler\" or \"imex\" (the "
             "fourth-order Willmore term is treated linearly implicitly in their phase-field "
             "update; heun and rk4 are fully explicit)");
+    }
+    // The Willmore preconditioner runs in single precision and divides every cell by
+    // tau/dt + willmore_beta d_L (WillmoreKernels.cu): willmore_beta d_L must be a finite
+    // float, or every preconditioned residual is 0 or NaN and the conjugate-gradient solve
+    // breaks down at its first iteration. A float is finite only below 2^128 - 2^103.
+    const double grid_spacing[3] = {grid.dx, grid.dy, grid.dz};
+    const double d_L = willmore_interior_diagonal(physics.W0, grid_spacing);
+    if (physics.willmore_beta > 0.0 &&
+        !std::isfinite(static_cast<float>(physics.willmore_beta * d_L))) {
+        throw std::invalid_argument(
+            "physics.willmore_beta = " + digits17(physics.willmore_beta) +
+            ": willmore_beta d_L = " + digits17(physics.willmore_beta * d_L) +
+            " is beyond single precision (a float is finite only below 2^128 - 2^103 = "
+            "3.4028235677973366e+38); d_L = W0^4 (s1^2 + 2 sum_d h_d^-4) + 4 W0^2 s1 + 4 = " +
+            digits17(d_L) +
+            " (s1 = 2 sum_d h_d^-2) is the interior diagonal of the Willmore operator per unit "
+            "beta, which the single-precision preconditioner adds to every cell; reduce "
+            "willmore_beta, W0 or the resolution (docs/THEORY.md 4.4)");
     }
     // In a liquid with a small gradient along n, a perturbation mode with
     // Lam + beta L < 0 grows at every dt (docs/THEORY.md 10.1): beta does not
@@ -603,6 +709,32 @@ void SimulationConfig::validate() const {
     if (!(time.cfl_safety > 0.0 && time.cfl_safety <= 1.0))
         throw std::invalid_argument("cfl_safety must be in (0, 1]: adaptive stepping caps dt at "
                                     "cfl_safety times the stability limit");
+    // Each Willmore step stores tdt = float(tau (1/dt)) per cell and divides by the float
+    // sum tdt + float(willmore_beta d_L) (WillmoreKernels.cu), which must be finite for every
+    // cell and every step: it is largest at the largest tau and the smallest dt (time.dt,
+    // and with adaptive stepping also time.dt_min, below which no step goes), and each
+    // rounding is monotone. A cell where it is infinite gets z = 0 or NaN, and the solve
+    // breaks down or never reduces that cell's residual. The bound holds without flushing
+    // subnormal floats to zero (AC_CUDA_FAST_MATH off).
+    if (physics.willmore_beta > 0.0) {
+        const double dt_smallest = time.adaptive ? std::min(time.dt, time.dt_min) : time.dt;
+        const double tdt = taus.hi * (1.0 / dt_smallest);
+        const float diagonal =
+            static_cast<float>(tdt) + static_cast<float>(physics.willmore_beta * d_L);
+        if (!std::isfinite(diagonal)) {
+            throw std::invalid_argument(
+                "physics.willmore_beta = " + digits17(physics.willmore_beta) +
+                ": at the smallest step dt = " + digits17(dt_smallest) +
+                (time.adaptive ? " (the smaller of time.dt and time.dt_min)" : " (time.dt)") +
+                " the diagonal tau/dt + willmore_beta d_L of the single-precision Willmore "
+                "preconditioner leaves the float range: tau/dt reaches " +
+                digits17(tdt) + (std::isfinite(tdt) ? "" : " (beyond the double range as well)") +
+                " (tau0 A(n)^2 up to " + digits17(taus.hi) +
+                ") and willmore_beta d_L = " + digits17(physics.willmore_beta * d_L) +
+                "; their float sum must be below 2^128 - 2^103 = 3.4028235677973366e+38 "
+                "(docs/THEORY.md 4.4)");
+        }
+    }
 
     // Explicit stability limits (docs/THEORY.md 10.1): beyond them a
     // perturbation (of the liquid, for the phase field, to within the
@@ -686,9 +818,22 @@ void SimulationConfig::validate() const {
     // With alpha*beta >= 0 and the scaling of scaled_robin, which the ghost
     // fill uses, the denominator never vanishes; the ghost constant
     // gamma/(alpha + beta/h) must be a finite double.
+    //
+    // The phase field is an order parameter with the range [-1, 1] (-1 liquid, +1 solid;
+    // docs/THEORY.md 9.1), and its boundary data must keep it there. Each fill is affine in
+    // the adjacent interior value: Dirichlet ghost = value, Neumann ghost = inner + flux h,
+    // Robin ghost = c inner + gamma/(alpha + beta/h) with c in [0, 1] and 1 - c =
+    // alpha/(alpha + beta/h). It maps [-1, 1] into itself exactly when |value| <= 1,
+    // flux = 0 and |gamma| <= |alpha|, for every h and beta, and in the kernel's arithmetic
+    // too (each operation of the fill is monotone and odd, and the scaling of scaled_robin
+    // is a power of two). Edge and corner ghosts compose face fills. Robin(alpha, 0, gamma)
+    // is the Dirichlet value gamma/alpha and Robin(0, beta, gamma) the Neumann flux
+    // gamma/beta, so the three clauses are one condition.
     const Real spacing[3] = {grid.dx, grid.dy, grid.dz};
     auto validate_bc = [&spacing](const BoundaryConfig& bc, const std::string& name, int first_axis,
-                                  int last_axis) {
+                                  int last_axis, bool phase_field) {
+        const std::string range =
+            "outside [-1, 1], the range of the phase field (-1 liquid, +1 solid)";
         auto require_finite = [&](Real v, const char* what) {
             if (!std::isfinite(v))
                 throw std::invalid_argument("BC for " + name + ": " + what + " must be finite");
@@ -696,9 +841,21 @@ void SimulationConfig::validate() const {
         switch (bc.type) {
         case BCType::Dirichlet:
             require_finite(bc.value, "value");
+            if (phase_field && !(std::abs(bc.value) <= 1.0)) {
+                throw std::invalid_argument("Dirichlet BC for " + name +
+                                            ": value = " + digits17(bc.value) + " lies " + range +
+                                            " (docs/THEORY.md 9.1)");
+            }
             break;
         case BCType::Neumann:
             require_finite(bc.flux, "flux");
+            if (phase_field && bc.flux != 0.0) {
+                throw std::invalid_argument(
+                    "Neumann BC for " + name + ": flux = " + digits17(bc.flux) +
+                    " must be 0: the fill phi_inner + flux h takes phi " + range +
+                    " wherever the " + (bc.flux > 0.0 ? "solid" : "liquid") +
+                    " reaches the wall (docs/THEORY.md 9.1)");
+            }
             break;
         case BCType::Periodic:
             break;
@@ -731,15 +888,32 @@ void SimulationConfig::validate() const {
                         ": gamma/(alpha + beta/h) overflows at h = " + digits17(spacing[axis]));
                 }
             }
+            if (phase_field && !(std::abs(bc.gamma) <= std::abs(bc.alpha))) {
+                const double equilibrium = bc.gamma / bc.alpha;
+                throw std::invalid_argument(
+                    "Robin BC for " + name + ": |gamma| = " + digits17(std::abs(bc.gamma)) +
+                    " exceeds |alpha| = " + digits17(std::abs(bc.alpha)) +
+                    (bc.alpha == 0.0
+                         ? ": with alpha = 0 the face prescribes the flux gamma/beta = " +
+                               digits17(bc.gamma / bc.beta) + ", which takes phi "
+                     : std::isfinite(equilibrium)
+                         ? ": the face's uniform equilibrium phi = gamma/alpha = " +
+                               digits17(equilibrium) + " lies "
+                         : std::string(": the face's uniform equilibrium phi = gamma/alpha "
+                                       "(beyond the double range) lies ")) +
+                    range +
+                    "; the fill (gamma + (beta/h) phi_inner)/(alpha + beta/h) maps [-1, 1] "
+                    "into itself exactly when |gamma| <= |alpha| (docs/THEORY.md 9.1)");
+            }
             break;
         }
     };
-    validate_bc(boundary.phi_bc, "phi", 0, 2);
-    validate_bc(boundary.u_bc, "u", 0, 2);
+    validate_bc(boundary.phi_bc, "phi", 0, 2, true);
+    validate_bc(boundary.u_bc, "u", 0, 2, false);
     for (std::size_t i = 0; i < 6; ++i) {
         const int axis = static_cast<int>(i / 2);
-        validate_bc(boundary.phi_faces.faces[i], "phi face " + std::to_string(i), axis, axis);
-        validate_bc(boundary.u_faces.faces[i], "u face " + std::to_string(i), axis, axis);
+        validate_bc(boundary.phi_faces.faces[i], "phi face " + std::to_string(i), axis, axis, true);
+        validate_bc(boundary.u_faces.faces[i], "u face " + std::to_string(i), axis, axis, false);
     }
 
     // A periodic BC identifies the two faces of an axis: the ghost plane at

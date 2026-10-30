@@ -7,6 +7,7 @@ add_executable(unit_tests
     unit/test_SimulationConfig.cpp
     unit/test_StabilityLimits.cpp
     unit/test_LiquidModes.cpp
+    unit/test_KernelRanges.cpp
     unit/test_FieldData.cpp
     unit/test_CheckpointIO.cpp
     unit/test_LRUCache.cpp

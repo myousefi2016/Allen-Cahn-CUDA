@@ -12,13 +12,16 @@ REJECTED, each with its own message: five rejected by the parser (a
 misspelled key, a section given twice, of which JSON keeps only the last, a
 boundary parameter of another type, which the fill would ignore, and two
 integer fields that are not an int: 64.5 cells; 4294967297 steps, which the
-old parser wrapped to 1), and nine that parse but break a rule of
+old parser wrapped to 1), and fourteen that parse but break a rule of
 SimulationConfig::validate() (epsilon > 1/15 without willmore_beta,
 willmore_beta with a fully explicit scheme, a negative willmore_beta, a
 periodic face opposite a non-periodic one, a Robin face whose alpha and beta
 have opposite signs, a saturation_check_freq of 0, an empty output_dir, two
-device ids without multi_gpu, of which the run would use the first only, and
-a multi-GPU split that leaves a domain one X plane).
+device ids without multi_gpu, of which the run would use the first only, a
+multi-GPU split that leaves a domain one X plane, an infinite relaxation
+time tau0 (subnormal d0), a cold-start temperature whose coupling overflows,
+a phase-field Robin face outside phi's range [-1, 1], a willmore_beta d_L
+beyond single precision, and a relaxation time A(n)^2 tau0 that overflows).
 So neither a validator that accepts anything nor a loader that parses without
 validating can pass.
 
@@ -262,6 +265,12 @@ def main() -> int:
             cfg["grid"]["Nx"] = 3
             cfg["gpu"].update(device_ids=[0, 0], multi_gpu=True)
 
+        def physics(**values):
+            return lambda cfg: cfg["physics"].update(values)
+
+        def phi_robin_out_of_range(cfg):
+            cfg["boundary"]["phi"] = {"type": "robin", "alpha": 0.0149, "beta": 0.05, "gamma": 10}
+
         def twice(name, section):
             """config/name's text with `section` given twice, first as {}."""
             text = (root / "config" / name).read_text()
@@ -298,6 +307,17 @@ def main() -> int:
              "gpu.multi_gpu is false"),
             ("Nx 3 over two domains", mutated("default.json", thin_split),
              "is too small for 2 domains"),
+            ("d0 5e-324 (tau0 infinite)", mutated("default.json", physics(d0=5e-324)),
+             "the relaxation time tau0 = W0^3 a1 a2 / (d0 D) + W0^2 beta0 / d0 is inf"),
+            ("delta 1.7976931348623157e308", mutated("default.json", physics(delta=1.7976931348623157e308)),
+             "lambda delta is not a finite double"),
+            ("phi Robin face with gamma/alpha 671", mutated("default.json", phi_robin_out_of_range),
+             "the range of the phase field"),
+            ("willmore_beta 1e150", mutated("default.json", physics(willmore_beta=1e150)),
+             "beyond single precision"),
+            ("a2 1.7976931348623157e308 (tau0 A(n)^2 overflows)",
+             mutated("default.json", physics(a1=1.0, d0=1.0, D=1.0, a2=1.7976931348623157e308)),
+             "the relaxation time tau0 A(n)^2 overflows"),
         ]
         for what, text, needle in controls:
             out = validate("control", text)

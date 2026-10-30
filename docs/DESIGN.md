@@ -336,6 +336,16 @@ The validator also rejects:
   first only), and a multi-GPU split that leaves a domain fewer than
   `kMinOwnedPlanes` = 2 X planes (section 7; the solver's constructor has the
   same rule).
+- a real parameter that is not a finite number (only a configuration built
+  in code can hold one); `tau0` or `lambda` not finite and positive, a
+  relaxation time `tau0 A(n)^2` of some orientation outside the positive
+  doubles (`relaxation_time_range`, `core/KernelRanges.hpp`), or, on a cold
+  start, an infinite `lambda delta` (`docs/THEORY.md` 5);
+- phase-field boundary data that take phi outside [-1, 1] (`docs/THEORY.md`
+  9.1);
+- with `willmore_beta > 0`, `willmore_beta d_L` or the preconditioner
+  diagonal `tau/dt + willmore_beta d_L` at the smallest step beyond single
+  precision (`docs/THEORY.md` 4.4).
 
 The parser (`parse_config`) is strict: an unknown key in any section is an
 error that names the key and the allowed ones (keys starting with `_` are

@@ -45,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 28 unit-test files, 8 integration-test files and four end-to-end tests (two of the binary, two of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and four end-to-end tests (two of the binary, two of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -572,10 +572,12 @@ configurations, not to the compiled-in values.
 | `time.dt`             | at most the explicit stability limits (`docs/THEORY.md` §10.1), which `--validate-config` prints for a valid file: the thermal one of the scheme, stencil, spacing and `physics.D`, the phase-field one of the scheme, spacing and physics; with `time.adaptive`, at most `cfl_safety` times the smaller one, like `time.dt_min` |
 | `time.cfl_safety`     | in (0, 1]: adaptive steps are capped at this fraction of the stability limits |
 | `physics.epsilon`     | anisotropy strength in [0, 1/3); above 1/15 it requires `physics.willmore_beta > 0` |
-| `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (0 when omitted); > 0 requires `time.scheme` `"euler"` or `"imex"` |
+| `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (0 when omitted); > 0 requires `time.scheme` `"euler"` or `"imex"`, and `willmore_beta·d_L` and the preconditioner diagonal τ/Δt + `willmore_beta·d_L` at the smallest step within single precision (`docs/THEORY.md` §4.4) |
+| `physics.*`           | finite numbers (as every real parameter); `W0`, `D`, `d0` > 0; the derived τ₀ and λ (`docs/THEORY.md` §5) finite and positive, and τ₀A(n)² a positive finite double for every orientation; on a cold start λ·δ finite |
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
 | `boundary.*.type`     | `"dirichlet"` (when omitted), `"neumann"`, `"periodic"` (on both faces of an axis), `"robin"`; a face takes only its type's parameters, `value` (dirichlet), `flux` (neumann), `alpha`, `beta`, `gamma` (robin), none (periodic): another type's parameter would be ignored and is an error |
 | `boundary.*` robin    | `alpha·u + beta·∂u/∂n = gamma`: `alpha`, `beta` not both zero and not of opposite signs, `gamma/(alpha + beta/h)` within the double range (`docs/THEORY.md` §9.1) |
+| `boundary.phi`        | data that keep φ in [−1, 1]: dirichlet `abs(value) ≤ 1`, neumann `flux` 0, robin `abs(gamma) ≤ abs(alpha)` (`docs/THEORY.md` §9.1) |
 | `output.output_dir`, `checkpoint.checkpoint_dir` | not empty (the engine creates them) |
 | `gpu.device_ids`      | CUDA device ids ≥ 0; several only with `gpu.multi_gpu` (an id may repeat: several domains on one GPU) |
 | `gpu.multi_gpu`       | `true`: split the X planes between the ids, at least 2 planes each (Multi-GPU Domain Decomposition) |
@@ -790,7 +792,8 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
 | `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the phase-field limit over the uniform liquid's modes and the liquid-gradient modes), a too small `willmore_beta` rejected with the growing mode and its certified bound, `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap; the `--validate-config` report (each limit to 17 digits, `none` for +∞, the adaptive cap only with `time.adaptive`) |
 | `test_LiquidModes.cpp`        | The certified liquid-mode search against binary128 references: every interval operation (at every binade edge, past overflow, inverse roots at 200000 points) and the sine and cosine enclosures contain the exact values; the Hessian's closed form is the derivative of the kernel's flux; the coefficients' enclosures contain their values and, by the mean value theorem, difference quotients of their first and second derivatives; each of the three box bounds is an upper bound on boxes of every size and at the stationary checkerboards, and the theta bounds for every coefficient in their intervals; a box is dropped only without a stationary point; the search domain and the symmetries it relies on; the reported growth maximum lies in [attained, bound] (independent search, 20000 sampled modes, permuted spacings) and a damping witness's bound holds (also just below the smallest regularising beta); the branch and bound alone, without the seed search, finds and certifies the same extrema; a search out of budget reports the range its extremum lies in |
-| `test_SimulationConfig.cpp`   | JSON config parsing (unknown and repeated keys rejected, integer fields only ints in the range of `int`, per-face all-six rule, only the BC type's own parameters), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters, non-empty directories, several device ids only with `multi_gpu`, at least 2 X planes per domain), defaults, derived quantities |
+| `test_SimulationConfig.cpp`   | JSON config parsing (unknown and repeated keys rejected, integer fields only ints in the range of `int`, per-face all-six rule, only the BC type's own parameters), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters, phase-field boundary data in [−1, 1], every real parameter finite, τ₀ and λ finite and positive, τ₀A(n)² a positive double, λδ on a cold start, the single-precision Willmore preconditioner's range at exact edges, non-empty directories, several device ids only with `multi_gpu`, at least 2 X planes per domain), defaults, derived quantities |
+| `test_KernelRanges.cpp`       | The quotient bounds of `compute_An` against binary128, `d_L`, and the relaxation-time range against every A of eight evaluation patterns over 200000 gradients |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
 | `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32, every header bit under the header CRC, version-1 files still read, exact file size (trailing or missing bytes rejected, long axes accepted, overflowing headers rejected), a failed write leaves no temporary file, the logged size in MB |
@@ -802,7 +805,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_DeviceField.cu`         | RAII allocation, async H2D/D2H, swap, large allocs                               |
 | `test_Laplacian.cu`           | 7- and 27-point isotropic Laplacian on analytic quadratic / linear / constant fields |
 | `test_Gradient.cu`            | 2nd- and 4th-order central-difference gradient kernels                           |
-| `test_Anisotropy.cu`          | A(n), dFunc, dF/dphi; face flux = ∂f/∂∇φ; ∇·F second-order (all ε) and = W₀²·7-point Laplacian at ε = 0 |
+| `test_Anisotropy.cu`          | A(n), dFunc, dF/dphi; face flux = ∂f/∂∇φ; ∇·F second-order (all ε) and = W₀²·7-point Laplacian at ε = 0; every A(n) and τ the GPU computes lies in the validated relaxation-time range |
 | `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin (also with a tiny denominator, at the edges of the double range, and its ghost factor as the Willmore solve uses it), per-face mixed, interior unchanged |
 | `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions; the fused change and magnitude reduction of the IMEX check (exact maxima, NaN and Inf reach both) |
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
@@ -855,7 +858,7 @@ ctest --test-dir build -R StencilComparisonTest  --output-on-failure
 ```
 Allen-Cahn-CUDA/
 ├── src/
-│   ├── core/                  # Grid, SimulationConfig, StabilityLimits, LiquidModes, Interval,
+│   ├── core/                  # Grid, SimulationConfig, StabilityLimits, LiquidModes, Interval, KernelRanges,
 │   │                          # FieldData, CheckpointManager, LRUCache, SpatialHash,
 │   │                          # ConcurrentMap
 │   ├── cuda/                  # ISolver, CudaSolver, MultiGPUSolver,
@@ -868,7 +871,7 @@ Allen-Cahn-CUDA/
 │   ├── main.cpp               # Entry point + signal handler
 │   └── CMakeLists.txt
 ├── tests/
-│   ├── unit/                  # 28 unit-test files
+│   ├── unit/                  # 29 unit-test files
 │   ├── integration/           # 8 integration-test files
 │   ├── e2e/                   # signal_exit.py, validate_shipped_configs.py,
 │   │                          # makefile_resume_call.py, makefile_viz_out.py
