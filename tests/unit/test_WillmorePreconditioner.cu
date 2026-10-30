@@ -194,6 +194,57 @@ std::vector<double> assemble_operator(CudaSolver& solver, const std::vector<int>
     return A;
 }
 
+/// The 7-point Laplacian of v (a full-grid vector) with the exact spacings over
+/// the interior cells of cfg's grid, each face's ghost following the homogeneous
+/// form of phi's BC there, as second_difference_matrix builds it: Dirichlet 0,
+/// Neumann the adjacent interior cell's value, Robin (beta/h)/(alpha + beta/h)
+/// times it, periodic the interior cell at the other end. With `magnitude`, the
+/// sum of the terms' magnitudes instead, sum_d (|v_-| + |v_+| + 2 |v_c|) / h_d^2:
+/// what the roundings of evaluating the sum scale with. 0 outside the interior.
+std::vector<double> host_laplacian(const SimulationConfig& cfg, const std::vector<double>& v,
+                                   bool magnitude) {
+    const PerFaceBoundary faces = cfg.boundary.per_face
+                                      ? cfg.boundary.phi_faces
+                                      : PerFaceBoundary::uniform(cfg.boundary.phi_bc);
+    const int n[3] = {cfg.grid.Nx, cfg.grid.Ny, cfg.grid.Nz};
+    const double h[3] = {cfg.grid.dx, cfg.grid.dy, cfg.grid.dz};
+    auto index = [&](const int(&q)[3]) {
+        return static_cast<std::size_t>((q[0] * n[1] + q[1]) * n[2] + q[2]);
+    };
+    std::vector<double> out(v.size(), 0.0);
+    for (int x = 1; x < n[0] - 1; ++x)
+        for (int y = 1; y < n[1] - 1; ++y)
+            for (int z = 1; z < n[2] - 1; ++z) {
+                const int c[3] = {x, y, z};
+                const double vc = v[index(c)];
+                double sum = 0.0;
+                for (int d = 0; d < 3; ++d) {
+                    double side[2] = {0.0, 0.0};
+                    for (int s = 0; s < 2; ++s) {
+                        const BoundaryConfig& bc = faces.faces[static_cast<std::size_t>(2 * d + s)];
+                        int q[3] = {x, y, z};
+                        q[d] += s == 0 ? -1 : 1;
+                        if (q[d] >= 1 && q[d] <= n[d] - 2) {
+                            side[s] = v[index(q)];
+                        } else if (bc.type == BCType::Periodic) {
+                            q[d] = s == 0 ? n[d] - 2 : 1;
+                            side[s] = v[index(q)];
+                        } else if (bc.type == BCType::Neumann) {
+                            side[s] = vc;
+                        } else if (bc.type == BCType::Robin) {
+                            side[s] = (bc.beta / h[d]) / (bc.alpha + bc.beta / h[d]) * vc;
+                        } // Dirichlet: 0
+                    }
+                    const double term =
+                        magnitude ? std::fabs(side[0]) + std::fabs(side[1]) + 2 * std::fabs(vc)
+                                  : side[0] + side[1] - 2 * vc;
+                    sum += term / (h[d] * h[d]);
+                }
+                out[index(c)] = sum;
+            }
+    return out;
+}
+
 struct Case {
     std::string name;
     int Nx, Ny, Nz;
@@ -417,9 +468,13 @@ TEST_F(WillmorePreconditionerTest, SpectrumBoundsContainEveryEigenvalue) {
 // that first-order size of the accumulated difference. It leaves out the
 // number of roundings per step, so it is a tolerance, not a proven bound: the
 // measured differences (printed, 6.2e-8 to 9.0e-8 on an RTX 4090) lie more
-// than 100 times below it, and an implementation error (a wrong ghost rule,
-// coefficient, stencil or step size) shows as O(1). The solve uses a dt other
-// than the configuration's, as adaptive stepping does.
+// than 100 times below it, and an error in the operator (a wrong ghost rule,
+// stencil or step size) shows as O(1). An error in the polynomial does not:
+// with explicit residuals any nearby polynomial also approximates A^-1 r to
+// about its own error bound 1/T_k(sigma) (4.2e-6 to 8.2e-6 here), within this
+// tolerance, so one step fewer or another step's coefficients pass;
+// EveryChebyshevStepIsThePlansStep tests the polynomial step by step. The
+// solve uses a dt other than the configuration's, as adaptive stepping does.
 TEST_F(WillmorePreconditionerTest, SinglePrecisionMatchesExactPolynomial) {
     for (const Case& cs : spectrum_cases()) {
         SCOPED_TRACE(cs.name);
@@ -492,6 +547,187 @@ TEST_F(WillmorePreconditionerTest, SinglePrecisionMatchesExactPolynomial) {
         std::printf("%-16s degree %2d  |z32 - z_exact| / |z_exact| = %.2e  (allowed %.2e)\n",
                     cs.name.c_str(), plan.degree, rel, allowed);
         EXPECT_LE(rel, allowed);
+    }
+}
+
+// The device applies the plan's polynomial, step by step. For m = 1 .. k the
+// plan P_m with the plan's s0, d_L and first m - 1 recurrence coefficients
+// gives z_m = x_m of
+//   x_1 = s0 D^-1 r,  x_{j+1} = x_j + a_j (x_j - x_{j-1}) + b_j D^-1 (r - A x_j)
+// (x_0 = 0; the Chebyshev coefficients do not depend on the degree, so P_m is
+// the degree-m plan on [a, b]). Each kernel computes every cell in one thread
+// without atomics, so the device's iterates while applying P_m are the bits of
+// z_1 .. z_{m-1}: z_1 must be s0 D^-1 r and every z_m (m >= 2) one step from
+// z_{m-1} and z_{m-2}. Both are checked cell by cell against the step computed
+// in double on the host from those device values, with the Laplacian written
+// out here (host_laplacian) and exact constants (tau/dt, 1/h^2, d_L, s0, a_j,
+// b_j). The plans are applied in order on one solver, so from P_4 on every
+// application finds the previous one's iterates in its buffers, as in a CG
+// solve: the first step must not read them. SinglePrecisionMatchesExactPolynomial
+// cannot see a wrong polynomial (see its comment). Here a missing step, another
+// step's coefficients, or a wrong s0, d_L or x_0 changes z_m by a fraction of
+// z_m itself within the first four steps.
+//
+// Bound: the standard model (Higham, Accuracy and Stability of Numerical
+// Algorithms, 2nd ed., Section 2.2, Lemmas 3.1 and 3.3). A single-precision
+// operation returns the exact result times (1 + delta), |delta| <= u = 2^-24.
+// A fused multiply-add only removes roundings. A quotient is counted 4 times,
+// which also covers the 2-ulp division of AC_CUDA_FAST_MATH builds. Every
+// operation is a sum or difference, or a product or quotient of data and a
+// constant, so the computed value is the exact expression with each term
+// multiplied by at most N factors (1 + delta)^(+-1). It is therefore within
+// gamma_N = N u / (1 - N u) times the expression evaluated with magnitudes
+// (each minus a plus). N on the longest path of a term:
+//  - constants as formed from doubles: 1/h^2 3 (h h, 1/., float), W0^4 4,
+//    4 W0^2 2, beta 1, beta d_L 2, tau/dt 3 (1/dt, tau times it, float),
+//    Robin c 5, s0, a_j, b_j and f = float(2^-e r) 1 each;
+//    D = tau/dt + beta d_L 4; a ghost c v of an iterate or Laplacian 6;
+//  - lap32: the ghost, two sums, 1/h^2, its product, two outer sums: 14.
+//    So t = lap x is within gamma_14 |lap||x|, and lap t, 14 more on t's own
+//    error, within gamma_28 |lap|^2 |x|;
+//  - A x: W0^4, its product, two sums, beta, its product, the last sum: 10,
+//    on lap t's 28: 38 (4 W0^2 t: 8 on t's 14; tau/dt x 5; 4 x 4);
+//  - the step: x 2, a (x - x_prev) 5, b (f - A x) / D: the difference, b,
+//    its product, D, the quotient, the last sum 12, on A x's 38: 50 (f 13);
+//  - the first step s0 f / D: s0, f, the product, D, the quotient: 11.
+// One more u covers the host's double-precision evaluation (fewer than 100
+// roundings of 2^-53, relative to the same magnitudes). Underflow: an
+// operation's result may also be off by up to 2^-126 (2^-150 with gradual
+// underflow; fast math flushes). One cell's step takes fewer than 256
+// operations and reads. Each such error reaches the result with a gain below
+// the step's magnitude expression at unit magnitudes, with every constant c
+// replaced by max(1, |c|) and |lap| by its largest row sum 4 sum_d 1/h_d^2,
+// times (1 + u)^50 < 2. All of this is in units of the scaled iterate
+// (z = 2^e x).
+TEST_F(WillmorePreconditionerTest, EveryChebyshevStepIsThePlansStep) {
+    constexpr int kFirstStepRoundings = 11;
+    constexpr int kStepRoundings = 50;
+    constexpr double kOperations = 256;
+    auto gamma_n = [](int roundings) { return roundings * kU32 / (1 - roundings * kU32); };
+    auto at_least_1 = [](double v) { return std::max(1.0, std::fabs(v)); };
+    for (const Case& cs : spectrum_cases()) {
+        SCOPED_TRACE(cs.name);
+        const SimulationConfig cfg = small_config(cs.Nx, cs.Ny, cs.Nz, cs.faces);
+        const Grid grid = cfg.make_grid();
+        FieldData phi(grid, "phi"), u(grid, "u");
+        random_state(phi, u, 11);
+        CudaSolver solver(cfg);
+        solver.initialize(phi, u);
+        const double dt = cfg.time.dt / 4.0;
+        solver.mutable_params().dt = dt;
+        solver.willmore_omega();
+        solver.willmore_rhs_init();
+        const auto [tau_min, tau_max] = solver.willmore_tau_range();
+        const WillmoreSpectrum sp =
+            willmore_spectrum(cfg, cfg.boundary.phi_faces, dt, tau_min, tau_max);
+        const ChebyshevPlan plan = chebyshev_plan(sp, kWillmoreCgTolerance);
+        ASSERT_GE(plan.degree, 4); // P_4 is the first application that finds stale iterates
+        const std::vector<double> tau = solver.willmore_download(V::Tau);
+        const std::vector<int> cells = interior_cells(cfg);
+
+        std::mt19937_64 rng(3);
+        std::uniform_real_distribution<double> U(-1.0, 1.0);
+        std::vector<double> r(solver.total_points(), 0.0);
+        double rr = 0.0;
+        for (int c : cells) {
+            const auto i = static_cast<std::size_t>(c);
+            r[i] = U(rng);
+            rr += r[i] * r[i];
+        }
+        solver.willmore_upload(V::R, r);
+
+        const double beta = cfg.physics.willmore_beta;
+        const double W2 = cfg.physics.W0 * cfg.physics.W0;
+        double tdt_max = 0.0, D_min = std::numeric_limits<double>::infinity();
+        for (int c : cells) {
+            const double tdt = tau[static_cast<std::size_t>(c)] / dt;
+            tdt_max = std::max(tdt_max, tdt);
+            D_min = std::min(D_min, tdt + beta * plan.d_L);
+        }
+        const double lap_row = 4.0 * (at_least_1(1.0 / (cfg.grid.dx * cfg.grid.dx)) +
+                                      at_least_1(1.0 / (cfg.grid.dy * cfg.grid.dy)) +
+                                      at_least_1(1.0 / (cfg.grid.dz * cfg.grid.dz)));
+        const double a_max = *std::max_element(plan.step_a.begin(), plan.step_a.end());
+        const double b_max = *std::max_element(plan.step_b.begin(), plan.step_b.end());
+        const double step_gain = 1.0 + 2.0 * at_least_1(a_max) +
+                                 at_least_1(b_max) * at_least_1(2.0 / D_min) *
+                                     (1.0 + at_least_1(tdt_max) +
+                                      at_least_1(beta) * (at_least_1(W2 * W2) * lap_row * lap_row +
+                                                          at_least_1(4.0 * W2) * lap_row + 4.0));
+        const double gain =
+            2.0 * std::max(at_least_1(plan.s0) * at_least_1(2.0 / D_min), step_gain);
+        // z = 2^e x, e = ilogb(sqrt(rr)) (apply_willmore_preconditioner).
+        const double underflow =
+            kOperations * gain * std::ldexp(1.0, -126) * std::ldexp(1.0, std::ilogb(std::sqrt(rr)));
+
+        // zs[m] = z of P_m, zs[0] = x_0 = 0.
+        std::vector<std::vector<double>> zs(static_cast<std::size_t>(plan.degree) + 1,
+                                            std::vector<double>(solver.total_points(), 0.0));
+        double worst = 0.0;
+        int worst_step = 0;
+        for (int m = 1; m <= plan.degree; ++m) {
+            const auto mi = static_cast<std::size_t>(m);
+            ChebyshevPlan pm = plan;
+            pm.degree = m;
+            pm.step_a.resize(mi - 1);
+            pm.step_b.resize(mi - 1);
+            apply_willmore_preconditioner({WillmoreDomain{&solver, 0, 1, cfg.grid.Nx - 1, 1}}, pm,
+                                          rr, [](WillmoreBuffer) {});
+            zs[mi] = solver.willmore_download(V::Z);
+            const std::vector<double>& x = zs[mi - 1];
+            const std::vector<double>& x_prev = zs[m >= 2 ? mi - 2 : 0];
+            double a = 0.0, b = 0.0;
+            std::vector<double> t, lt, t_mag, lt_mag;
+            if (m >= 2) {
+                a = plan.step_a[mi - 2];
+                b = plan.step_b[mi - 2];
+                t = host_laplacian(cfg, x, false);
+                lt = host_laplacian(cfg, t, false);
+                t_mag = host_laplacian(cfg, x, true);
+                lt_mag = host_laplacian(cfg, t_mag, true);
+            }
+            int over = 0;
+            double step_worst = 0.0;
+            for (int c : cells) {
+                const auto i = static_cast<std::size_t>(c);
+                const double tdt = tau[i] / dt, D = tdt + beta * plan.d_L;
+                double expected = 0.0, bound = 0.0;
+                if (m == 1) {
+                    expected = plan.s0 * r[i] / D;
+                    bound = gamma_n(kFirstStepRoundings + 1) * std::fabs(plan.s0 * r[i]) / D;
+                } else {
+                    const double Ax =
+                        tdt * x[i] + beta * (W2 * W2 * lt[i] - 4.0 * W2 * t[i] + 4.0 * x[i]);
+                    expected = x[i] + a * (x[i] - x_prev[i]) + b * (r[i] - Ax) / D;
+                    const double Ax_mag =
+                        tdt * std::fabs(x[i]) +
+                        beta * (W2 * W2 * lt_mag[i] + 4.0 * W2 * t_mag[i] + 4.0 * std::fabs(x[i]));
+                    bound =
+                        gamma_n(kStepRoundings + 1) *
+                        (std::fabs(x[i]) + std::fabs(a) * (std::fabs(x[i]) + std::fabs(x_prev[i])) +
+                         std::fabs(b) * (std::fabs(r[i]) + Ax_mag) / D);
+                }
+                bound += underflow;
+                const double ratio = std::fabs(zs[mi][i] - expected) / bound;
+                if (!(ratio <= 1.0)) // NaN counts
+                    ++over;
+                step_worst = std::max(step_worst, ratio);
+            }
+            if (step_worst > worst) {
+                worst = step_worst;
+                worst_step = m;
+            }
+            if (over > 0) {
+                ADD_FAILURE() << "step " << m << " of degree " << plan.degree << ": " << over
+                              << " of " << cells.size()
+                              << " cells beyond the rounding bound, largest |z - step| / bound "
+                              << step_worst;
+                break;
+            }
+        }
+        std::printf("%-16s degree %2d  max over steps and cells of |z_m - step| / bound = %.3f "
+                    "(step %d)\n",
+                    cs.name.c_str(), plan.degree, worst, worst_step);
     }
 }
 
