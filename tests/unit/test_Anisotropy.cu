@@ -453,6 +453,9 @@ DivergenceRun run_divergence(int N, double L, double W0, double eps) {
                     static_cast<double>(field(x * h, y * h, z * h));
     DeviceField<double> d_phi(total), d_div(total), d_lap(total);
     d_phi.copy_from_host(phi.data());
+    // The kernel writes the interior cells only; the copies below read every cell.
+    d_div.zero_async();
+    d_lap.zero_async();
     KernelParams p{};
     p.Nx = p.Ny = p.Nz = N;
     p.dx = p.dy = p.dz = h;

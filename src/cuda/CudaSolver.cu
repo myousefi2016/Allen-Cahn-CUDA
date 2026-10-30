@@ -179,8 +179,13 @@ CudaSolver::CudaSolver(const SimulationConfig& config)
             f.flux = 0.0;
             f.gamma = 0.0;
         }
-        for (auto* f : {&w_tau_, &cg_x_, &cg_r_, &cg_z_, &cg_p_, &cg_Ap_, &cg_t_})
+        // Zeroed once, as the preconditioner fields below: the kernels write only the cells
+        // their operator reads, so the rest of a CG vector is never written, and a copy of
+        // the whole vector (willmore_download) would read undefined bytes.
+        for (auto* f : {&w_tau_, &cg_x_, &cg_r_, &cg_z_, &cg_p_, &cg_Ap_, &cg_t_}) {
             *f = DeviceField<double>(total_points_);
+            f->zero_async(compute_stream_);
+        }
         plane_dot_scratch_ = DeviceField<double>(static_cast<std::size_t>(config.grid.Nx));
         // Preconditioner fields. Zeroed once: their edge and corner ghost cells
         // are never written (no stencil reads them), so they stay defined.
