@@ -809,7 +809,7 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 
 | Suite             | Files | ctest tests |
 |-------------------|-------|-------------|
-| Unit tests        | 29    | 371         |
+| Unit tests        | 29    | 372         |
 | Integration tests | 8     | 17          |
 | End-to-end tests  | 11    | 11          |
 
@@ -857,7 +857,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_BoundaryConditions.cu`  | Dirichlet, Neumann, Periodic, Robin (also with a tiny denominator, at the edges of the double range, and its ghost factor as the Willmore solve uses it), per-face mixed, interior unchanged |
 | `test_Reduction.cu`           | Block-strided max-abs and max-abs-diff reductions; the fused change and magnitude reduction of the IMEX check (exact maxima, NaN and Inf reach both) |
 | `test_ThermalKernels.cu`      | Thermal diffusion + latent-heat coupling                                         |
-| `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, a Heun step equal bit for bit to the average of the state and two Euler steps, per-face BC end-to-end, NaN-propagating reductions |
+| `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, one Euler step against an independent long-double host reference of the discrete scheme at every cell and its 48 cubic symmetries (tolerances: forward rounding-error bounds), a Heun step equal bit for bit to the average of the state and two Euler steps, per-face BC end-to-end, NaN-propagating reductions |
 | `test_ImexJacobi.cu`          | IMEX thermal solve: error within 1e-10 of a long-double solution at s ≈ 17 (both stencils, every kind of u face, one GPU and three domains); NaN temperature and a tolerance below rounding throw; the stopping rule on the host, and whether its rounding message says a smaller dt can certify |
 | `test_StabilityLimitsGpu.cu`  | The solver's explicit updates have these limits: a mode decays at 0.99× and grows at 1.01× its limit (thermal: every scheme and stencil; phase field: the uniform liquid's 3-D, 1-D and 2-D checkerboards with and without the Willmore term and its uniform shift, a liquid with a ⟨111⟩ gradient, and the wave across a ⟨101⟩ gradient that binds with the Willmore term, which grows at 0.99× the limit the checkerboards gave) |
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer, no boundary cell (every face held at its own Dirichlet value) and no halo; `validate()` rejects exactly the splits the solver rejects; engine runs: the engine builds the multi-GPU solver (its log), an adaptive run, and the saturation guard at every step stops a three-domain run at the step of the single-GPU run when the solid reaches x_lo, x_hi or y_hi, each read by a different domain |
@@ -870,7 +870,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
-| `test_SphereRegression.cu`    | 50 Euler steps from a φ = 1 ball of radius 5 cells (32³, Dirichlet φ = −1, u = −0.8): the number of cells with φ > 0 changes, φ ends in [−1.5, 1.5] and u in (−10, 10), φ > 0 at the centre cell and φ < 0 at cell (0, 0, 0); 10 Heun steps from a radius-3 ball (16³) leave φ finite |
+| `test_SphereRegression.cu`    | Each of 50 Euler steps from a φ = 1 ball of radius 5 cells (32³, Dirichlet φ = −1, u = −0.8) equals the host reference of the discrete scheme at every cell, from the GPU's state before the step, within the forward rounding-error bound; 10 Heun steps from a radius-3 ball (16³) leave φ finite |
 | `test_EulerConvergence.cu`    | Forward Euler shows expected error reduction under dt refinement                 |
 | `test_EnergyConservation.cu`  | 100 Euler steps of a uniform liquid (16³, φ = −1, u = −0.8, Dirichlet at those values) leave φ within 0.01 of −1; after 20 Euler steps from a radius-3 ball, φ and u are finite and, if the mean of (φ + 1)/2 changed by at least 0.01, Σu changed in the same direction |
 | `test_SchemeComparison.cu`    | Euler, Heun and RK4 against RK4 at dt/16 (φ and u): RK4 < Heun < Euler at each dt, observed orders 1, 2, 4; at 3× the explicit thermal limit `validate()` rejects Euler, which overflows, and IMEX stays finite |

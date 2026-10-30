@@ -1,8 +1,10 @@
+#include "common/EulerReference.hpp"
 #include "common/Gpu.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <gtest/gtest.h>
@@ -11,6 +13,7 @@
 
 using namespace ac;
 using namespace ac::cuda;
+using ac::test::LD;
 
 class CudaSolverTest : public ::testing::Test {
 protected:
@@ -51,6 +54,55 @@ protected:
                     u(x, y, z) = (r < r0) ? 0.0 : -0.8;
                 }
     }
+
+    /// Equilibrium tanh seed of physical radius r0 centred at the domain midpoint (N - 1) / 2,
+    /// with u = -0.4 (1 - phi): 0 in the solid, -0.8 in the liquid. A cell's squared distance
+    /// from the centre, in cells, is a sum of three squares of multiples of 1/2. It is exact
+    /// in double whatever the order of the sum, so both fields are exactly invariant under the
+    /// 48 symmetries of the cube (axis permutations and reflections i -> N - 1 - i).
+    static void make_centred_seed(FieldData& phi, FieldData& u, int N, double h, double W0,
+                                  double r0) {
+        const double c = 0.5 * (N - 1);
+        for (int x = 0; x < N; ++x)
+            for (int y = 0; y < N; ++y)
+                for (int z = 0; z < N; ++z) {
+                    const double r2 = (x - c) * (x - c) + (y - c) * (y - c) + (z - c) * (z - c);
+                    const double p = -std::tanh((std::sqrt(r2) * h - r0) / (std::sqrt(2.0) * W0));
+                    phi(x, y, z) = p;
+                    u(x, y, z) = -0.4 * (1.0 - p);
+                }
+    }
+
+    /// One Euler step of make_config(16) (h = 0.4, eps = 0.05, dt = 0.001, zero-flux phi,
+    /// u = -0.8 on the walls) from make_centred_seed with r0 = 1.6 (4 cells). It holds the
+    /// seed, the GPU's fields after initialize() and the GPU's fields after the step.
+    struct OneEulerStep {
+        SimulationConfig cfg;
+        std::vector<double> seed_phi, seed_u, phi0, u0, phi1, u1;
+    };
+    OneEulerStep one_euler_step_from_centred_seed() {
+        const int N = 16;
+        OneEulerStep s;
+        s.cfg = make_config(N, TimeScheme::Euler);
+        s.cfg.validate();
+        Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
+        FieldData phi(grid, "phi"), u(grid, "u");
+        make_centred_seed(phi, u, N, s.cfg.grid.dx, s.cfg.physics.W0, 1.6);
+        s.seed_phi.assign(phi.data(), phi.data() + phi.size());
+        s.seed_u.assign(u.data(), u.data() + u.size());
+        CudaSolver solver(s.cfg);
+        solver.initialize(phi, u);
+        solver.copy_phi_to_host(phi);
+        solver.copy_u_to_host(u);
+        s.phi0.assign(phi.data(), phi.data() + phi.size());
+        s.u0.assign(u.data(), u.data() + u.size());
+        solver.step(s.cfg.time.dt);
+        solver.copy_phi_to_host(phi);
+        solver.copy_u_to_host(u);
+        s.phi1.assign(phi.data(), phi.data() + phi.size());
+        s.u1.assign(u.data(), u.data() + u.size());
+        return s;
+    }
 };
 
 // The solver checks the point count itself (it may be given an unvalidated config), before
@@ -66,26 +118,103 @@ TEST_F(CudaSolverTest, RejectsGridsBeyond32BitIndicesBeforeAllocating) {
     }
 }
 
-TEST_F(CudaSolverTest, EulerStepPreservesSymmetry) {
-    int N = 16;
-    auto cfg = make_config(N, TimeScheme::Euler);
-    CudaSolver solver(cfg);
-
-    Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
-    FieldData phi(grid, "phi"), u(grid, "u");
-    make_sphere_ic(phi, u, N);
-
-    solver.initialize(phi, u);
-    solver.step(0.001);
-    solver.copy_phi_to_host(phi);
-
-    // Check that solution is not all zeros (something happened)
-    double sum = 0.0;
+// One Euler step is the discrete scheme's step at every cell. The host reference
+// (common/EulerReference.hpp: the kernels' operators written independently, in long double)
+// starts from the GPU's fields after initialize(). It gives phi and u after the step to within
+// its bound, the sum of the forward rounding-error bounds of the GPU's and the reference's
+// arithmetic. The thermal reference takes the GPU's phi after the step, so each update is
+// checked on its own inputs. First, initialize() must hold the seed in the interior and the BCs
+// exactly: on every boundary cell a copy of the nearest interior cell (zero flux) for phi, and
+// u = -0.8. The comparison must also resolve the step: a step that left phi unchanged must miss
+// the reference by more than the bound somewhere, and so must a u update without the latent
+// heat (phi1 - phi0) / 2 (which needs |latent| > 2 B_u, since the correct u is itself within B_u).
+TEST_F(CudaSolverTest, EulerStepMatchesTheHostReference) {
+    const OneEulerStep s = one_euler_step_from_centred_seed();
+    const int N = s.cfg.grid.Nx;
+    const ac::test::EulerReference ref(s.cfg);
+    auto clamp = [N](int i) { return std::clamp(i, 1, N - 2); };
     for (int x = 0; x < N; ++x)
         for (int y = 0; y < N; ++y)
-            for (int z = 0; z < N; ++z)
-                sum += std::abs(phi(x, y, z));
-    EXPECT_GT(sum, 0.0);
+            for (int z = 0; z < N; ++z) {
+                const std::size_t c = ref.index(x, y, z);
+                ASSERT_EQ(s.phi0[c], s.seed_phi[ref.index(clamp(x), clamp(y), clamp(z))])
+                    << x << "," << y << "," << z;
+                ASSERT_EQ(s.u0[c], ref.is_boundary(x, y, z) ? -0.8 : s.seed_u[c])
+                    << x << "," << y << "," << z;
+            }
+
+    const auto phi_ref = ref.phi_step(s.phi0.data(), s.u0.data(), s.cfg.time.dt);
+    const auto u_ref = ref.u_step(s.u0.data(), s.phi0.data(), s.phi1.data(), s.cfg.time.dt);
+    LD phi_margin = -1.0L, latent_margin = -1.0L;
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z) {
+                const std::size_t c = ref.index(x, y, z);
+                ASSERT_LE(std::fabs(s.phi1[c] - phi_ref.value[c]), phi_ref.bound[c])
+                    << "phi at " << x << "," << y << "," << z << ": GPU " << s.phi1[c]
+                    << ", reference " << static_cast<double>(phi_ref.value[c]);
+                ASSERT_LE(std::fabs(s.u1[c] - u_ref.value[c]), u_ref.bound[c])
+                    << "u at " << x << "," << y << "," << z << ": GPU " << s.u1[c] << ", reference "
+                    << static_cast<double>(u_ref.value[c]);
+                phi_margin = std::max(phi_margin,
+                                      std::fabs(phi_ref.value[c] - s.phi0[c]) - phi_ref.bound[c]);
+                latent_margin =
+                    std::max(latent_margin, std::fabs(static_cast<LD>(s.phi1[c]) - s.phi0[c]) / 2 -
+                                                2 * u_ref.bound[c]);
+            }
+    EXPECT_GT(phi_margin, 0.0L) << "a step that leaves phi unchanged would pass";
+    EXPECT_GT(latent_margin, 0.0L) << "a u update without the latent heat would pass";
+}
+
+// One Euler step keeps the 48 symmetries of the cube. The seed is exactly invariant under them
+// (asserted), the BCs are the same on every face and the spacing is equal, so the exact step is
+// invariant too. The GPU's fields may then break a symmetry by no more than their distance from
+// the exact step at the two cells. Those distances are bounded by the host reference's bounds
+// (common/EulerReference.hpp): B_phi for phi, and B_u + B_phi / 2 for u (u's update adds half of
+// phi's). A step that leaves phi unchanged is symmetric too, so phi must also have moved by more
+// than the tolerance.
+TEST_F(CudaSolverTest, EulerStepPreservesSymmetry) {
+    const OneEulerStep s = one_euler_step_from_centred_seed();
+    const int N = s.cfg.grid.Nx;
+    const ac::test::EulerReference ref(s.cfg);
+    const auto phi_ref = ref.phi_step(s.phi0.data(), s.u0.data(), s.cfg.time.dt);
+    const auto u_ref = ref.u_step(s.u0.data(), s.phi0.data(), s.phi1.data(), s.cfg.time.dt);
+    std::vector<LD> u_bound(u_ref.bound.size(), 0.0L);
+    for (std::size_t i = 0; i < u_bound.size(); ++i)
+        u_bound[i] = u_ref.bound[i] + phi_ref.bound[i] / 2;
+
+    int perm[3] = {0, 1, 2};
+    int symmetries = 0;
+    do {
+        for (int mirror = 0; mirror < 8; ++mirror, ++symmetries)
+            for (int x = 0; x < N; ++x)
+                for (int y = 0; y < N; ++y)
+                    for (int z = 0; z < N; ++z) {
+                        const int p[3] = {x, y, z};
+                        int g[3];
+                        for (int d = 0; d < 3; ++d)
+                            g[d] = ((mirror >> d) & 1) ? N - 1 - p[perm[d]] : p[perm[d]];
+                        const std::size_t i = ref.index(x, y, z), j = ref.index(g[0], g[1], g[2]);
+                        ASSERT_EQ(s.phi0[i], s.phi0[j]) << "seed phi not symmetric";
+                        ASSERT_EQ(s.u0[i], s.u0[j]) << "seed u not symmetric";
+                        ASSERT_LE(std::fabs(static_cast<LD>(s.phi1[i]) - s.phi1[j]),
+                                  phi_ref.bound[i] + phi_ref.bound[j])
+                            << "phi at " << x << "," << y << "," << z << " vs " << g[0] << ","
+                            << g[1] << "," << g[2];
+                        ASSERT_LE(std::fabs(static_cast<LD>(s.u1[i]) - s.u1[j]),
+                                  u_bound[i] + u_bound[j])
+                            << "u at " << x << "," << y << "," << z << " vs " << g[0] << "," << g[1]
+                            << "," << g[2];
+                    }
+    } while (std::next_permutation(perm, perm + 3));
+    ASSERT_EQ(symmetries, 48);
+
+    LD moved = 0.0L, tolerance = 0.0L;
+    for (std::size_t i = 0; i < s.phi1.size(); ++i) {
+        moved = std::max(moved, std::fabs(static_cast<LD>(s.phi1[i]) - s.phi0[i]));
+        tolerance = std::max(tolerance, 2 * phi_ref.bound[i]);
+    }
+    EXPECT_GT(moved, tolerance) << "a step that leaves phi unchanged is symmetric too";
 }
 
 TEST_F(CudaSolverTest, HeunStepRuns) {
