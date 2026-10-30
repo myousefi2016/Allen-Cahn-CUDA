@@ -4,6 +4,7 @@
 #include "logging/Logger.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -106,6 +107,105 @@ TEST_F(CudaSolverTest, HeunStepRuns) {
             for (int z = 0; z < N; ++z)
                 sum += std::abs(phi(x, y, z));
     EXPECT_GT(sum, 0.0);
+}
+
+// A Heun step is the average of the state and two Euler steps from it
+// (CudaSolver::step_heun_stage1/2). With E the Euler step (Allen-Cahn update
+// and phi BC, then the thermal update with latent heat and u BC),
+//   y_{n+1} = BC(0.5 (y_n + E(E(y_n)))) = y_n + dt/2 (f(y_n) + f(E(y_n))).
+// The stages launch the kernels that step_euler launches, on the same
+// operands, so an Euler solver started from y_n reproduces E(y_n) and
+// E(E(y_n)) bit for bit. y_n and E(E(y_n)) satisfy the BCs: a zero-flux
+// Neumann phi cell holds the cell next to it inward + 0.0 * h, an exact copy
+// (an interior cell, or at edges and corners a boundary cell that an earlier
+// face of the Z, Y, X order already set), and Dirichlet u writes -0.8. So the
+// final BC leaves their average unchanged: a boundary cell's average is that
+// of the cell it copies, and 0.5 (v + v) = v. 0.5 (a + b) is one rounded sum
+// and an exact halving on the host and on the device alike, so the comparison
+// is exact. Two steps: the second starts from the state the first left in the
+// Heun solver.
+TEST_F(CudaSolverTest, HeunStepIsTheAverageOfTheStateAndTwoEulerSteps) {
+    const int N = 16;
+    const double h = 0.4, dt = 0.001;
+    Grid grid(Dim3{N, N, N}, Spacing{h, h, h});
+
+    // A diffuse seed, phi = -tanh((r - 2.4) / sqrt(2)) (W0 = 1), centred at
+    // (1.0, 3.0, 3.1) and cut by the x = 0 wall, with u from -0.8 in the liquid
+    // to 0 in the solid: every term of both updates is active, also next to
+    // the wall, where the stencils read the cells the zero-flux BC copies.
+    FieldData phi(grid, "phi"), u(grid, "u");
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z) {
+                const double rx = x * h - 1.0, ry = y * h - 3.0, rz = z * h - 3.1;
+                const double r = std::sqrt(rx * rx + ry * ry + rz * rz);
+                phi(x, y, z) = -std::tanh((r - 2.4) / std::sqrt(2.0));
+                u(x, y, z) = -0.4 * (1.0 - phi(x, y, z));
+            }
+    CudaSolver heun(make_config(N, TimeScheme::Heun));
+    heun.initialize(phi, u);
+    heun.copy_phi_to_host(phi); // y_0: the BCs applied
+    heun.copy_u_to_host(u);
+
+    // got == 0.5 (y + e2) in every cell, and that average differs from both y
+    // and e2 somewhere (else a missing average or a missing step would not
+    // change the result).
+    auto expect_average =
+        [&](const FieldData& got, const FieldData& y, const FieldData& e2, const char* field) {
+            std::size_t mismatches = 0, distinct = 0, first = 0;
+            for (std::size_t i = 0; i < got.size(); ++i) {
+                const double avg = 0.5 * (y.data()[i] + e2.data()[i]);
+                if (avg != y.data()[i] && avg != e2.data()[i])
+                    ++distinct;
+                if (got.data()[i] != avg && mismatches++ == 0)
+                    first = i;
+            }
+            const auto n = static_cast<std::size_t>(N);
+            EXPECT_EQ(mismatches, 0u)
+                << field << ": first at (" << first / (n * n) << ", " << first / n % n << ", "
+                << first % n << "): " << got.data()[first]
+                << " vs 0.5 (y + E(E(y))) = " << 0.5 * (y.data()[first] + e2.data()[first]);
+            EXPECT_GT(distinct, 0u) << field << ": E(E(y)) and y do not differ";
+        };
+
+    for (int step = 1; step <= 2; ++step) {
+        SCOPED_TRACE("step " + std::to_string(step));
+        FieldData e1_phi(grid, "e1_phi"), e2_phi(grid, "e2_phi"), e2_u(grid, "e2_u");
+        CudaSolver euler(make_config(N, TimeScheme::Euler));
+        euler.initialize(phi, u);
+        euler.step(dt);
+        euler.copy_phi_to_host(e1_phi);
+        euler.step(dt);
+        euler.copy_phi_to_host(e2_phi);
+        euler.copy_u_to_host(e2_u);
+
+        heun.step(dt);
+        FieldData h_phi(grid, "h_phi"), h_u(grid, "h_u");
+        heun.copy_phi_to_host(h_phi);
+        heun.copy_u_to_host(h_u);
+        expect_average(h_phi, phi, e2_phi, "phi");
+        expect_average(h_u, u, e2_u, "u");
+
+        // The corrector's phi depends on the predicted u: an Euler step from
+        // (phi of E(y_n), u_n) is the corrector reading u_n instead, and its
+        // average with phi_n differs from the reference somewhere, so such a
+        // corrector cannot pass the comparison above.
+        CudaSolver stale(make_config(N, TimeScheme::Euler));
+        stale.initialize(e1_phi, u);
+        stale.step(dt);
+        FieldData stale_phi(grid, "stale_phi");
+        stale.copy_phi_to_host(stale_phi);
+        std::size_t coupled = 0;
+        for (std::size_t i = 0; i < phi.size(); ++i) {
+            const double p = phi.data()[i];
+            if (0.5 * (p + stale_phi.data()[i]) != 0.5 * (p + e2_phi.data()[i]))
+                ++coupled;
+        }
+        EXPECT_GT(coupled, 0u);
+
+        phi = h_phi;
+        u = h_u;
+    }
 }
 
 TEST_F(CudaSolverTest, RK4StepIncludesLatentHeat) {

@@ -108,7 +108,9 @@ TEST_F(SphereRegressionTest, SphereEvolvesConsistently) {
     EXPECT_LT(phi(0, 0, 0), 0.0);
 }
 
-/// Test that the Heun scheme produces smoother evolution than Euler.
+/// Smoke test: 10 Heun steps at dt = 0.01 (accepted by validate()) leave phi finite.
+/// Heun's accuracy is tested by SchemeComparisonTest.HeunIntermediateAccuracy and
+/// CudaSolverTest.HeunStepIsTheAverageOfTheStateAndTwoEulerSteps.
 TEST_F(SphereRegressionTest, HeunSchemeRuns) {
     SimulationConfig cfg;
     cfg.grid.Nx = 16;

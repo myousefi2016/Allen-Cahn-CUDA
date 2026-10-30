@@ -4,6 +4,7 @@
 #include "logging/Logger.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -101,38 +102,77 @@ TEST_F(SchemeComparisonTest, RK4DiffersFromEuler) {
     EXPECT_LT(diff, 1.0);
 }
 
-// Test that Heun gives results between Euler and RK4 in terms of accuracy
+// The explicit schemes' accuracy on this problem, of orders 1 (Euler), 2
+// (Heun) and 4 (RK4) (docs/THEORY.md Appendix B). Each scheme runs to
+// T = 10 dt0, dt0 = 0.0005, in steps dt_k = dt0 / 2^k (k = 0, 1, 2; dividing
+// by a power of two is exact, so every run takes the same T), and its error is
+// the RMS difference of phi and of u from RK4 at dt0 / 16. For each field:
+//  - at every dt_k, err(RK4) < err(Heun) < err(Euler);
+//  - each scheme's observed order log2(err(dt_k) / err(dt_k+1)) lies within
+//    1/2 of its order q: nearer q than q - 1 or q + 1. The reference's own
+//    error, (1/4)^4 = 1/256 of RK4's at dt0 / 4 (the smallest error compared),
+//    changes an error ratio by at most a factor 257/255 (triangle
+//    inequality), an order by at most log2(257/255) < 0.012.
+// A Heun step without its average is two Euler steps: it integrates to 2T, so
+// its error does not shrink with dt (order about 0) and exceeds Euler's.
 TEST_F(SchemeComparisonTest, HeunIntermediateAccuracy) {
-    int N = 16;
-    int steps = 10;
-
+    constexpr int N = 16, steps0 = 10, levels = 3;
+    const double dt0 = 0.0005;
     Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
     FieldData phi0(grid, "phi"), u0(grid, "u");
     make_sphere_ic(phi0, u0, N);
 
-    auto run_scheme = [&](TimeScheme scheme) {
+    struct Fields {
+        FieldData phi, u;
+    };
+    // `scheme` to T = steps0 * dt0 in steps of dt0 / 2^k.
+    auto run = [&](TimeScheme scheme, int k) {
         auto cfg = make_config(N, scheme);
+        cfg.time.dt = dt0 / (1 << k);
         CudaSolver solver(cfg);
         solver.initialize(phi0, u0);
-        for (int s = 0; s < steps; ++s)
-            solver.step(0.0005);
-        FieldData result(grid, "result");
-        solver.copy_phi_to_host(result);
-        return result;
+        for (int s = 0; s < (steps0 << k); ++s)
+            solver.step(cfg.time.dt);
+        Fields out{FieldData(grid, "phi"), FieldData(grid, "u")};
+        solver.copy_phi_to_host(out.phi);
+        solver.copy_u_to_host(out.u);
+        return out;
     };
+    const Fields ref = run(TimeScheme::RK4, 4);
 
-    auto phi_euler = run_scheme(TimeScheme::Euler);
-    auto phi_heun = run_scheme(TimeScheme::Heun);
-    auto phi_rk4 = run_scheme(TimeScheme::RK4);
+    struct Scheme {
+        TimeScheme scheme;
+        const char* name;
+        int order;
+    };
+    const Scheme schemes[] = {{TimeScheme::Euler, "Euler", 1},
+                              {TimeScheme::Heun, "Heun", 2},
+                              {TimeScheme::RK4, "RK4", 4}};
+    double err[3][2][levels]; // [scheme][phi, u][k]
+    for (int s = 0; s < 3; ++s)
+        for (int k = 0; k < levels; ++k) {
+            const Fields run_k = run(schemes[s].scheme, k);
+            err[s][0][k] = compute_l2_diff(run_k.phi, ref.phi, N);
+            err[s][1][k] = compute_l2_diff(run_k.u, ref.u, N);
+        }
 
-    // All three should produce results in [-1, 1] range at center
-    auto center = [&](const FieldData& f) { return f(N / 2, N / 2, N / 2); };
-    EXPECT_GT(center(phi_euler), -1.5);
-    EXPECT_LT(center(phi_euler), 1.5);
-    EXPECT_GT(center(phi_heun), -1.5);
-    EXPECT_LT(center(phi_heun), 1.5);
-    EXPECT_GT(center(phi_rk4), -1.5);
-    EXPECT_LT(center(phi_rk4), 1.5);
+    const char* field[] = {"phi", "u"};
+    for (int f = 0; f < 2; ++f) {
+        for (int s = 0; s < 3; ++s) {
+            const double* e = err[s][f];
+            std::printf("%-3s %-5s RMS error %.3e %.3e %.3e, observed order %.3f %.3f\n", field[f],
+                        schemes[s].name, e[0], e[1], e[2], std::log2(e[0] / e[1]),
+                        std::log2(e[1] / e[2]));
+            for (int k = 0; k + 1 < levels; ++k)
+                EXPECT_NEAR(std::log2(e[k] / e[k + 1]), schemes[s].order, 0.5)
+                    << field[f] << " " << schemes[s].name << ", dt0/" << (1 << k) << " to dt0/"
+                    << (2 << k);
+        }
+        for (int k = 0; k < levels; ++k) {
+            EXPECT_LT(err[2][f][k], err[1][f][k]) << field[f] << " at dt0/" << (1 << k);
+            EXPECT_LT(err[1][f][k], err[0][f][k]) << field[f] << " at dt0/" << (1 << k);
+        }
+    }
 }
 
 // IMEX treats thermal diffusion implicitly. At dt = 0.04, h = 0.4, D = 2 the
