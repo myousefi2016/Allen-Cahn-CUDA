@@ -67,10 +67,13 @@ jobs:
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DAC_BUILD_TESTS=ON
 
-      - name: Run clang-tidy on C++ sources
+      # make lint: the .cpp and .hpp files of src/. Warnings do not fail it
+      # (WarningsAsErrors is empty in .clang-tidy); with bash -o pipefail an error
+      # of clang-tidy itself does, instead of tee's status passing it.
+      - name: Run clang-tidy on C++ sources (make lint)
+        shell: bash
         run: |
-          find src -type f -name '*.cpp' -o -name '*.hpp' \
-            | xargs clang-tidy -p build --warnings-as-errors='' 2>&1 \
+          make lint COMPILE_COMMANDS=build/compile_commands.json CLANG_TIDY=clang-tidy 2>&1 \
             | tee clang-tidy-output.txt
           if grep -q "warning:" clang-tidy-output.txt; then
             echo "::warning::clang-tidy found warnings (non-blocking)"

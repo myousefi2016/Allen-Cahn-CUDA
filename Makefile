@@ -547,7 +547,12 @@ k8s-logs: ## Show the logs of the simulation Job's pods (dev and prod namespaces
 # Utility Targets
 # ============================================================================
 
-lint: ## Run clang-tidy on the codebase
+# clang-tidy reads the compile commands of the C++ sources: the CUDA sources (.cu, .cuh)
+# are compiled by nvcc, whose flags it cannot read (unknown argument: '-rdc=true'), so it
+# checks the .cpp and .hpp files of src/, as ci.yml's clang-tidy job does by running this
+# target. Warnings do not fail it (WarningsAsErrors is empty in .clang-tidy); clang-tidy's
+# errors do. -p takes the directory of the compile commands.
+lint: ## Run clang-tidy on the C++ sources of src/ (the .cpp and .hpp files)
 	@if ! command -v $(CLANG_TIDY) >/dev/null 2>&1; then \
 		echo "ERROR: $(CLANG_TIDY) not found. Install clang-tidy to use this target."; \
 		exit 1; \
@@ -557,8 +562,8 @@ lint: ## Run clang-tidy on the codebase
 		$(MAKE) build-debug; \
 	fi
 	@echo "==> Running clang-tidy..."
-	find src -name '*.cpp' -o -name '*.cu' -o -name '*.cuh' -o -name '*.hpp' | \
-		xargs $(CLANG_TIDY) -p $(COMPILE_COMMANDS)
+	find src -type f \( -name '*.cpp' -o -name '*.hpp' \) | \
+		xargs $(CLANG_TIDY) -p $(dir $(COMPILE_COMMANDS))
 
 format: ## Run clang-format on all source files
 	@if ! command -v $(CLANG_FORMAT) >/dev/null 2>&1; then \

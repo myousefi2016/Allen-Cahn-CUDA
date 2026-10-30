@@ -525,7 +525,7 @@ CMake presets (see `CMakePresets.json`):
 | Job              | Runner          | What it does                                                              |
 |------------------|-----------------|---------------------------------------------------------------------------|
 | `format-check`   | `ubuntu-latest` | `clang-format-18 --dry-run --Werror` over the C++ and CUDA sources of `src/` and `tests/` |
-| `clang-tidy`     | `ubuntu-latest`, `nvidia/cuda:12.6.0-devel` container | Generates compile_commands and runs `clang-tidy-18` on the `.cpp` / `.hpp` files of `src/`; advisory: warnings do not fail it, and no job depends on it |
+| `clang-tidy`     | `ubuntu-latest`, `nvidia/cuda:12.6.0-devel` container | Generates compile_commands and runs `make lint`: `clang-tidy-18` on the `.cpp` / `.hpp` files of `src/`; advisory: warnings do not fail it (an error of clang-tidy itself does), and no job depends on it |
 | `build-and-test` | self-hosted GPU | Debug and Release with CUDA 12.6.0, configured with the README's command; the unit, integration and end-to-end tests with `AC_REQUIRE_GPU=1` |
 | `build-cpu-only` | `ubuntu-latest`, `nvidia/cuda:12.6.0-devel` container | Release build and every `ctest` test: the CPU tests run, the CUDA tests and the e2e tests that run a simulation are reported as Skipped |
 | `viz-smoke`      | `ubuntu-latest` | The visualizer's `--self-test` and `tests/visualize_smoke.py` (Xvfb), and the resume helper's and GPU-runner guard's tests |
