@@ -118,9 +118,10 @@ Lap(phi) = (14*sum_face + 3*sum_edge + 1*sum_corner - 128*phi_center) / (30*h^2)
 | Corner         | 8     | 1/30                 | 8/30  |
 | Center         | 1     | −128/30              | −128/30 |
 
-Consistency check: `84 + 36 + 8 = 128`. The configuration parser refuses
-the 27-point stencil when `dy` or `dz` differs from `dx` by more than 1e-14
-(`SimulationConfig::validate` in `SimulationConfig.cpp`).
+Consistency check: `84 + 36 + 8 = 128`. The configuration validator refuses
+the 27-point stencil unless `dy` and `dz` equal `dx` exactly
+(`SimulationConfig::validate` in `SimulationConfig.cpp`): the stencil takes `dx`
+for all three directions.
 
 ### 2.3 Gradient stencils
 

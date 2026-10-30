@@ -543,12 +543,14 @@ void SimulationConfig::validate() const {
             std::to_string(std::numeric_limits<int>::max()) + " that 32-bit cell indices support");
     }
 
-    // 27-point isotropic stencil requires cubic grid spacing
-    if (stencil == StencilType::Isotropic27Point) {
-        if (std::abs(grid.dx - grid.dy) > 1e-14 || std::abs(grid.dx - grid.dz) > 1e-14) {
-            throw std::invalid_argument(
-                "27-point isotropic stencil requires cubic grid spacing (dx == dy == dz)");
-        }
+    // The 27-point stencil takes one spacing, dx, for all three directions (laplacian_27pt,
+    // its IMEX Jacobi sweep, thermal_spectral_radius): any other dy or dz would be computed
+    // as if it were dx. An absolute tolerance (1e-14 before) depends on the length unit: it
+    // accepted a dy 2 % above dx = 0.4 * 2^-40 = 3.6e-13 (test_GridValidation).
+    if (stencil == StencilType::Isotropic27Point && (grid.dy != grid.dx || grid.dz != grid.dx)) {
+        throw std::invalid_argument(
+            "27-point stencil: dy = " + digits17(grid.dy) + " and dz = " + digits17(grid.dz) +
+            " must equal dx = " + digits17(grid.dx) + ": it uses dx for all three directions");
     }
 
     // Physics validation

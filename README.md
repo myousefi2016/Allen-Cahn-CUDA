@@ -807,7 +807,7 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 
 | Suite             | Files | ctest tests |
 |-------------------|-------|-------------|
-| Unit tests        | 29    | 356         |
+| Unit tests        | 29    | 361         |
 | Integration tests | 8     | 19          |
 | End-to-end tests  | 10    | 10          |
 

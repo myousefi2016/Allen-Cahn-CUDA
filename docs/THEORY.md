@@ -835,8 +835,9 @@ return (14.0 * face + 3.0 * edge + 1.0 * corner - 128.0 * center) / (30.0 * h * 
 ```
 
 The configuration validator refuses this stencil unless `dy` and `dz` equal
-`dx` to within 1e-14 (`SimulationConfig::validate` in `SimulationConfig.cpp`),
-since the 27-point isotropy assumes cubic spacing.
+`dx` exactly (`SimulationConfig::validate` in `SimulationConfig.cpp`): the
+stencil, and the IMEX Jacobi sweep with it, take `dx` for all three
+directions.
 
 ```mermaid
 graph TD
