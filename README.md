@@ -810,7 +810,7 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 | Suite             | Files | ctest tests |
 |-------------------|-------|-------------|
 | Unit tests        | 29    | 372         |
-| Integration tests | 8     | 17          |
+| Integration tests | 8     | 18          |
 | End-to-end tests  | 11    | 11          |
 
 ```bash
@@ -872,7 +872,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 |-------------------------------|----------------------------------------------------------------------------------|
 | `test_SphereRegression.cu`    | Each of 50 Euler steps from a φ = 1 ball of radius 5 cells (32³, Dirichlet φ = −1, u = −0.8) equals the host reference of the discrete scheme at every cell, from the GPU's state before the step, within the forward rounding-error bound; 10 Heun steps from a radius-3 ball (16³) leave φ finite |
 | `test_EulerConvergence.cu`    | Forward Euler shows expected error reduction under dt refinement                 |
-| `test_EnergyConservation.cu`  | 100 Euler steps of a uniform liquid (16³, φ = −1, u = −0.8, Dirichlet at those values) leave φ within 0.01 of −1; after 20 Euler steps from a radius-3 ball, φ and u are finite and, if the mean of (φ + 1)/2 changed by at least 0.01, Σu changed in the same direction |
+| `test_EnergyConservation.cu` | 100 Euler steps of the uniform liquid (16³, φ = −1, u = −0.8, Dirichlet at those values) leave φ and u bit for bit unchanged; each of 20 Euler steps from a radius-3 ball changes Σ(u − φ/2) over the interior by exactly the telescoped wall flux dt·D·Σ(ghost − adjacent)/h² (zero-flux u walls: 0; Dirichlet −0.8: conduction) within a rounding bound derived from the kernel's operations, and each of 20 IMEX steps (zero-flux u) conserves it within N·kJacobiTol plus rounding |
 | `test_SchemeComparison.cu`    | Euler, Heun and RK4 against RK4 at dt/16 (φ and u): RK4 < Heun < Euler at each dt, observed orders 1, 2, 4; at 3× the explicit thermal limit `validate()` rejects Euler, which overflows, and IMEX stays finite |
 | `test_CheckpointRestart.cu`   | Checkpoint at midpoint then restart matches uninterrupted run                    |
 | `test_StencilComparison.cu`   | The stencil option end to end: with φ the liquid fixed point, a Dirichlet sine mode of u decays by the selected stencil's exact eigenvalue (long-double reference within a derived rounding bound) in Euler, Heun, RK4 and IMEX, and the two stencils are told apart |
