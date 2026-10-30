@@ -52,6 +52,17 @@
 #       Synthesizes a tiny 24³ grid in /tmp, renders one frame, asserts
 #       the PNG is non-empty. Used by tests/visualize_smoke.py and CI.
 #
+# Exit status
+#   0  every frame rendered, or skipped as saturated with --skip-saturated, and the
+#      MP4 written if --make-video asked for one
+#   1  the self-test failed, or a dependency is missing
+#   2  invalid arguments, or no input directory
+#   3  no snapshot matches --pattern
+#   4  no frame rendered
+#   5  some frames could not be read (an empty or truncated .vts, one without phi or
+#      u, one of other dimensions) or rendered; the others, and their MP4, were written
+#   6  every frame rendered or skipped, but the requested MP4 was not written
+#
 # Dependencies (all in docker/Dockerfile.cuda-dev)
 #   pyvista>=0.44,<0.45   numpy>=1.26   imageio[ffmpeg]>=2.34   pillow
 #   matplotlib (transitive via pyvista)
@@ -72,6 +83,7 @@ import tempfile
 import time
 import warnings
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -219,6 +231,38 @@ class ScanResult:
         return self.saturated[idx] if idx is not None else None
 
 
+# The point arrays the binary writes in every frame (src/io/VTKWriter.cpp).
+FRAME_FIELDS = ("phi", "u")
+
+
+def read_frame(path: Path) -> Tuple[Optional["pv.DataSet"], str]:
+    """The snapshot at `path`, or None and why it is not a frame as the binary writes it.
+
+    pv.read raises for none of the damage a frame can take: a 0-byte file, or one cut
+    inside its XML header or anywhere in its compressed appended data, reads as an empty
+    grid (0 points, dimensions (0, 0, 0)), and VTK reports its XML errors only as error
+    events. So the read runs under VtkErrorCatcher, and the grid must have points, as
+    many as its dimensions give, and phi and u with one value per point.
+    """
+    try:
+        with pv.VtkErrorCatcher(raise_errors=True):
+            grid = pv.read(str(path))
+    except Exception as exc:
+        first = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        return None, f"cannot be read ({first[:200]})"
+    n = int(grid.n_points)
+    dims = tuple(int(v) for v in grid.dimensions)
+    if n == 0 or n != dims[0] * dims[1] * dims[2]:
+        return None, (f"holds {n} points for dimensions {dims} (an empty or truncated "
+                      f"file reads that way)")
+    for name in FRAME_FIELDS:
+        if name not in grid.point_data:
+            return None, f"has no '{name}' point data"
+        if len(grid.point_data[name]) != n:
+            return None, f"has {len(grid.point_data[name])} '{name}' values for {n} points"
+    return grid, ""
+
+
 def compute_global_scan(frames: Sequence[Path],
                         max_scan: Optional[int] = None,
                         sat_threshold: float = DEFAULT_SATURATION_THRESHOLD,
@@ -245,10 +289,9 @@ def compute_global_scan(frames: Sequence[Path],
         if progress and i % max(1, n_total // 20) == 0:
             sys.stdout.write(f"    prescan [{i + 1}/{n_total}] {f.name}\r")
             sys.stdout.flush()
-        try:
-            grid = pv.read(str(f))
-        except Exception as exc:
-            sys.stderr.write(f"\nWARN: prescan failed to read {f}: {exc}\n")
+        grid, why = read_frame(f)
+        if grid is None:
+            sys.stderr.write(f"\nWARN: prescan skips {f.name}: it {why}\n")
             continue
 
         step = natural_step(str(f))
@@ -903,28 +946,37 @@ class RenderConfig:
     saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD
 
 
+class FrameResult(Enum):
+    RENDERED = "rendered"
+    SKIPPED = "skipped"  # saturated, with --skip-saturated
+    FAILED = "failed"    # not a readable frame of the run's grid, or rendering failed
+
+
 def render_frame(frame_path: Path,
                  png_path: Path,
                  scan: ScanResult,
                  cfg: RenderConfig,
                  index: int,
-                 total: int) -> bool:
-    """Render one .vts snapshot to PNG. Returns True on success / non-skip."""
-    try:
-        grid = pv.read(str(frame_path))
-    except Exception as exc:
-        sys.stderr.write(f"ERROR reading {frame_path}: {exc}\n")
-        return False
+                 total: int) -> FrameResult:
+    """Render one .vts snapshot to PNG."""
+    grid, why = read_frame(frame_path)
+    if grid is None:
+        sys.stderr.write(f"ERROR: {frame_path} {why} — not rendered\n")
+        return FrameResult.FAILED
+    dims = tuple(int(v) for v in grid.dimensions)
+    if scan.grid_dims[0] and dims != scan.grid_dims:
+        sys.stderr.write(f"ERROR: {frame_path} has dimensions {dims}, the other frames "
+                         f"{scan.grid_dims} — not rendered\n")
+        return FrameResult.FAILED
 
-    for field_name in ("phi", "u"):
-        if field_name in grid.point_data:
-            arr = np.asarray(grid.point_data[field_name])
-            if not np.all(np.isfinite(arr)):
-                n_bad = int(np.count_nonzero(~np.isfinite(arr)))
-                sys.stderr.write(
-                    f"WARN: {frame_path.name} has {n_bad} NaN/Inf in {field_name} "
-                    f"— replacing with 0 for rendering\n")
-                grid.point_data[field_name] = np.where(np.isfinite(arr), arr, 0.0)
+    for field_name in FRAME_FIELDS:
+        arr = np.asarray(grid.point_data[field_name])
+        if not np.all(np.isfinite(arr)):
+            n_bad = int(np.count_nonzero(~np.isfinite(arr)))
+            sys.stderr.write(
+                f"WARN: {frame_path.name} has {n_bad} NaN/Inf in {field_name} "
+                f"— replacing with 0 for rendering\n")
+            grid.point_data[field_name] = np.where(np.isfinite(arr), arr, 0.0)
 
     step = natural_step(str(frame_path))
     # Use prescan result (computed with the user's --saturation-threshold)
@@ -933,8 +985,31 @@ def render_frame(frame_path: Path,
     if saturated and cfg.skip_saturated:
         sys.stdout.write(f"    [{index + 1:>4}/{total}] step={step:<7} "
                          f"-> SKIPPED (saturated)\n")
-        return False
+        return FrameResult.SKIPPED
 
+    # A frame that cannot be rendered or written is reported and counted (main's exit
+    # status), and the remaining frames are still rendered.
+    try:
+        try:
+            out = _compose_frame(grid, step, scan, cfg, index, total, saturated)
+        except Exception as exc:
+            sys.stderr.write(f"ERROR rendering {frame_path}: {type(exc).__name__}: {exc}\n")
+            return FrameResult.FAILED
+        try:
+            png_path.parent.mkdir(parents=True, exist_ok=True)
+            out.convert("RGB").save(str(png_path), format="PNG", optimize=True)
+        except Exception as exc:
+            sys.stderr.write(f"ERROR writing {png_path}: {exc}\n")
+            return FrameResult.FAILED
+    finally:
+        del grid
+        gc.collect()
+    return FrameResult.RENDERED
+
+
+def _compose_frame(grid: "pv.DataSet", step: int, scan: ScanResult, cfg: RenderConfig,
+                   index: int, total: int, saturated: bool) -> "Image.Image":
+    """The rendered image of one frame in cfg's layout."""
     title = (f"Allen-Cahn dendrite\n"
              f"step = {step}   frame {index + 1}/{total}\n"
              f"grid {grid.dimensions[0]}×{grid.dimensions[1]}×{grid.dimensions[2]}")
@@ -999,36 +1074,28 @@ def render_frame(frame_path: Path,
 
         out = compose_panels_layout(main, phi_panel, u_panel, sidebar,
                                     (W, H), saturated)
-
-    png_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        out.convert("RGB").save(str(png_path), format="PNG", optimize=True)
-    except Exception as exc:
-        sys.stderr.write(f"ERROR writing {png_path}: {exc}\n")
-        return False
-    finally:
-        del grid
-        gc.collect()
-    return True
+    return out
 
 
 # ── Video stitching ──────────────────────────────────────────────────────────
 
-def stitch_video(png_paths: List[Path], mp4_path: Path, fps: int) -> None:
+def stitch_video(png_paths: List[Path], mp4_path: Path, fps: int) -> bool:
+    """Write png_paths as an MP4. True when every frame was appended, the writer
+    closed without an error, and mp4_path is a non-empty file."""
     try:
         import imageio.v2 as imageio
     except ImportError as exc:  # pragma: no cover
         sys.stderr.write(
-            "WARN: imageio not installed — cannot create video. "
+            "ERROR: imageio not installed — cannot create video. "
             "Install with: pip install 'imageio[ffmpeg]'\n"
         )
-        return
+        return False
     if not png_paths:
-        sys.stderr.write("WARN: no PNGs — skipping video stitching\n")
-        return
-    mp4_path.parent.mkdir(parents=True, exist_ok=True)
+        sys.stderr.write("ERROR: no PNGs — no video to stitch\n")
+        return False
     sys.stdout.write(f"==> Stitching {len(png_paths)} frames -> {mp4_path} @ {fps} fps\n")
     try:
+        mp4_path.parent.mkdir(parents=True, exist_ok=True)
         writer = imageio.get_writer(
             str(mp4_path),
             fps=fps,
@@ -1042,14 +1109,24 @@ def stitch_video(png_paths: List[Path], mp4_path: Path, fps: int) -> None:
             f"ERROR: failed to initialize video writer ({exc}). "
             "Ensure ffmpeg is installed and libx264 codec is available.\n"
         )
-        return
+        return False
+    ok = True
     try:
         for p in png_paths:
             writer.append_data(imageio.imread(str(p)))
     except Exception as exc:
         sys.stderr.write(f"ERROR: video encoding failed at {p}: {exc}\n")
+        ok = False
     finally:
-        writer.close()
+        try:
+            writer.close()
+        except Exception as exc:
+            sys.stderr.write(f"ERROR: closing the video writer of {mp4_path} failed: {exc}\n")
+            ok = False
+    if ok and not (mp4_path.is_file() and mp4_path.stat().st_size > 0):
+        sys.stderr.write(f"ERROR: {mp4_path} was not written\n")
+        ok = False
+    return ok
 
 
 # ── Self-test (used by tests/visualize_smoke.py and CI) ──────────────────────
@@ -1122,10 +1199,10 @@ def run_self_test(workdir: Optional[Path] = None) -> int:
         skip_saturated=False,
     )
     png = out_dir / "frame_000000.png"
-    ok = render_frame(frames[0], png, scan, cfg, index=0, total=1)
-    if not ok or not png.exists() or png.stat().st_size < 5_000:
+    result = render_frame(frames[0], png, scan, cfg, index=0, total=1)
+    if result is not FrameResult.RENDERED or not png.exists() or png.stat().st_size < 5_000:
         sys.stderr.write(
-            f"ERROR: self-test render failed (ok={ok}, "
+            f"ERROR: self-test render failed (result={result.value}, "
             f"exists={png.exists()}, "
             f"size={png.stat().st_size if png.exists() else 0})\n"
         )
@@ -1363,6 +1440,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     png_paths: List[Path] = []
     ok = 0
+    failed: List[str] = []
     for i, f in enumerate(frames):
         step = natural_step(str(f))
         png = out_dir / f"frame_{step:06d}.png"
@@ -1373,8 +1451,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         # run's image behind under this step's name.
         png.unlink(missing_ok=True)
         t_frame = time.perf_counter()
-        success = render_frame(f, png, scan, cfg, index=i, total=len(frames))
-        if success:
+        result = render_frame(f, png, scan, cfg, index=i, total=len(frames))
+        if result is FrameResult.FAILED:
+            failed.append(f.name)
+        elif result is FrameResult.RENDERED:
             ok += 1
             png_paths.append(png)
             if not args.quiet:
@@ -1399,10 +1479,21 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ── Optional video stitching ─────────────────────────────────────────
     # png_paths holds only frames rendered from this run's snapshots.
+    video_ok = True
     if args.make_video and png_paths:
-        stitch_video(png_paths, out_dir / args.video_name, args.fps)
+        video_ok = stitch_video(png_paths, out_dir / args.video_name, args.fps)
 
-    return 0 if ok > 0 else 4
+    # Exit status: see the header. A frame skipped as saturated is not a failure.
+    if ok == 0:
+        return 4
+    if failed:
+        shown = ", ".join(failed[:5]) + (", ..." if len(failed) > 5 else "")
+        sys.stderr.write(f"ERROR: {len(failed)} of {len(frames)} frame(s) could not be read "
+                         f"or rendered: {shown}\n")
+        return 5
+    if not video_ok:
+        return 6
+    return 0
 
 
 if __name__ == "__main__":

@@ -19,6 +19,11 @@
 #      header that ffprobe could read — we just check size)
 #   7. Rendering a second simulation into a reused output dir never keeps
 #      or stitches frames rendered from the first simulation
+#   8. Frames that are not snapshots as the binary writes them (0 bytes, cut
+#      in their compressed data, without u, of other dimensions; the first
+#      one among them) are skipped, kept out of the time series, and make the
+#      CLI exit 5 after rendering and stitching the intact frames
+#   9. An MP4 that cannot be written makes the CLI exit 6
 #
 # Used by the Makefile target `make cuda-visualize-self-test`. Designed to
 # run inside the cuda-dev image with no GPU and no real .vts files.
@@ -88,6 +93,30 @@ def _make_tmp_grid(tmpdir: Path, *, n: int, dx: float,
 
     out = in_dir / name
     grid.save(str(out))
+    return out
+
+
+def _write_like_the_binary(tmpdir: Path, *, n: int, dx: float, r0: float, name: str,
+                           fields: tuple = ("phi", "u")) -> Path:
+    """A synthetic frame written as the binary writes it (src/io/VTKWriter.cpp:
+    vtkXMLStructuredGridWriter with its defaults, appended zlib-compressed data),
+    with the point arrays `fields`."""
+    import vtk
+    in_dir = tmpdir / "out"
+    in_dir.mkdir(parents=True, exist_ok=True)
+    (X, Y, Z), phi, u = _synthetic_fields(n=n, dx=dx, r0=r0)
+    grid = pv.StructuredGrid()
+    grid.points = np.column_stack([X.ravel(order="F"), Y.ravel(order="F"),
+                                   Z.ravel(order="F")])
+    grid.dimensions = [n, n, n]
+    for f, values in (("phi", phi), ("u", u)):
+        if f in fields:
+            grid.point_data[f] = values.ravel(order="F")
+    out = in_dir / name
+    writer = vtk.vtkXMLStructuredGridWriter()
+    writer.SetFileName(str(out))
+    writer.SetInputData(grid)
+    _assert(writer.Write() == 1, f"could not write {out}")
     return out
 
 
@@ -218,8 +247,9 @@ def main() -> int:
             skip_saturated=False,
         )
         png_p = out_panels / "frame_panels.png"
-        ok = viz.render_frame(frames[0], png_p, scan, cfg_p, index=0, total=1)
-        _assert(ok, "render_frame (panels) returned False")
+        res = viz.render_frame(frames[0], png_p, scan, cfg_p, index=0, total=1)
+        _assert(res is viz.FrameResult.RENDERED,
+                f"render_frame (panels) returned {res.value}, not rendered")
         _check_png(png_p, "panels-layout PNG", expected_size=(960, 540))
 
         # ── 5. Render: single layout ───────────────────────────────────
@@ -239,8 +269,9 @@ def main() -> int:
             skip_saturated=False,
         )
         png_s = out_single / "frame_single.png"
-        ok = viz.render_frame(frames[0], png_s, scan, cfg_s, index=0, total=1)
-        _assert(ok, "render_frame (single) returned False")
+        res = viz.render_frame(frames[0], png_s, scan, cfg_s, index=0, total=1)
+        _assert(res is viz.FrameResult.RENDERED,
+                f"render_frame (single) returned {res.value}, not rendered")
         _check_png(png_s, "single-layout PNG", expected_size=(800, 600))
 
         # ── 6. Skip-saturated guard ────────────────────────────────────
@@ -261,9 +292,10 @@ def main() -> int:
         )
         skip_dst = tmpdir / "viz_skip" / "should_not_exist.png"
         skip_dst.parent.mkdir(parents=True, exist_ok=True)
-        ok = viz.render_frame(sat_frames[0], skip_dst, sat_scan, cfg_skip,
-                              index=0, total=1)
-        _assert(not ok, "skip_saturated did not skip the saturated frame")
+        res = viz.render_frame(sat_frames[0], skip_dst, sat_scan, cfg_skip,
+                               index=0, total=1)
+        _assert(res is viz.FrameResult.SKIPPED,
+                f"skip_saturated returned {res.value} for the saturated frame, not skipped")
         _assert(not skip_dst.exists(),
                 "skip_saturated wrote a PNG when it shouldn't have")
         sys.stdout.write("  PASS  --skip-saturated correctly drops saturated frame\n")
@@ -314,7 +346,7 @@ def main() -> int:
             Image.fromarray(arr).save(videodir / f"frame_{i:06d}.png")
         png_paths = sorted(videodir.glob("frame_*.png"))
         mp4 = videodir / "movie.mp4"
-        viz.stitch_video(png_paths, mp4, fps=4)
+        _assert(viz.stitch_video(png_paths, mp4, fps=4), "stitch_video reported a failure")
         _assert(mp4.exists(), "MP4 was not produced")
         _assert(mp4.stat().st_size > 1_000,
                 f"MP4 suspiciously small: {mp4.stat().st_size} bytes")
@@ -376,6 +408,64 @@ def main() -> int:
                 "(simulation B's step 0 only)")
         sys.stdout.write("  PASS  re-run into reused output dir renders "
                          "current input only (no stale frames)\n")
+
+        # ── 10. Frames that are not intact snapshots ───────────────────
+        # pv.read raises for none of them: a 0-byte file and one cut inside
+        # its compressed appended data read as an empty grid. Step 0 is the
+        # 0-byte file, so it must not set the scan's grid dimensions either.
+        run_d = tmpdir / "damaged"
+        good = {}
+        for step in (10, 30):
+            good[step] = _write_like_the_binary(run_d, n=24, dx=0.5, r0=2.0 + step / 10,
+                                                name=f"output_{step}.vts")
+        (run_d / "out" / "output_0.vts").write_bytes(b"")
+        whole = _write_like_the_binary(run_d, n=24, dx=0.5, r0=3.0,
+                                       name="output_20.vts").read_bytes()
+        (run_d / "out" / "output_20.vts").write_bytes(whole[: len(whole) // 2])
+        _write_like_the_binary(run_d, n=24, dx=0.5, r0=3.0, name="output_40.vts",
+                               fields=("phi",))
+        _write_like_the_binary(run_d, n=16, dx=0.5, r0=3.0, name="output_50.vts")
+        out_d = tmpdir / "viz_damaged"
+        scan_d = out_d / "scan.json"
+        proc = subprocess.run([
+            sys.executable, str(cli_path),
+            "--input-dir", str(run_d / "out"), "--output-dir", str(out_d),
+            "--layout", "single", "--window-size", "320", "240", "--no-silhouette",
+            "--make-video", "--fps", "4", "--scan-json", str(scan_d), "--quiet",
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        _assert(proc.returncode == 5,
+                f"CLI with damaged frames rc={proc.returncode}, expected 5\n{proc.stderr[-2000:]}")
+        _assert(sorted(p.name for p in out_d.glob("frame_*.png"))
+                == ["frame_000010.png", "frame_000030.png"],
+                f"rendered {sorted(p.name for p in out_d.glob('frame_*.png'))}, expected "
+                "the intact steps 10 and 30 only")
+        n_video = sum(1 for _ in imageio.get_reader(str(out_d / "dendrite.mp4")))
+        _assert(n_video == 2, f"the MP4 has {n_video} frames, expected the 2 intact ones")
+        payload = json.loads(scan_d.read_text())
+        _assert(payload["steps"] == [10, 30],
+                f"scan steps {payload['steps']}, expected [10, 30]")
+        _assert(payload["grid_dims"] == [24, 24, 24],
+                f"scan grid_dims {payload['grid_dims']}, expected [24, 24, 24]")
+        for name in ("output_0.vts", "output_20.vts", "output_40.vts", "output_50.vts"):
+            _assert(f"{name} " in proc.stderr or f"{name}:" in proc.stderr,
+                    f"no message names {name}")
+        _assert("4 of 6 frame(s) could not be read or rendered" in proc.stderr,
+                "the closing error does not count the 4 damaged frames")
+        sys.stdout.write("  PASS  damaged frames skipped (0-byte, truncated, no u, other "
+                         "dimensions); intact frames rendered and stitched; exit 5\n")
+
+        # ── 11. An MP4 that cannot be written ──────────────────────────
+        out_v = tmpdir / "viz_novideo"
+        (out_v / "blocked.mp4").mkdir(parents=True)
+        rc = subprocess.call([
+            sys.executable, str(cli_path),
+            "--input-dir", str(run_d / "out"), "--output-dir", str(out_v),
+            "--layout", "single", "--window-size", "320", "240", "--no-silhouette",
+            "--make-video", "--fps", "4", "--video-name", "blocked.mp4", "--limit", "0",
+            "--quiet", "--pattern", "output_[13]0.vts",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _assert(rc == 6, f"CLI whose MP4 path is a directory rc={rc}, expected 6")
+        sys.stdout.write("  PASS  an MP4 that cannot be written exits 6\n")
 
         sys.stdout.write("==> visualize_smoke: ALL CHECKS PASSED\n")
         return 0

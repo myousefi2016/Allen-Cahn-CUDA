@@ -490,6 +490,13 @@ steps (`saturation_check_freq`), so a run it stops early ends on one of
 these steps. A snapshot that `--skip-saturated` drops has no frame and
 is not in the video.
 
+A snapshot that is not one as the binary writes it (0 bytes, cut short,
+without `phi` or `u`, or of other dimensions than the rest) is skipped with
+an error naming it and kept out of the time series; the other frames and
+their video are still written, and the script exits 5. It exits 6 when the
+requested video could not be written, so `make cuda-visualize` fails in
+both cases (exit codes: the header of `scripts/visualize_dendrite.py`).
+
 ### Common overrides
 
 ```bash
@@ -518,8 +525,8 @@ make cuda-visualize VIZ_PHI_CMAP=RdBu_r VIZ_U_CMAP=inferno
 
 The visualizer ships a smoke test that synthesizes a 24³ structured grid
 and exercises every code path (prescan, render, saturation guard,
-scan-JSON dump, MP4 stitching). Runs in < 10 s with no GPU and no real
-`.vts` data:
+scan-JSON dump, MP4 stitching, damaged snapshots, a video that cannot be
+written). Runs with no GPU and no real `.vts` data:
 
 ```bash
 make cuda-visualize-self-test     # in-image smoke test
