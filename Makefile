@@ -44,7 +44,9 @@ NATIVE_BIN         ?= $(CUDA_BUILD_DIR)/src/allen-cahn-cuda
 CONFIG             ?= config/benchmark_small.json
 # Parents of the directories of the repository's config/<name>.json and the
 # generated config/run_vtk.json (out/<name>, checkpoints/<name>): created
-# before a run, chowned after it, removed by cuda-clean. The binary writes
+# before a run, chowned to the calling user by cuda-build, which every run
+# depends on (the run, as that user, could not write into what a root container
+# left there), removed by cuda-clean. The binary writes
 # where the configuration's output.output_dir and checkpoint.checkpoint_dir
 # say; every run needs its own checkpoint_dir.
 OUT_DIR            ?= out
@@ -84,7 +86,8 @@ CUDA_DEV_IMAGE        ?= allen-cahn-cuda-dev:local
 CUDA_DEV_DOCKERFILE   ?= docker/Dockerfile.cuda-dev
 
 # Host UID/GID — used to chown build artefacts back to the caller so that
-# subsequent `rm -rf build` from the host (non-root) shell succeeds.
+# subsequent `rm -rf build` from the host (non-root) shell succeeds, and to run
+# the simulation as the caller (CUDA_DOCKER_RUN_SIM).
 HOST_UID           := $(shell id -u)
 HOST_GID           := $(shell id -g)
 
@@ -93,8 +96,17 @@ CUDA_DOCKER_RUN    = docker run --rm --gpus all -v $$PWD:/work -w /work $(CUDA_D
 CUDA_DOCKER_RUN_IT = docker run --rm -it --gpus all -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
 # No-GPU variant used by cuda-clean (no CUDA runtime required, just filesystem ops)
 CUDA_DOCKER_RUN_FS = docker run --rm -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
+# Simulation runs: the binary is the container's main process (the image's entrypoint
+# execs its command), so SIGINT / SIGTERM (Ctrl-C, `docker stop`) reach its handlers,
+# which write a checkpoint of the current step and exit 130 / 143; it runs as the host
+# user, so the files it writes need no chown. (Wrapped in `bash -c '...; chown'`, bash was
+# PID 1 and passed neither signal on: Ctrl-C left the run going, `docker stop` killed it
+# after its grace period, without a checkpoint either way.)
+CUDA_DOCKER_RUN_SIM = docker run --rm --gpus all --user $(HOST_UID):$(HOST_GID) \
+  -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
 
-# Chown build artefacts back to the host user at the end of every docker job.
+# Chown build artefacts back to the host user at the end of every docker job that runs
+# as root (build, tests, visualization).
 CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
   $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_ROOT) $(VIZ_OUT) 2>/dev/null || true
 
@@ -265,8 +277,7 @@ cuda-test-e2e: cuda-build ## (docker) Run the end-to-end tests (the real binary,
 cuda-run: cuda-build ## (docker) Run simulation with CONFIG=<path> inside CUDA container
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
 	@echo "==> Running ./$(NATIVE_BIN) $(CONFIG) (inside container)"
-	$(CUDA_DOCKER_RUN) bash -c './$(NATIVE_BIN) $(CONFIG); \
-	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $(CONFIG)
 
 cuda-run-small: CONFIG=config/benchmark_small.json
 cuda-run-small: cuda-run ## (docker) 128^3 quick benchmark -> raw output
@@ -324,8 +335,7 @@ cuda-run-dendrite-long: cuda-build ## (docker) Long 192^3 dendrite run (eps=0.15
 	@echo "    Watch progress (nohup mode):   make cuda-watch-dendrite"
 	@echo "    Status check:                  make cuda-status-dendrite"
 	@echo ""
-	$(CUDA_DOCKER_RUN) bash -c './$(NATIVE_BIN) $(LONG_CONFIG); \
-	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $(LONG_CONFIG)
 
 cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest intact checkpoint (cold start if none)
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
@@ -338,8 +348,7 @@ cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest int
 	    exit 1;; \
 	  esac; \
 	  echo "==> Resuming with $$RESUME_CFG"; \
-	  $(CUDA_DOCKER_RUN) bash -c "./$(NATIVE_BIN) $$RESUME_CFG; \
-	    rc_run=\$$?; $(CUDA_CHOWN); exit \$$rc_run"; \
+	  $(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $$RESUME_CFG; \
 	elif [ $$rc_helper -eq 1 ]; then \
 	  echo "==> No usable checkpoint found — falling back to cold start with $(LONG_CONFIG)"; \
 	  $(MAKE) cuda-run-dendrite-long; \
@@ -364,8 +373,7 @@ cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run until saturat
 	@echo "       nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &"
 	@echo "    Resume: make cuda-resume-dendrite-large"
 	@echo ""
-	$(CUDA_DOCKER_RUN) bash -c './$(NATIVE_BIN) $(LARGE_CONFIG); \
-	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $(LARGE_CONFIG)
 
 cuda-resume-dendrite-large: cuda-build ## (docker) Resume the large run from latest checkpoint
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
@@ -378,8 +386,7 @@ cuda-resume-dendrite-large: cuda-build ## (docker) Resume the large run from lat
 	    exit 1;; \
 	  esac; \
 	  echo "==> Resuming with $$RESUME_CFG"; \
-	  $(CUDA_DOCKER_RUN) bash -c "./$(NATIVE_BIN) $$RESUME_CFG; \
-	    rc_run=\$$?; $(CUDA_CHOWN); exit \$$rc_run"; \
+	  $(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $$RESUME_CFG; \
 	elif [ $$rc_helper -eq 1 ]; then \
 	  echo "==> No usable checkpoint found — falling back to cold start with $(LARGE_CONFIG)"; \
 	  $(MAKE) cuda-run-dendrite-large; \

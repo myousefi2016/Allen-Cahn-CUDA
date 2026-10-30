@@ -45,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
-- **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and six end-to-end tests (four of the binary, two of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and seven end-to-end tests (four of the binary, three of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions matrix for Debug/Release, clang-format and clang-tidy gates, K8s manifest validation via `kubeconform` (offline), Docker multi-target build, and self-hosted GPU runner job.
@@ -375,6 +375,14 @@ make cuda-resume-dendrite         # resumes from the newest checkpoint the binar
 # ./out/run_dendrite_long/*.vts -> ./viz/run_dendrite_long/*.png + dendrite.mp4
 make cuda-visualize VIZ_IN=out/run_dendrite_long VIZ_EXTRA_ARGS="--skip-saturated"
 ```
+
+Ctrl-C, or `docker stop` on the run's container, makes the binary write a
+checkpoint of the step it is at and exit 130 (143): the `cuda-run*` and
+`cuda-resume-*` targets run it as the container's main process, as your user,
+so the signal reaches its handlers and the files it writes are yours. Press
+Ctrl-C once. At the third press the docker client returns at once, while the
+container still finishes that checkpoint and then exits (`docker ps` lists it
+until then); wait for it before resuming.
 
 The resume mechanism is implemented in `scripts/resume_from_latest_checkpoint.py`,
 which is idempotent and safe to invoke repeatedly. It restarts from the
@@ -754,9 +762,9 @@ required) — see `.github/workflows/ci.yml`.
 
 The suite has three `ctest` groups, selectable with `-R "^unit[.]"`,
 `-R "^integration[.]"` and `-R "^e2e[.]"`: the `unit_tests` and
-`integration_tests` executables and six end-to-end tests (Python 3): four
-drive the built binary, two check the Makefile's resume and visualization
-targets with `make -n` (GNU make). It is verified on an NVIDIA RTX 4090
+`integration_tests` executables and seven end-to-end tests (Python 3): four
+drive the built binary, three check the Makefile's resume, visualization
+and simulation targets with `make -n` (GNU make). It is verified on an NVIDIA RTX 4090
 (compute 8.9) with CUDA 13.2.
 
 Without a usable GPU the CUDA tests are reported as *Skipped*. Set
@@ -847,6 +855,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `cli_arguments.py` | Only the documented command lines are accepted: an argument after them (`config.json --validate-config`, `config.json extra`, `--help extra`, `--resume` without a file or with two) is an error that starts nothing, without a GPU |
 | `k8s_job_resume.py` | A retry of the shipped Kubernetes Job, run with `job.yaml`'s container arguments on a small copy of the base payload, continues from the interrupted pod's checkpoint and keeps it |
 | `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` call the resume helper with only the config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), so it searches the config's own `checkpoint_dir`; checked with `make -n` and a stub helper, without docker |
+| `makefile_run_signals.py` | Every target that runs the simulation in a container (`cuda-run` and the targets that use it, the long and large runs and their resume targets, `cuda-dendrite-demo`, `cuda-all`; the list is checked against make's data base) gives the binary itself as the container's command, right after the dev image, as the calling user, and the dev image keeps the entrypoint that execs its command, so Ctrl-C and `docker stop` reach the binary's handlers; checked with `make -n`, a stub helper and a stub docker, without docker |
 | `makefile_viz_out.py` | `make cuda-visualize` renders into `viz/<name of the run>` however `VIZ_IN` is spelled (`out/run_vtk`, `out/run_vtk/`, `out/run_vtk//`, `out/run_vtk/.`, `./out/run_vtk`, an absolute path), and `VIZ_ROOT` and `VIZ_OUT` override it; checked with `make -n`, without docker |
 | `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config` and prints its thermal and phase-field dt limits for its scheme and stencil; a `time.dt` equal to a printed limit (thermal, phase-field, adaptive cap) is accepted and one double above it rejected, and an infinite limit prints as `none`; a misspelled key, integer fields that are not ints (64.5 cells, 4294967297 steps) and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs, `saturation_check_freq` 0) are rejected; the runs from the repository root use their own output and checkpoint directories |
 
@@ -884,7 +893,7 @@ Allen-Cahn-CUDA/
 │   ├── unit/                  # 29 unit-test files
 │   ├── integration/           # 8 integration-test files
 │   ├── e2e/                   # signal_exit.py, cli_arguments.py, k8s_job_resume.py, validate_shipped_configs.py,
-│   │                          # makefile_resume_call.py, makefile_viz_out.py
+│   │                          # makefile_resume_call.py, makefile_run_signals.py, makefile_viz_out.py
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   ├── test_resume_checkpoint.py  # resume helper: checkpoint choice and config rewrite
 │   ├── test_gpu_runner_guard.py   # self-hosted GPU runner guard

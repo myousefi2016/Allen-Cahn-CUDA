@@ -139,6 +139,16 @@ add_test(NAME e2e.MakefileResumeCall
 )
 set_tests_properties(e2e.MakefileResumeCall PROPERTIES TIMEOUT 60)
 
+# Every Makefile target that runs the simulation in a container gives the binary
+# itself as the container's command, as the calling user, so that Ctrl-C and
+# `docker stop` reach its signal handlers. Runs `make -n` with a stub helper and a
+# stub docker (GNU make on PATH; no binary, docker or GPU).
+add_test(NAME e2e.MakefileRunSignals
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_run_signals.py
+            ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.MakefileRunSignals PROPERTIES TIMEOUT 120)
+
 # `make cuda-visualize` renders a run into viz/<name of the run> however VIZ_IN
 # is spelled (trailing or repeated slashes, '.'). Runs `make -n` (GNU make on
 # PATH; no binary, docker or GPU).
