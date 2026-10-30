@@ -316,42 +316,62 @@ jobs:
   k8s-validate:
     name: Validate Kubernetes Manifests
     runs-on: ubuntu-latest
+    # bash -eo pipefail for every step: without pipefail a pipeline's status is
+    # its last command's, and `kubectl kustomize ... | kubeconform` passed with
+    # "0 resource found" when kustomize could not render the manifests.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned releases, checked against their published SHA-256 (kubectl:
+      # dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl.sha256; kubeconform:
+      # the v0.6.7 release's CHECKSUMS). curl -f fails on an HTTP error instead
+      # of saving the error page.
       - name: Install kubectl
         run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          curl -fsSLO https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl
+          echo "65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8  kubectl" \
+            | sha256sum --check --strict
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
 
       - name: Install kubeconform (offline schema validator)
         run: |
-          curl -L -o kubeconform.tar.gz \
+          curl -fsSL -o kubeconform.tar.gz \
             https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform.tar.gz" \
+            | sha256sum --check --strict
           tar -xzf kubeconform.tar.gz kubeconform
           chmod +x kubeconform
           sudo mv kubeconform /usr/local/bin/
 
+      # Each kustomization is rendered to a file first, so that a render error
+      # fails the step, and an empty render (no resource) fails `test -s`; then
+      # kubeconform validates the rendered manifests against the bundled
+      # OpenAPI schemas (kustomization.yaml is not a K8s resource; CRDs we do
+      # not ship are skipped).
       - name: Validate base manifests (kubeconform, offline)
         run: |
-          # Render the base kustomization, then validate all rendered manifests
-          # against the bundled OpenAPI schemas. Skips kustomization.yaml (not a
-          # K8s resource) and skips CRDs we don't ship.
-          kubectl kustomize k8s/base | \
-            kubeconform -strict -summary -ignore-missing-schemas \
-              -schema-location default \
-              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          kubectl kustomize k8s/base > base.yaml
+          test -s base.yaml
+          kubeconform -strict -summary -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            base.yaml
 
       - name: Validate dev overlay (render + kubeconform)
         run: |
-          kubectl kustomize k8s/overlays/dev | \
-            kubeconform -strict -summary -ignore-missing-schemas
+          kubectl kustomize k8s/overlays/dev > dev.yaml
+          test -s dev.yaml
+          kubeconform -strict -summary -ignore-missing-schemas dev.yaml
 
       - name: Validate prod overlay (render + kubeconform)
         run: |
-          kubectl kustomize k8s/overlays/prod | \
-            kubeconform -strict -summary -ignore-missing-schemas
+          kubectl kustomize k8s/overlays/prod > prod.yaml
+          test -s prod.yaml
+          kubeconform -strict -summary -ignore-missing-schemas prod.yaml
 
   # ── Release Docker Images ───────────────────────────────────────────────────
   release-docker:

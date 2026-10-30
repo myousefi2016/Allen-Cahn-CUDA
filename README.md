@@ -761,8 +761,10 @@ The Job runs `ghcr.io/myousefi2016/allen-cahn-cuda:latest`, which the CI
 `sha-<commit>` tags). The image is set once, via `images:` in
 `k8s/base/kustomization.yaml`.
 
-CI validates these manifests offline via `kubeconform` (no API server
-required) — see `.github/workflows/ci.yml`.
+CI renders the base and both overlays with `kubectl kustomize` (a render
+error or an empty render fails the job) and validates the result offline
+with `kubeconform` (no API server required) — see
+`.github/workflows/ci.yml`.
 
 ---
 

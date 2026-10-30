@@ -532,7 +532,7 @@ CMake presets (see `CMakePresets.json`):
 | `build-and-test` | self-hosted GPU | Matrix of Debug / Release × CUDA 12.6.0; full `ctest` run                 |
 | `build-cpu-only` | `ubuntu-latest` | Build-only sanity check (no GPU tests)                                    |
 | `docker-build`   | `ubuntu-latest` | Multi-target build of `dev`, `test`, `prod` Dockerfiles via Buildx        |
-| `k8s-validate`   | `ubuntu-latest` | `kustomize build` + `kubeconform` (offline, no API server required)       |
+| `k8s-validate`   | `ubuntu-latest` | `kubectl kustomize` of `k8s/base` and both overlays, each to a file (a render error or an empty render fails the step), then `kubeconform` (offline, no API server required); kubectl and kubeconform are pinned releases checked against their published SHA-256 |
 | `release-docker` | `ubuntu-latest` | On `main` push only: build & push `ghcr.io/...` production image           |
 
 The `k8s-validate` job uses `kubeconform` because `kubectl apply
