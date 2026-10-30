@@ -476,3 +476,66 @@ TEST_F(CheckpointIOTest, LongAxisIsReadAndAnOverflowingHeaderIsRejected) {
         .write("payload", 7);
     expect_read_rejects(huge, "overflows");
 }
+
+// A checkpoint keeps the spacing of each axis. Every other round trip in this file is
+// cubic. There, a header that stored dx as dy and dz, or a read() that built the grid
+// from dx alone, still gave back the right grid. Here dimensions and spacings all
+// differ (5x6x7, 0.3/0.4/0.5), and read_header() and read() return each of them exactly
+// (the doubles are written and read as their bytes). A header whose spacing on one axis
+// alone is 0, negative or NaN, under a matching header CRC, is refused with the reason,
+// the same as one whose dx is.
+TEST_F(CheckpointIOTest, EveryAxisSpacingRoundTripsAndIsChecked) {
+    const Grid grid(Dim3{5, 6, 7}, Spacing{0.3, 0.4, 0.5});
+    FieldData phi(grid, "phi"), u(grid, "u");
+    for (std::size_t i = 0; i < phi.size(); ++i) {
+        phi.data()[i] = std::sin(0.01 * static_cast<double>(i));
+        u.data()[i] = -0.8 + 1e-3 * static_cast<double>(i);
+    }
+    const auto path = test_dir_ / "checkpoint_9.acbin";
+    CheckpointIO::write(path, 9, 0.09, 0.01, grid, phi, u);
+
+    const auto header = CheckpointIO::read_header(path);
+    ASSERT_TRUE(header.has_value());
+    EXPECT_EQ(header->Nx, 5);
+    EXPECT_EQ(header->Ny, 6);
+    EXPECT_EQ(header->Nz, 7);
+    EXPECT_EQ(header->dx, 0.3);
+    EXPECT_EQ(header->dy, 0.4);
+    EXPECT_EQ(header->dz, 0.5);
+
+    const auto back = CheckpointIO::read(path);
+    EXPECT_EQ(back.grid.Nx(), 5);
+    EXPECT_EQ(back.grid.Ny(), 6);
+    EXPECT_EQ(back.grid.Nz(), 7);
+    EXPECT_EQ(back.grid.dx(), 0.3);
+    EXPECT_EQ(back.grid.dy(), 0.4);
+    EXPECT_EQ(back.grid.dz(), 0.5);
+    ASSERT_EQ(back.phi.size(), phi.size());
+    int differ = 0;
+    for (std::size_t i = 0; i < phi.size(); ++i) {
+        differ += back.phi.data()[i] != phi.data()[i];
+        differ += back.u.data()[i] != u.data()[i];
+    }
+    EXPECT_EQ(differ, 0);
+
+    const std::string bytes = file_bytes(path);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const auto changed = test_dir_ / "spacing.acbin";
+    for (int axis = 0; axis < 3; ++axis) {
+        for (const double bad : {0.0, -0.4, nan}) {
+            SCOPED_TRACE("axis " + std::to_string(axis) + ", spacing " + std::to_string(bad));
+            CheckpointIO::Header h = *header;
+            if (axis == 0)
+                h.dx = bad;
+            else if (axis == 1)
+                h.dy = bad;
+            else
+                h.dz = bad;
+            h.header_crc32 = CheckpointIO::header_crc32(h);
+            std::string b = bytes;
+            std::memcpy(b.data(), &h, sizeof h);
+            write_bytes(changed, b);
+            expect_read_rejects(changed, "non-positive grid spacing");
+        }
+    }
+}

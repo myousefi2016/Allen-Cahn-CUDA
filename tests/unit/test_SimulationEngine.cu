@@ -589,6 +589,70 @@ TEST_F(SimulationEngineTest, RestoreRejectsDifferentGridSpacing) {
     }
 }
 
+// The restore check compares the spacing of every axis. RestoreRejectsDifferentGridSpacing
+// runs a cubic grid and changes dx, which a check of dx alone also rejects, as does a
+// header that recorded dx as dy and dz. Here the run's spacings all differ (0.4, 0.5,
+// 0.3; validate() accepts that for the 7-point stencil). The run's own checkpoint
+// restores, both from checkpoint.restart_file and with Start::ResumeLatest. One that
+// differs from it in dx, dy or dz alone is refused, and the error names the spacing. The
+// checkpoint is at step 10 = max_steps, so no step runs and the run ends on the restored
+// state: phi = -1 in every cell (a cold start would hold the seed of radius 2).
+TEST_F(SimulationEngineTest, RestoreComparesTheSpacingOfEveryAxis) {
+    auto base = make_config(8, 10);
+    base.grid.dx = 0.4;
+    base.grid.dy = 0.5;
+    base.grid.dz = 0.3;
+    ASSERT_NO_THROW(base.validate());
+    auto cells_not_restored = [](const SimulationEngine& engine) {
+        int n = 0;
+        for (std::size_t i = 0; i < engine.phi().size(); ++i)
+            n += engine.phi().data()[i] != -1.0;
+        return n;
+    };
+    struct Case {
+        const char* name;
+        Spacing spacing;
+        bool restores;
+    };
+    for (const Case c :
+         {Case{"own", {0.4, 0.5, 0.3}, true}, Case{"dx", {0.45, 0.5, 0.3}, false},
+          Case{"dy", {0.4, 0.55, 0.3}, false}, Case{"dz", {0.4, 0.5, 0.35}, false}}) {
+        SCOPED_TRACE(c.name);
+        auto cfg = base;
+        cfg.checkpoint.checkpoint_dir = test_dir_ / (std::string("ckpt_") + c.name);
+        cfg.output.output_dir = test_dir_ / (std::string("out_") + c.name);
+        std::filesystem::create_directories(cfg.checkpoint.checkpoint_dir);
+        const Grid grid(Dim3{8, 8, 8}, c.spacing);
+        FieldData phi(grid, "phi"), u(grid, "u");
+        phi.fill(-1.0);
+        u.fill(-0.8);
+        const auto file = cfg.checkpoint.checkpoint_dir / "checkpoint_10.acbin";
+        CheckpointIO::write(file, 10, 0.01, cfg.time.dt, grid, phi, u);
+        cfg.checkpoint.restart_file = file;
+
+        SimulationEngine engine(cfg);
+        if (c.restores) {
+            ASSERT_NO_THROW(engine.run());
+            EXPECT_EQ(cells_not_restored(engine), 0);
+            auto resume = cfg;
+            resume.checkpoint.restart_file.reset();
+            SimulationEngine resumed(resume);
+            ASSERT_NO_THROW(resumed.run(SimulationEngine::Start::ResumeLatest));
+            EXPECT_EQ(cells_not_restored(resumed), 0);
+        } else {
+            try {
+                engine.run();
+                ADD_FAILURE() << "restored a checkpoint of spacing (" << c.spacing.dx << ", "
+                              << c.spacing.dy << ", " << c.spacing.dz
+                              << ") into a run of (0.4, 0.5, 0.3)";
+            } catch (const std::runtime_error& e) {
+                EXPECT_NE(std::string(e.what()).find("Checkpoint grid spacing"), std::string::npos)
+                    << e.what();
+            }
+        }
+    }
+}
+
 // validate() accepts every max_steps >= 1, INT_MAX included: the loop ends there. A
 // restart from step INT_MAX - 2 runs exactly the steps INT_MAX - 1 and INT_MAX (a
 // checkpoint after each), a restart from INT_MAX none.

@@ -357,6 +357,70 @@ TEST_F(CheckpointManagerTest, RetentionLeavesCheckpointsOfOtherGridsAlone) {
     EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_12000.acbin"));
 }
 
+// The manager tells this run's checkpoints from another grid's by all six header fields.
+// The tests above use a cubic run and foreign grids that differ in Nx or in dx. A header
+// that recorded dx as dy and dz, or a comparison that dropped dy or dz, still passed them.
+// Here the run's grid has three different dimensions and three different spacings
+// (4x5x6, 0.3/0.4/0.5). Six checkpoints each differ from it in exactly one field, all at
+// steps above the run's. Retention leaves every one of them alone and restore_latest()
+// passes over them. Meanwhile the run's own checkpoints rotate (keep_last = 1), and the
+// newest one restores with exactly its grid and fields.
+TEST_F(CheckpointManagerTest, EachGridFieldSeparatesThisRunFromAnother) {
+    const Grid grid(Dim3{4, 5, 6}, Spacing{0.3, 0.4, 0.5});
+    struct Foreign {
+        const char* field;
+        Grid grid;
+        int step;
+    };
+    const Foreign foreign[] = {
+        {"Nx", Grid(Dim3{5, 5, 6}, Spacing{0.3, 0.4, 0.5}), 110},
+        {"Ny", Grid(Dim3{4, 6, 6}, Spacing{0.3, 0.4, 0.5}), 120},
+        {"Nz", Grid(Dim3{4, 5, 7}, Spacing{0.3, 0.4, 0.5}), 130},
+        {"dx", Grid(Dim3{4, 5, 6}, Spacing{0.35, 0.4, 0.5}), 140},
+        {"dy", Grid(Dim3{4, 5, 6}, Spacing{0.3, 0.45, 0.5}), 150},
+        {"dz", Grid(Dim3{4, 5, 6}, Spacing{0.3, 0.4, 0.55}), 160},
+    };
+    const auto file = [this](int step) {
+        return test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin");
+    };
+    for (const Foreign& f : foreign) {
+        FieldData phi_f(f.grid, "phi"), u_f(f.grid, "u");
+        phi_f.fill(0.5);
+        u_f.fill(-0.5);
+        CheckpointIO::write(file(f.step), f.step, 0.01 * f.step, 0.01, f.grid, phi_f, u_f);
+    }
+
+    CheckpointManager mgr(make_params(10, 1), grid);
+    FieldData phi(grid, "phi"), u(grid, "u");
+    for (std::size_t i = 0; i < phi.size(); ++i) {
+        phi.data()[i] = 0.001 * static_cast<double>(i);
+        u.data()[i] = -0.002 * static_cast<double>(i);
+    }
+    mgr.save(10, 0.1, 0.01, phi, u);
+    mgr.save(20, 0.2, 0.01, phi, u);
+
+    EXPECT_FALSE(std::filesystem::exists(file(10))) << "this run's older checkpoint (keep_last 1)";
+    EXPECT_TRUE(std::filesystem::exists(file(20)));
+    for (const Foreign& f : foreign)
+        EXPECT_TRUE(std::filesystem::exists(file(f.step)))
+            << "the checkpoint of another " << f.field;
+
+    const auto latest = mgr.restore_latest();
+    ASSERT_TRUE(latest.has_value());
+    EXPECT_EQ(latest->step, 20);
+    EXPECT_EQ(latest->grid.Nx(), 4);
+    EXPECT_EQ(latest->grid.Ny(), 5);
+    EXPECT_EQ(latest->grid.Nz(), 6);
+    EXPECT_EQ(latest->grid.dx(), 0.3);
+    EXPECT_EQ(latest->grid.dy(), 0.4);
+    EXPECT_EQ(latest->grid.dz(), 0.5);
+    ASSERT_EQ(latest->phi.size(), phi.size());
+    int differ = 0;
+    for (std::size_t i = 0; i < phi.size(); ++i)
+        differ += latest->phi.data()[i] != phi.data()[i];
+    EXPECT_EQ(differ, 0);
+}
+
 // Checkpoints of another grid and files named like checkpoints whose header
 // cannot be read are left alone and do not count toward keep_last: with
 // keep_last = 2 the run keeps its two newest. Retention walks the directory
