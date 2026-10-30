@@ -3,12 +3,14 @@
 #include "logging/Logger.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #ifdef AC_HAS_VTK
 #include <vtkDataArray.h>
@@ -34,32 +36,78 @@ protected:
     fs::path test_dir_;
 };
 
-TEST_F(VTKWriterTest, WritesRawFiles) {
-    Grid grid(Dim3{4, 4, 4}, Spacing{1.0, 1.0, 1.0});
+namespace {
+
+// A raw output file holds the field value(x, y, z) of an n.nx x n.ny x n.nz
+// grid: Nx*Ny*Nz native doubles, value(x, y, z) at (x*Ny + y)*Nz + z
+// (FieldData's order, docs/DESIGN.md 2.4), nothing before or after them. The
+// writer copies the field's bytes and computes nothing, so every value must be
+// equal, not merely close.
+template <class Value> void expect_raw_field(const fs::path& path, const Dim3 n, Value value) {
+    SCOPED_TRACE(path.string());
+    const auto nx = static_cast<std::size_t>(n.nx);
+    const auto ny = static_cast<std::size_t>(n.ny);
+    const auto nz = static_cast<std::size_t>(n.nz);
+    const std::size_t bytes = nx * ny * nz * sizeof(Real);
+    ASSERT_TRUE(fs::exists(path));
+    ASSERT_EQ(fs::file_size(path), bytes);
+    std::vector<Real> file(nx * ny * nz);
+    std::ifstream in(path, std::ios::binary);
+    ASSERT_TRUE(in.is_open());
+    in.read(reinterpret_cast<char*>(file.data()), static_cast<std::streamsize>(bytes));
+    ASSERT_EQ(in.gcount(), static_cast<std::streamsize>(bytes));
+    for (std::size_t x = 0; x < nx; ++x)
+        for (std::size_t y = 0; y < ny; ++y)
+            for (std::size_t z = 0; z < nz; ++z) {
+                const Real expected =
+                    value(static_cast<int>(x), static_cast<int>(y), static_cast<int>(z));
+                ASSERT_EQ(file[(x * ny + y) * nz + z], expected)
+                    << "x=" << x << " y=" << y << " z=" << z;
+            }
+}
+
+} // namespace
+
+// Each raw file holds its own field in FieldData's order (expect_raw_field).
+// The grid's sides differ and every cell has its own value, phi and u in
+// disjoint ranges and none of them a float: a writer that swaps or duplicates
+// the fields, writes them in another order (VTK's x-fastest one, say), rounds
+// them or writes anything else of the right size fails. WritesRawFiles, which
+// this replaces, checked only that both files exist and the size of the phi
+// file: every one of those passed it.
+TEST_F(VTKWriterTest, RawFilesHoldEachFieldInHostOrder) {
+    const Dim3 n{3, 4, 5};
+    Grid grid(n, Spacing{1.0, 1.0, 1.0});
     OutputParams params;
     params.output_dir = test_dir_;
     params.format = "raw";
     params.frequency = 1;
 
-    VTKWriter writer(grid, params);
-
+    // 100x + 10y + z names the cell (y, z < 10). A value's bits run from at
+    // most 2^7 down to 2^-30, one of them at 2^-2 or above: at most 38
+    // significant bits, exact in a double (53), and at least 29, never a float (24).
+    const auto phi_at = [](int x, int y, int z) {
+        return 100.0 * x + 10.0 * y + z + 0.25 + 0x1p-30;
+    };
+    const auto u_at = [](int x, int y, int z) {
+        return -(100.0 * x + 10.0 * y + z + 0.5 + 0x1p-30);
+    };
     FieldData phi(grid, "phi");
     FieldData u(grid, "u");
-    for (int x = 0; x < 4; ++x)
-        for (int y = 0; y < 4; ++y)
-            for (int z = 0; z < 4; ++z) {
-                phi(x, y, z) = 1.0;
-                u(x, y, z) = -0.5;
+    for (int x = 0; x < n.nx; ++x)
+        for (int y = 0; y < n.ny; ++y)
+            for (int z = 0; z < n.nz; ++z) {
+                phi(x, y, z) = phi_at(x, y, z);
+                u(x, y, z) = u_at(x, y, z);
             }
+    {
+        VTKWriter writer(grid, params);
+        writer.write_async(3, 0.5, phi, u);
+        writer.flush();
+    }
 
-    writer.write_async(0, 0.0, phi, u);
-    writer.flush();
-
-    EXPECT_TRUE(fs::exists(test_dir_ / "output_0_phi.raw"));
-    EXPECT_TRUE(fs::exists(test_dir_ / "output_0_u.raw"));
-
-    auto phi_size = fs::file_size(test_dir_ / "output_0_phi.raw");
-    EXPECT_EQ(phi_size, 64 * sizeof(double));
+    expect_raw_field(test_dir_ / "output_3_phi.raw", n, phi_at);
+    expect_raw_field(test_dir_ / "output_3_u.raw", n, u_at);
 }
 
 TEST_F(VTKWriterTest, MultipleAsyncWrites) {

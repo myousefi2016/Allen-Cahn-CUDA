@@ -611,7 +611,7 @@ configurations, not to the compiled-in values.
 | `output.output_dir`, `checkpoint.checkpoint_dir` | not empty (the engine creates them) |
 | `gpu.device_ids`      | CUDA device ids ≥ 0; several only with `gpu.multi_gpu` (an id may repeat: several domains on one GPU) |
 | `gpu.multi_gpu`       | `true`: split the X planes between the ids, at least 2 planes each (Multi-GPU Domain Decomposition) |
-| `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary) |
+| `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary: `output_<step>_phi.raw` and `output_<step>_u.raw`, each Nx·Ny·Nz doubles in the host's byte order, value(x, y, z) at (x·Ny + y)·Nz + z as in `docs/DESIGN.md` 2.4, no header) |
 | `output.async_io`     | `true`: write snapshots and checkpoints in the background, in order; `false`: each output and checkpoint step waits until its files are on disk |
 
 Unknown keys are errors (keys starting with `_` are comments), so a typo
@@ -864,7 +864,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states, a failed step naming its cause |
 | `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (each step's dt from the change of φ in the step before, 0.9 tolerance / max|Δφ| within [0.5, 1.5] times the last dt, bit for bit; clamped to [dt_min, dt_max], then capped at the stability limits, also the checkpoint's dt at a restart; growth when φ is at rest), short run, saturation stop (a restart from a saturated state computes nothing), shutdown (interrupted only before `max_steps`), `--resume` (the newest intact checkpoint, step 0 without one), divergence errors, no checkpoint before the frames up to its step (also at a shutdown or saturation), a failed checkpoint stops the run, restart-file and spacing checks, dt after a restart |
-| `test_VTKWriter.cpp`          | Async and synchronous writes, raw / VTS output, VTS topology, write failures reported (never a published broken file, also when only `close()` fails, and no temporary file left), statistics cache |
+| `test_VTKWriter.cpp`          | Async and synchronous writes, raw output (each file holds its own field in that order, bit for bit) and VTS output, VTS topology, write failures reported (never a published broken file, also when only `close()` fails, and no temporary file left), statistics cache |
 
 ### Integration tests (`tests/integration/`, 8 files)
 
