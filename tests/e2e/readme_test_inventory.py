@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """README's test inventory is the one this build registers.
 
-README.md says which tests exist in four places: the summary table (files and ctest
+README.md says which tests exist in five places: the summary table (files and ctest
 tests of each group), the unit and integration headings (files), one table row per
-test file in each group's section, and the project tree's test lines. They went
+test file in each group's section, the project tree's test lines, and the feature list's
+test-suite entry (files of each group, end-to-end tests and what they run). They went
 stale whenever a test was added without them (549b32f's three unit tests left the
 table at 356, fbc923f's test_KernelRanges.cpp left the heading at 28 files).
 Checked against:
@@ -14,7 +15,11 @@ Checked against:
     registers (ctest --show-only=json-v1). Every test is in one of the three
     groups, and every end-to-end test runs a script of tests/e2e;
   * the project tree's tests/e2e names: the .py files of tests/e2e, each an
-    end-to-end script or a module one of them imports.
+    end-to-end script or a module one of them imports;
+  * the feature list's counts: unit and integration files, the number of end-to-end
+    tests (in words) and how many of them test each subject, by the scripts' names:
+    makefile_*.py the Makefile's targets and docker-compose.yml, readme_*.py and docs_*.py
+    the documentation, every other script the binary.
 ctest lists the tests from a temporary directory whose CTestTestfile.cmake includes
 the build's. A listing in the build directory writes its Testing/Temporary/LastTest.log:
 ctest 3.28 (the CI images') replaced the log of the ctest running this test with its
@@ -57,6 +62,12 @@ TREE_COUNTS = {
     "integration": re.compile(r"^│   ├── integration/\s+# (\d+) integration-test files$"),
 }
 TREE_E2E = re.compile(r"^│   ├── e2e/\s+# (.*)$")
+FEATURE = re.compile(r"^- \*\*Comprehensive test suite\*\*: (\d+) unit-test files, (\d+) integration-test "
+                     r"files and (\w+) end-to-end tests \((\w+) of the binary, (\w+) of the Makefile's "
+                     r"targets and docker-compose\.yml, (\w+) of the documentation\);")
+WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+         "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+         "eighteen", "nineteen", "twenty"]
 TREE_CONTINUATION = re.compile(r"^│   │\s+# (.*)$")
 PY_NAME = re.compile(r"[A-Za-z0-9_]+\.py")
 
@@ -134,6 +145,15 @@ def tree_e2e_names(lines):
             break
         names += PY_NAME.findall(m[1])
     return names
+
+
+def e2e_subject(script):
+    """What an end-to-end script tests, by its name (the feature list's three subjects)."""
+    if script.startswith("makefile_"):
+        return "makefile"
+    if script.startswith(("readme_", "docs_")):
+        return "docs"
+    return "binary"
 
 
 def compare_names(where, listed, expected, errors):
@@ -222,6 +242,26 @@ def main() -> int:
         errors.append(f"README's project tree has no single line matching {TREE_E2E.pattern}")
     else:
         compare_names("README's project tree (tests/e2e/)", tree, present, errors)
+
+    subjects = [e2e_subject(script) for script in scripts]
+    expected_words = [len(files["unit"]), len(files["integration"]), counts["e2e"],
+                      subjects.count("binary"), subjects.count("makefile"),
+                      subjects.count("docs")]
+    found = [m for m in map(FEATURE.match, lines) if m]
+    if len(found) != 1:
+        errors.append(f"README's feature list has {len(found)} lines matching "
+                      f"{FEATURE.pattern}, expected one")
+    else:
+        m = found[0]
+        listed = [int(m[1]), int(m[2])] + [WORDS.index(w) if w in WORDS else -1
+                                           for w in (m[3], m[4], m[5], m[6])]
+        labels = ["unit-test files", "integration-test files", "end-to-end tests",
+                  "end-to-end tests of the binary", "of the Makefile's targets",
+                  "of the documentation"]
+        for label, got, want in zip(labels, listed, expected_words):
+            if got != want:
+                errors.append(f"README's feature list: {label} {got if got >= 0 else '?'}; "
+                              f"the build has {want}")
 
     for e in errors:
         print(f"FAIL {e}")

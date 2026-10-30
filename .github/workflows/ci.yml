@@ -337,8 +337,11 @@ jobs:
 
       # The make cuda-* targets build and test inside the cuda-dev image: build
       # the binary there from a copy of the checkout and run the end-to-end
-      # tests (this runner has no GPU, so the two that run a simulation are
-      # reported as Skipped; the rest need the image's Python, PyYAML and make).
+      # tests. This runner has no GPU, so the two that run a simulation are
+      # reported as Skipped, and so is e2e.ReadmeTestInventory: only the binary
+      # is built here, not unit_tests or integration_tests (the test image's
+      # suite checks the inventory). The rest need the image's Python, PyYAML
+      # and make.
       - name: Run the end-to-end tests in the cuda-dev image (no GPU)
         if: matrix.target == 'cuda-dev'
         run: |
