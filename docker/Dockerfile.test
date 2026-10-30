@@ -45,17 +45,18 @@ COPY src/ src/
 COPY config/ config/
 COPY tests/ tests/
 
-# Build debug configuration with tests enabled
-RUN --mount=type=cache,target=/build/build/debug,id=cmake-build-debug \
-    --mount=type=cache,target=/build/_deps,id=cmake-fetchcontent \
-    cmake --preset debug \
+# Build debug configuration with tests enabled.
+# The build directory is part of this layer, not a BuildKit cache mount: Ninja rebuilds by
+# file times, and from a context whose files are older than a cached build's objects (git
+# archive, a release tarball) it kept those objects, so the image held another commit's
+# binaries. Docker's layer cache, keyed by content, still skips this step for unchanged
+# sources.
+RUN cmake --preset debug \
         -G Ninja \
         -DCMAKE_CUDA_ARCHITECTURES="70;75;80;86;89;90" \
         -DAC_BUILD_TESTS=ON \
     && \
-    cmake --build build/debug --parallel $(nproc) && \
-    # Copy built artifacts out of cache mount
-    cp -r build/debug /build/test-build
+    cmake --build build/debug --parallel $(nproc)
 
 # ── Test runner stage ─────────────────────────────────────────────────────
 FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS test-runner
@@ -107,7 +108,7 @@ WORKDIR /build
 # (with GNU make), config/, k8s/, docker/, README.md and docs/ under /build
 # (tests/CMakeLists.txt). Then the built test tree.
 COPY --chown=tester:tester . /build/
-COPY --from=test-builder --chown=tester:tester /build/test-build /build/build/debug
+COPY --from=test-builder --chown=tester:tester /build/build/debug /build/build/debug
 
 USER tester
 

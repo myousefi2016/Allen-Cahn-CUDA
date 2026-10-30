@@ -45,18 +45,18 @@ COPY src/ src/
 COPY config/ config/
 COPY tests/ tests/
 
-# Configure and build release binary
-# Cache the CMake build directory and FetchContent downloads for faster rebuilds
-RUN --mount=type=cache,target=/build/build/release,id=cmake-build-release \
-    --mount=type=cache,target=/build/_deps,id=cmake-fetchcontent \
-    cmake --preset release \
+# Configure and build the release binary.
+# The build directory is part of this layer, not a BuildKit cache mount: Ninja rebuilds by
+# file times, and from a context whose files are older than a cached build's objects (git
+# archive, a release tarball) it kept those objects, so the image held another commit's
+# binaries. Docker's layer cache, keyed by content, still skips this step for unchanged
+# sources.
+RUN cmake --preset release \
         -G Ninja \
         -DCMAKE_CUDA_ARCHITECTURES="70;75;80;86;89;90" \
         -DAC_BUILD_TESTS=OFF \
     && \
-    cmake --build build/release --target allen-cahn-cuda --parallel $(nproc) && \
-    # Copy binary out of the cache mount so it persists
-    cp build/release/src/allen-cahn-cuda /build/allen-cahn-cuda-bin
+    cmake --build build/release --target allen-cahn-cuda --parallel $(nproc)
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────
 FROM nvidia/cuda:12.6.0-runtime-ubuntu24.04 AS runtime
@@ -99,7 +99,7 @@ RUN if [ "$(getent passwd 1000 | cut -d: -f1)" = "ubuntu" ]; then \
     chown -R simulator:simulator /app /output
 
 # Copy the compiled binary and default configuration files
-COPY --from=builder --chown=simulator:simulator /build/allen-cahn-cuda-bin /app/allen-cahn-cuda
+COPY --from=builder --chown=simulator:simulator /build/build/release/src/allen-cahn-cuda /app/allen-cahn-cuda
 COPY --from=builder --chown=simulator:simulator /build/config/ /app/config/
 
 # Output directory for simulation results. It is also the working directory:
