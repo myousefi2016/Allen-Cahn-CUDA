@@ -185,6 +185,13 @@ errors were measured per configuration, with its physics in a box of side
 
 ## Multi-GPU Domain Decomposition
 
+A run splits its grid between GPUs when `gpu.multi_gpu` is `true` and
+`gpu.device_ids` lists several devices: each id gets one contiguous slab of
+X planes, `Nx / n` planes each and one more for each of the first `Nx % n`,
+and every slab must own at least 2 planes. Without `multi_gpu` the whole
+grid runs on the first id, so the validator rejects a list of several ids
+then (they would be ignored).
+
 ```mermaid
 graph LR
     subgraph G0["GPU 0"]
@@ -375,7 +382,9 @@ newest checkpoint the binary can restore on the configuration's grid (magic
 and version, header `Nx`, `Ny`, `Nz` and spacing equal to the
 configuration's, the step of its file name, exact file size, and the
 payload's CRC-32 when the header records one) and skips any other with a
-warning (`tests/test_resume_checkpoint.py`).
+warning (`tests/test_resume_checkpoint.py`). Like the binary, it refuses a
+configuration with a key given twice in one object (exit 2): the resume
+configuration it writes would keep only the last value.
 
 Override defaults on the command line:
 
@@ -565,14 +574,18 @@ configurations, not to the compiled-in values.
 | `physics.epsilon`     | anisotropy strength in [0, 1/3); above 1/15 it requires `physics.willmore_beta > 0` |
 | `physics.willmore_beta` | Willmore regularisation strength ≥ 0 (0 when omitted); > 0 requires `time.scheme` `"euler"` or `"imex"` |
 | `stencil`             | `"7pt"` / `"standard"`, `"27pt"` / `"isotropic"` (Patra–Karttunen) |
-| `boundary.*.type`     | `"dirichlet"`, `"neumann"`, `"periodic"` (on both faces of an axis), `"robin"` |
+| `boundary.*.type`     | `"dirichlet"` (when omitted), `"neumann"`, `"periodic"` (on both faces of an axis), `"robin"`; a face takes only its type's parameters, `value` (dirichlet), `flux` (neumann), `alpha`, `beta`, `gamma` (robin), none (periodic): another type's parameter would be ignored and is an error |
 | `boundary.*` robin    | `alpha·u + beta·∂u/∂n = gamma`: `alpha`, `beta` not both zero and not of opposite signs, `gamma/(alpha + beta/h)` within the double range (`docs/THEORY.md` §9.1) |
+| `output.output_dir`, `checkpoint.checkpoint_dir` | not empty (the engine creates them) |
+| `gpu.device_ids`      | CUDA device ids ≥ 0; several only with `gpu.multi_gpu` (an id may repeat: several domains on one GPU) |
+| `gpu.multi_gpu`       | `true`: split the X planes between the ids, at least 2 planes each (Multi-GPU Domain Decomposition) |
 | `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary) |
 | `output.async_io`     | `true`: write snapshots in the background; `false`: each output step waits until its file is on disk |
 
 Unknown keys are errors (keys starting with `_` are comments), so a typo
-cannot silently fall back to a default, and an integer field (`Nx`,
-`max_steps`, a frequency, `keep_last`, a device id) takes only a JSON
+cannot silently fall back to a default; so is a key given twice in one
+object, of which JSON would keep only the last value. An integer field
+(`Nx`, `max_steps`, a frequency, `keep_last`, a device id) takes only a JSON
 integer in the range of `int`: `64.5`, `1e2` or `true` is an error, not a
 conversion. Check a file without a GPU:
 
@@ -649,7 +662,8 @@ A regularised 600³ Euler run fits on a 24 GB GPU (measured on the RTX 4090:
 grid fits when N³ times the bytes per cell is below the free memory: on a
 16 GB-class GPU (e.g. T4, about 15 GiB free) that is about 500³ for RK4 and
 the regularised schemes. Larger grids can use several GPUs
-(`gpu.device_ids`), which split the X planes between them.
+(`gpu.device_ids` with `gpu.multi_gpu: true`), which split the X planes
+between them.
 
 ---
 
@@ -776,7 +790,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
 | `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the phase-field limit over the uniform liquid's modes and the liquid-gradient modes), a too small `willmore_beta` rejected with the growing mode and its certified bound, `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap; the `--validate-config` report (each limit to 17 digits, `none` for +∞, the adaptive cap only with `time.adaptive`) |
 | `test_LiquidModes.cpp`        | The certified liquid-mode search against binary128 references: every interval operation (at every binade edge, past overflow, inverse roots at 200000 points) and the sine and cosine enclosures contain the exact values; the Hessian's closed form is the derivative of the kernel's flux; the coefficients' enclosures contain their values and, by the mean value theorem, difference quotients of their first and second derivatives; each of the three box bounds is an upper bound on boxes of every size and at the stationary checkerboards, and the theta bounds for every coefficient in their intervals; a box is dropped only without a stationary point; the search domain and the symmetries it relies on; the reported growth maximum lies in [attained, bound] (independent search, 20000 sampled modes, permuted spacings) and a damping witness's bound holds (also just below the smallest regularising beta); the branch and bound alone, without the seed search, finds and certifies the same extrema; a search out of budget reports the range its extremum lies in |
-| `test_SimulationConfig.cpp`   | JSON config parsing (unknown keys rejected, integer fields only ints in the range of `int`, per-face all-six rule), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters), defaults, derived quantities |
+| `test_SimulationConfig.cpp`   | JSON config parsing (unknown and repeated keys rejected, integer fields only ints in the range of `int`, per-face all-six rule, only the BC type's own parameters), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters, non-empty directories, several device ids only with `multi_gpu`, at least 2 X planes per domain), defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
 | `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32, exact file size (trailing or missing bytes rejected, long axes accepted, overflowing headers rejected) |
@@ -795,7 +809,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
 | `test_ImexJacobi.cu`          | IMEX thermal solve: error within 1e-10 of a long-double solution at s ≈ 17 (both stencils, every kind of u face, one GPU and three domains); NaN temperature and a tolerance below rounding throw; the stopping rule on the host |
 | `test_StabilityLimitsGpu.cu`  | The solver's explicit updates have these limits: a mode decays at 0.99× and grows at 1.01× its limit (thermal: every scheme and stencil; phase field: the uniform liquid's 3-D, 1-D and 2-D checkerboards with and without the Willmore term and its uniform shift, a liquid with a ⟨111⟩ gradient, and the wave across a ⟨101⟩ gradient that binds with the Willmore term, which grows at 0.99× the limit the checkerboards gave) |
-| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer and no halo; engine run |
+| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer and no halo; `validate()` rejects exactly the splits the solver rejects; engine run |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states |
 | `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (capped at the stability limits after the dt_min clamp, also after a restart; growth when φ is at rest), short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks, dt after a restart |

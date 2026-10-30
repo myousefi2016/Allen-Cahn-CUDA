@@ -94,7 +94,9 @@ private:
 
     SimulationConfig config_;
     std::vector<GPUDomain> domains_;
-    static constexpr int kMinOwnedPlanes = kStencilReach > 2 ? kStencilReach : 2;
+    static_assert(kStencilReach <= kMinOwnedPlanes,
+                  "a halo is copied from the neighbour's owned planes; validate() and the split "
+                  "require kMinOwnedPlanes (core/SimulationConfig.hpp) per domain");
     int halo_width_ = kStencilReach;
     bool wrap_phi_lo_ = false, wrap_phi_hi_ = false; // periodic X for phi
     bool wrap_u_lo_ = false, wrap_u_hi_ = false;     // periodic X for u

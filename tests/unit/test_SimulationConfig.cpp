@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 using namespace ac;
 
@@ -326,6 +327,59 @@ TEST_F(SimulationConfigTest, SaturationIntervalAndDeviceIdsMustBeInRange) {
     expect_rejected(R"({"gpu": {"device_ids": [0, -1]}})", {"gpu.device_ids must be >= 0, got -1"});
 }
 
+// The engine creates output_dir and checkpoint_dir (create_directories), which
+// fails for an empty path: --validate-config printed "valid" and the run
+// aborted after the solver had allocated the fields.
+TEST_F(SimulationConfigTest, EmptyDirectoriesAreRejected) {
+    expect_rejected(R"({"output": {"output_dir": ""}})", {"output.output_dir must not be empty"});
+    expect_rejected(R"({"checkpoint": {"checkpoint_dir": ""}})",
+                    {"checkpoint.checkpoint_dir must not be empty"});
+    const auto cfg = SimulationConfig::from_json_string(
+        R"({"output": {"output_dir": "."}, "checkpoint": {"checkpoint_dir": "."}})");
+    EXPECT_EQ(cfg.output.output_dir, std::filesystem::path("."));
+    EXPECT_EQ(cfg.checkpoint.checkpoint_dir, std::filesystem::path("."));
+}
+
+// Without multi_gpu the engine runs the whole grid on device_ids[0]
+// (SimulationEngine::create_solver): a list of several ids, as the README
+// described multi-GPU runs, used one GPU and ignored the others without a
+// word. Several ids need multi_gpu; one id runs alone with either value.
+TEST_F(SimulationConfigTest, SeveralDevicesRequireMultiGpu) {
+    expect_rejected(R"({"gpu": {"device_ids": [0, 1]}})",
+                    {"gpu.device_ids lists 2 devices but gpu.multi_gpu is false, so the run would "
+                     "use device 0 only"});
+    expect_rejected(R"({"gpu": {"device_ids": [3, 0, 0], "multi_gpu": false}})",
+                    {"lists 3 devices", "use device 3 only"});
+    for (const char* multi : {"true", "false"}) {
+        const auto cfg = SimulationConfig::from_json_string(
+            std::string(R"({"gpu": {"device_ids": [2], "multi_gpu": )") + multi + "}}");
+        EXPECT_EQ(cfg.gpu.device_ids, std::vector<int>{2});
+    }
+}
+
+// MultiGPUSolver gives the domains of the ids Nx / domains X planes each (one
+// more to the first Nx % domains) and needs kMinOwnedPlanes = 2 in every
+// domain; --validate-config accepted fewer and the run aborted at startup. The
+// last domain owns the fewest: 2 domains - 1 planes leave it one, 2 domains two.
+TEST_F(SimulationConfigTest, MultiGpuSplitGivesEveryDomainTwoPlanes) {
+    for (int domains = 2; domains <= 5; ++domains) {
+        std::string ids;
+        for (int g = 0; g < domains; ++g)
+            ids += std::string(g ? ", " : "") + "0";
+        auto config = [&ids](int Nx) {
+            return R"({"grid": {"Nx": )" + std::to_string(Nx) +
+                   R"(, "Ny": 8, "Nz": 8}, "gpu": {"device_ids": [)" + ids +
+                   R"(], "multi_gpu": true}})";
+        };
+        expect_rejected(config(2 * domains - 1),
+                        {"grid.Nx = " + std::to_string(2 * domains - 1) + " is too small for " +
+                         std::to_string(domains) +
+                         " domains (gpu.device_ids): the last would own 1 X plane(s), and each "
+                         "must own at least 2"});
+        EXPECT_EQ(SimulationConfig::from_json_string(config(2 * domains)).grid.Nx, 2 * domains);
+    }
+}
+
 TEST_F(SimulationConfigTest, UnknownKeyIsRejectedInEverySection) {
     expect_rejected(R"({"physiks": {}})", {"physiks", "<root>"});
     for (const char* section :
@@ -354,6 +408,112 @@ TEST_F(SimulationConfigTest, KeysStartingWithUnderscoreAreComments) {
             "boundary": {"phi": {"_why": "z", "type": "neumann"}}})");
     EXPECT_DOUBLE_EQ(cfg.physics.epsilon, 0.03);
     EXPECT_EQ(cfg.boundary.phi_bc.type, BCType::Neumann);
+}
+
+// json::parse keeps only the last value of a repeated key, so an earlier
+// setting, or a whole earlier section, was dropped without a word:
+// {"time": {"scheme": "rk4"}, "time": {"dt": 0.005}} ran Euler. Every object
+// of a file, comments included, must name each key once; the message names
+// the object as the unknown-key messages name sections, also after nested
+// objects and inside arrays. The same key in different objects is no repeat.
+TEST_F(SimulationConfigTest, RepeatedKeysAreRejected) {
+    auto repeated = [](const std::string& key, const std::string& where) {
+        return "config: key \"" + key + "\" appears twice in \"" + where + "\"";
+    };
+    expect_rejected(R"({"time": {"scheme": "rk4"}, "time": {"dt": 0.005}})",
+                    {repeated("time", "<root>")});
+    expect_rejected(R"({"time": {"dt": 0.001, "dt": 0.01}})", {repeated("dt", "time")});
+    expect_rejected(R"({"physics": {"epsilon": 0.05, "D": 2.0, "epsilon": 0.02}})",
+                    {repeated("epsilon", "physics")});
+    expect_rejected(R"({"boundary": {"phi": {"type": "neumann", "type": "dirichlet"}}})",
+                    {repeated("type", "boundary.phi")});
+    expect_rejected(std::string(R"({"boundary": {"u": )") +
+                        all_faces(R"(, "x_lo": {"type": "dirichlet"})") + "}}",
+                    {repeated("x_lo", "boundary.u")});
+    const std::string five_faces = R"("x_lo": {"type": "neumann"}, "x_hi": {"type": "neumann"},
+        "y_lo": {"type": "neumann"}, "y_hi": {"type": "neumann"}, "z_lo": {"type": "neumann"})";
+    expect_rejected(R"({"boundary": {"phi": {)" + five_faces +
+                        R"(, "z_hi": {"type": "neumann", "flux": 0.1, "flux": 0.0}}}})",
+                    {repeated("flux", "boundary.phi.z_hi")});
+    expect_rejected(R"({"_note": "a", "_note": "b"})", {repeated("_note", "<root>")});
+    expect_rejected(R"({"gpu": {"device_ids": [0, {"id": 1, "id": 2}]}})",
+                    {repeated("id", "gpu.device_ids[1]")});
+    expect_rejected(R"({"boundary": {"phi": {"type": "neumann"}, "u": {"type": "neumann"}},
+                        "output": {"frequency": 5}, "output": {}})",
+                    {repeated("output", "<root>")});
+
+    const auto cfg = SimulationConfig::from_json_string(
+        R"({"output": {"frequency": 7}, "checkpoint": {"frequency": 11},
+            "boundary": {"phi": {"type": "neumann"}, "u": {"type": "neumann", "flux": 0.0}}})");
+    EXPECT_EQ(cfg.output.frequency, 7);
+    EXPECT_EQ(cfg.checkpoint.frequency, 11);
+    EXPECT_EQ(cfg.boundary.phi_bc.type, BCType::Neumann);
+    EXPECT_EQ(cfg.boundary.u_bc.type, BCType::Neumann);
+}
+
+// A face reads only the parameters of its type (dirichlet when "type" is
+// omitted): {"flux": 0.0} without a type ran Dirichlet -1 walls, and
+// {"type": "neumann", "value": -0.9} ignored the value. Every parameter of
+// another type, on a uniform BC and on one face of a per-face BC, of either
+// field, must be rejected; each type's own parameters parse.
+TEST_F(SimulationConfigTest, ParametersOfAnotherBoundaryTypeAreRejected) {
+    struct Type {
+        const char* name;
+        std::vector<std::string> takes;
+    };
+    const Type types[] = {{"dirichlet", {"value"}},
+                          {"neumann", {"flux"}},
+                          {"periodic", {}},
+                          {"robin", {"alpha", "beta", "gamma"}}};
+    for (const Type& t : types) {
+        std::string takes;
+        for (const auto& k : t.takes)
+            takes += (takes.empty() ? "\"" : ", \"") + k + "\"";
+        if (takes.empty())
+            takes = "no parameters";
+        for (const std::string key : {"value", "flux", "alpha", "beta", "gamma"}) {
+            if (std::find(t.takes.begin(), t.takes.end(), key) != t.takes.end())
+                continue;
+            for (const std::string field : {"phi", "u"}) {
+                const std::string bc =
+                    std::string(R"({"type": ")") + t.name + R"(", ")" + key + R"(": 0.5})";
+                expect_rejected(R"({"boundary": {")" + field + "\": " + bc + "}}",
+                                {"config: \"" + key + "\" in \"boundary." + field +
+                                 "\" is not a parameter of a " + t.name +
+                                 " boundary, which takes " + takes});
+                // On z_hi of a per-face BC; z_lo is periodic with a periodic z_hi, so
+                // that the parameter is the configuration's only defect.
+                const std::string z_lo = std::string(t.name) == "periodic"
+                                             ? R"({"type": "periodic"})"
+                                             : R"({"type": "neumann"})";
+                std::string faces = "{";
+                for (const std::string face : {"x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"})
+                    faces += std::string(faces.size() > 1 ? ", " : "") + "\"" + face + "\": " +
+                             (face == "z_hi"   ? bc
+                              : face == "z_lo" ? z_lo
+                                               : std::string(R"({"type": "neumann"})"));
+                faces += "}";
+                expect_rejected(R"({"boundary": {")" + field + "\": " + faces + "}}",
+                                {"config: \"" + key + "\" in \"boundary." + field +
+                                 ".z_hi\" is not a parameter of a " + t.name + " boundary"});
+            }
+        }
+    }
+    for (const std::string key : {"flux", "alpha", "beta", "gamma"})
+        expect_rejected(R"({"boundary": {"phi": {")" + key + R"(": 0.0}}})",
+                        {"config: \"" + key +
+                         "\" in \"boundary.phi\" is not a parameter of a dirichlet boundary (the "
+                         "type when \"type\" is omitted), which takes \"value\""});
+
+    const auto cfg = SimulationConfig::from_json_string(
+        R"({"boundary": {"phi": {"value": -0.3},
+                         "u": {"type": "robin", "alpha": 2.0, "beta": 0.5, "gamma": -0.4}}})");
+    EXPECT_EQ(cfg.boundary.phi_bc.type, BCType::Dirichlet);
+    EXPECT_DOUBLE_EQ(cfg.boundary.phi_bc.value, -0.3);
+    EXPECT_EQ(cfg.boundary.u_bc.type, BCType::Robin);
+    EXPECT_DOUBLE_EQ(cfg.boundary.u_bc.alpha, 2.0);
+    EXPECT_DOUBLE_EQ(cfg.boundary.u_bc.beta, 0.5);
+    EXPECT_DOUBLE_EQ(cfg.boundary.u_bc.gamma, -0.4);
 }
 
 // A per-face object without x_lo used to be read as a uniform BC: the face

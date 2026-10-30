@@ -27,6 +27,10 @@
 # checkpoint from another grid, corrupted data) is skipped with a warning and
 # the next-older checkpoint is tried.
 #
+# A config with a key given twice in one object is an error (exit 2), as in
+# the binary: JSON keeps only the last value of a key, so the resume config
+# written from it would silently drop the first.
+#
 # Usage
 #   python3 scripts/resume_from_latest_checkpoint.py CONFIG_PATH [CHECKPOINT_DIR]
 #
@@ -283,6 +287,23 @@ def find_latest_checkpoint(
     return None
 
 
+class RepeatedKeyError(ValueError):
+    """A JSON object of the config names a key twice."""
+
+
+def reject_repeated_keys(pairs: list[tuple[str, object]]) -> dict:
+    """json object_pairs_hook: the object as a dict, unless a key repeats."""
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise RepeatedKeyError(
+                f"key {key!r} appears twice in one object (JSON keeps only the last "
+                "value of a key, so the first would be silently ignored; the binary "
+                "rejects the file)")
+        seen.add(key)
+    return dict(pairs)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or len(argv) > 3:
         sys.stderr.write(
@@ -297,9 +318,12 @@ def main(argv: list[str]) -> int:
 
     try:
         with config_path.open() as fh:
-            cfg = json.load(fh)
+            cfg = json.load(fh, object_pairs_hook=reject_repeated_keys)
     except json.JSONDecodeError as exc:
         sys.stderr.write(f"ERROR: malformed JSON in {config_path}: {exc}\n")
+        return 2
+    except RepeatedKeyError as exc:
+        sys.stderr.write(f"ERROR: {config_path}: {exc}\n")
         return 2
     if not isinstance(cfg, dict):
         sys.stderr.write(f"ERROR: {config_path} is not a JSON object\n")

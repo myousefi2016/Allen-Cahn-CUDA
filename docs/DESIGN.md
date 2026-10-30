@@ -329,12 +329,22 @@ The validator also rejects:
 - `output.format` other than `"vts"` or `"raw"`.
 - `checkpoint.keep_last < 1`, `time.saturation_check_freq < 1`, a negative
   entry of `gpu.device_ids`, an empty `checkpoint.restart_file`,
-  `initial.seed_radius <= 0`, `epsilon` outside `[0, 1/3)`, etc.
+  `output.output_dir` or `checkpoint.checkpoint_dir` (the engine creates
+  both), `initial.seed_radius <= 0`, `epsilon` outside `[0, 1/3)`, etc.
 - more than 2^31 − 1 grid points (kernels index cells with 32-bit `int`).
+- several `gpu.device_ids` without `gpu.multi_gpu` (the run would use the
+  first only), and a multi-GPU split that leaves a domain fewer than
+  `kMinOwnedPlanes` = 2 X planes (section 7; the solver's constructor has the
+  same rule).
 
 The parser (`parse_config`) is strict: an unknown key in any section is an
 error that names the key and the allowed ones (keys starting with `_` are
-comments), a section that is not a JSON object is an error, an integer
+comments), so is a key given twice in one object (`parse_json`: JSON keeps
+only the last value, which would drop an earlier setting or section without
+a word), and so is a boundary parameter of another type than the face's
+(`dirichlet` takes `value`, `neumann` `flux`, `robin` `alpha`, `beta` and
+`gamma`, `periodic` none; `type` defaults to `dirichlet`), which the ghost
+fill would ignore. A section that is not a JSON object is an error, an integer
 field (grid dimensions, step counts and intervals, `keep_last`, device ids)
 takes only a JSON integer in the range of `int` (a fraction, an exponent, a
 boolean or a string is an error, not a conversion), and a per-face
@@ -477,7 +487,7 @@ for every time scheme and boundary layout.
 | Halo placement | only on sides that face another domain | `GPUDomain::left_halo` / `right_halo` |
 | Physical X walls | held by the first / last domain, which apply the configured BC | `build_domains` |
 | Halo / periodic X faces inside a sub-solver | zero-flux Neumann placeholder, overwritten by `exchange()` before it is read | `build_domains` |
-| Minimum slab | every domain owns ≥ 2 planes (the BC at an X wall reads the plane next to it; the periodic wrap reads planes 1 and Nx−2), else `std::invalid_argument` | constructor |
+| Minimum slab | every domain owns ≥ `kMinOwnedPlanes` = 2 planes (the BC at an X wall reads the plane next to it; the periodic wrap reads planes 1 and Nx−2), else `std::invalid_argument`; the last domain owns the fewest, `Nx / n` | `SimulationConfig::validate()` and the constructor |
 | Domains per device | any; `gpu.device_ids` may repeat an ID | constructor (peer access only between distinct IDs) |
 
 **Why this is exact.** Every owned cell is computed by the same kernel from

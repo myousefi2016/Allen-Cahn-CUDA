@@ -44,10 +44,11 @@ MultiGPUSolver::MultiGPUSolver(const SimulationConfig& config) : config_(config)
 
     const int total_Nx = config.grid.Nx;
     const int base_chunk = total_Nx / num_domains;
-    // Every domain must own at least kMinOwnedPlanes planes: neighbour halos
-    // are copied from owned planes (>= halo_width_), and the BC at an X wall
-    // reads the plane next to it, which the first/last domain must own, as
-    // must be the periodic wrap sources, global planes 1 and Nx-2 (>= 2).
+    // Every domain must own at least kMinOwnedPlanes planes (core/SimulationConfig.hpp;
+    // validate() rejects configurations that break this): neighbour halos are copied
+    // from owned planes (>= halo_width_), and the BC at an X wall reads the plane next
+    // to it, which the first/last domain must own, as must the periodic wrap sources,
+    // global planes 1 and Nx-2 (>= 2). The last domain owns base_chunk planes.
     if (base_chunk < kMinOwnedPlanes) {
         throw std::invalid_argument("grid.Nx=" + std::to_string(total_Nx) + " is too small for " +
                                     std::to_string(num_domains) +

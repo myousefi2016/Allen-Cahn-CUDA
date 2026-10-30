@@ -8,13 +8,17 @@ Runs `allen-cahn-cuda --validate-config FILE` (no GPU needed) on:
   * the config/run_vtk.json that `make cuda-run-vtk` writes (printf in Makefile)
   * every ```json example in README.md and docs/*.md
 and, as controls, requires these copies of shipped configurations to be
-REJECTED, each with its own message: one with a misspelled key and two with
-an integer field that is not an int (64.5 cells; 4294967297 steps, which the
-old parser wrapped to 1), rejected by the parser, and six that parse but
-break a rule of SimulationConfig::validate() (epsilon > 1/15 without
-willmore_beta, willmore_beta with a fully explicit scheme, a negative
-willmore_beta, a periodic face opposite a non-periodic one, a Robin face
-whose alpha and beta have opposite signs, a saturation_check_freq of 0).
+REJECTED, each with its own message: five rejected by the parser (a
+misspelled key, a section given twice, of which JSON keeps only the last, a
+boundary parameter of another type, which the fill would ignore, and two
+integer fields that are not an int: 64.5 cells; 4294967297 steps, which the
+old parser wrapped to 1), and nine that parse but break a rule of
+SimulationConfig::validate() (epsilon > 1/15 without willmore_beta,
+willmore_beta with a fully explicit scheme, a negative willmore_beta, a
+periodic face opposite a non-periodic one, a Robin face whose alpha and beta
+have opposite signs, a saturation_check_freq of 0, an empty output_dir, two
+device ids without multi_gpu, of which the run would use the first only, and
+a multi-GPU split that leaves a domain one X plane).
 So neither a validator that accepts anything nor a loader that parses without
 validating can pass.
 
@@ -245,6 +249,27 @@ def main() -> int:
         def no_saturation_interval(cfg):
             cfg["time"]["saturation_check_freq"] = 0
 
+        def flux_on_dirichlet(cfg):
+            cfg["boundary"]["phi"]["flux"] = 0.0
+
+        def empty_output_dir(cfg):
+            cfg["output"]["output_dir"] = ""
+
+        def two_devices(cfg):
+            cfg["gpu"]["device_ids"] = [0, 1]
+
+        def thin_split(cfg):
+            cfg["grid"]["Nx"] = 3
+            cfg["gpu"].update(device_ids=[0, 0], multi_gpu=True)
+
+        def twice(name, section):
+            """config/name's text with `section` given twice, first as {}."""
+            text = (root / "config" / name).read_text()
+            key = f'"{section}": {{'
+            if text.count(key) != 1:
+                raise SystemExit(f"FAIL: {key} is not in config/{name} exactly once")
+            return text.replace(key, f'"{section}": {{}},\n    ' + key, 1)
+
         controls = [
             ("misspelled key 'epsilom'", mutated("default.json", misspell), "epsilom"),
             ("eps > 1/15 without willmore_beta", mutated("run_dendrite.json", no_beta),
@@ -263,6 +288,16 @@ def main() -> int:
              "time.max_steps must be an integer"),
             ("saturation_check_freq 0", mutated("default.json", no_saturation_interval),
              "saturation_check_freq must be >= 1"),
+            ("the time section twice", twice("default.json", "time"),
+             'key "time" appears twice in "<root>"'),
+            ("a flux on a dirichlet phi", mutated("default.json", flux_on_dirichlet),
+             'is not a parameter of a dirichlet boundary'),
+            ("an empty output_dir", mutated("default.json", empty_output_dir),
+             "output.output_dir must not be empty"),
+            ("device_ids [0, 1] without multi_gpu", mutated("default.json", two_devices),
+             "gpu.multi_gpu is false"),
+            ("Nx 3 over two domains", mutated("default.json", thin_split),
+             "is too small for 2 domains"),
         ]
         for what, text, needle in controls:
             out = validate("control", text)

@@ -3,19 +3,25 @@
 #include "core/StabilityLimits.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <fstream>
 #include <initializer_list>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
+#include <span>
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace ac {
 
@@ -63,15 +69,32 @@ RobinCoefficients scaled_robin(const BoundaryConfig& bc, Real ds) {
     return {std::ldexp(bc.alpha, -k), std::ldexp(bc.beta, -k), std::ldexp(bc.gamma, -k)};
 }
 
-static BCType parse_bc_type(const std::string& s) {
-    if (s == "dirichlet")
-        return BCType::Dirichlet;
-    if (s == "neumann")
-        return BCType::Neumann;
-    if (s == "periodic")
-        return BCType::Periodic;
-    if (s == "robin")
-        return BCType::Robin;
+/// A boundary condition type: its name in a configuration and the parameters its ghost
+/// fill reads (the first `count` of `parameters`).
+struct BCTypeSpec {
+    BCType type;
+    std::string_view name;
+    std::array<std::string_view, 3> parameters;
+    std::size_t count;
+};
+static constexpr BCTypeSpec bc_types[] = {
+    {BCType::Dirichlet, "dirichlet", {"value"}, 1},
+    {BCType::Neumann, "neumann", {"flux"}, 1},
+    {BCType::Periodic, "periodic", {}, 0},
+    {BCType::Robin, "robin", {"alpha", "beta", "gamma"}, 3},
+};
+
+static BCTypeSpec bc_type_spec(BCType type) {
+    for (const BCTypeSpec& spec : bc_types)
+        if (spec.type == type)
+            return spec;
+    throw std::logic_error("bc_type_spec: unknown BCType");
+}
+
+static BCTypeSpec parse_bc_type(const std::string& s) {
+    for (const BCTypeSpec& spec : bc_types)
+        if (spec.name == s)
+            return spec;
     throw std::invalid_argument("Unknown boundary condition type: " + s);
 }
 
@@ -81,9 +104,6 @@ static void require_object(const json& obj, const std::string& section) {
         throw std::invalid_argument("config: \"" + section + "\" must be a JSON object");
 }
 
-/// Throws if `obj` has a key that is neither in `allowed` nor a comment (a key
-/// starting with '_'). A silently ignored key is a setting the user believes
-/// is in effect but is not (a typo, a removed option, a misplaced key).
 /// v with 17 significant digits: two different doubles never print alike.
 static std::string digits17(double v) {
     std::ostringstream os;
@@ -91,6 +111,9 @@ static std::string digits17(double v) {
     return os.str();
 }
 
+/// Throws if `obj` has a key that is neither in `allowed` nor a comment (a key
+/// starting with '_'). A silently ignored key is a setting the user believes
+/// is in effect but is not (a typo, a removed option, a misplaced key).
 static void require_known_keys(const json& obj, const std::string& section,
                                std::initializer_list<std::string_view> allowed) {
     require_object(obj, section);
@@ -131,11 +154,30 @@ static int read_int(const json& j, const std::string& key) {
                                 j.dump());
 }
 
+/// A boundary condition object: "type" (dirichlet when omitted) and the parameters of
+/// that type. The ghost fill reads only its own type's parameters, so one of another
+/// type (a "value" on a neumann face, or a "flux" without "type") would be ignored, and
+/// is an error.
 static BoundaryConfig parse_boundary_config(const json& j, const std::string& section) {
     require_known_keys(j, section, {"type", "value", "flux", "alpha", "beta", "gamma"});
     BoundaryConfig bc;
-    if (j.contains("type"))
-        bc.type = parse_bc_type(j["type"].get<std::string>());
+    const BCTypeSpec spec =
+        j.contains("type") ? parse_bc_type(j["type"].get<std::string>()) : bc_type_spec(bc.type);
+    bc.type = spec.type;
+    const auto used = std::span(spec.parameters).first(spec.count);
+    for (const std::string_view key : {"value", "flux", "alpha", "beta", "gamma"}) {
+        if (!j.contains(std::string(key)) || std::ranges::find(used, key) != used.end())
+            continue;
+        std::string takes;
+        for (const std::string_view u : used)
+            takes += (takes.empty() ? "\"" : ", \"") + std::string(u) + "\"";
+        throw std::invalid_argument(
+            "config: \"" + std::string(key) + "\" in \"" + section + "\" is not a parameter of a " +
+            std::string(spec.name) + " boundary" +
+            (j.contains("type") ? "" : " (the type when \"type\" is omitted)") + ", which takes " +
+            (takes.empty() ? "no parameters" : takes) +
+            "; a parameter of another type would be ignored");
+    }
     if (j.contains("value"))
         bc.value = j["value"].get<Real>();
     if (j.contains("flux"))
@@ -339,6 +381,93 @@ static SimulationConfig parse_config(const json& j) {
     return cfg;
 }
 
+/// Finds the first object of a JSON text with a key that appears twice, and names it as
+/// require_known_keys names sections ("<root>", "time", "boundary.phi.x_lo",
+/// "gpu.device_ids[0]"). json::parse keeps only the last value of a repeated key, so an
+/// earlier setting, or a whole earlier section, would be dropped without a word.
+class RepeatedKeyFinder final : public json::json_sax_t {
+public:
+    std::optional<std::string> repeated; ///< the key, once found
+    std::string where;                   ///< the object it is repeated in
+
+    bool null() override { return element(); }
+    bool boolean(bool /*val*/) override { return element(); }
+    bool number_integer(json::number_integer_t /*val*/) override { return element(); }
+    bool number_unsigned(json::number_unsigned_t /*val*/) override { return element(); }
+    bool number_float(json::number_float_t /*val*/, const json::string_t& /*s*/) override {
+        return element();
+    }
+    bool string(json::string_t& /*val*/) override { return element(); }
+    bool binary(json::binary_t& /*val*/) override { return element(); }
+    bool start_object(std::size_t /*elements*/) override { return open(true); }
+    bool key(json::string_t& val) override {
+        Container& object = open_.back();
+        if (!object.keys.insert(val).second) {
+            repeated = val;
+            where = object.name;
+            return false; // stops the parse
+        }
+        object.member = val;
+        return true;
+    }
+    bool end_object() override { return close(); }
+    bool start_array(std::size_t /*elements*/) override { return open(false); }
+    bool end_array() override { return close(); }
+    bool parse_error(std::size_t /*position*/, const std::string& /*last_token*/,
+                     const nlohmann::detail::exception& /*ex*/) override {
+        return false;
+    }
+
+private:
+    struct Container {
+        std::string name;
+        bool object;
+        std::set<std::string> keys; ///< object: the keys so far
+        std::string member;         ///< object: the key of the value being read
+        std::size_t index = 0;      ///< array: the index of the next element
+    };
+    std::vector<Container> open_;
+
+    bool open(bool object) {
+        std::string name = "<root>";
+        if (!open_.empty()) {
+            const Container& parent = open_.back();
+            if (!parent.object)
+                name = parent.name + "[" + std::to_string(parent.index) + "]";
+            else
+                name = open_.size() == 1 ? parent.member : parent.name + "." + parent.member;
+        }
+        open_.push_back({std::move(name), object, {}, {}, 0});
+        return true;
+    }
+    bool close() {
+        open_.pop_back();
+        return element();
+    }
+    /// A value is complete: in an array the next one has the next index.
+    bool element() {
+        if (!open_.empty() && !open_.back().object)
+            ++open_.back().index;
+        return true;
+    }
+};
+
+/// The JSON value of a configuration text; nlohmann's errors for malformed JSON.
+/// Throws std::invalid_argument if an object has a key twice.
+static json parse_json(const std::string& text) {
+    json j = json::parse(text);
+    RepeatedKeyFinder finder;
+    // Stops at the first repeated key; the syntax is the one json::parse accepted.
+    (void)json::sax_parse(text, &finder);
+    if (finder.repeated) {
+        throw std::invalid_argument("config: key \"" + *finder.repeated + "\" appears twice in \"" +
+                                    finder.where +
+                                    "\" (JSON keeps only the last value of a key, so the first "
+                                    "would be silently ignored)");
+    }
+    return j;
+}
+
 bool grid_points_fit_int(const GridParams& grid) {
     if (grid.Nx < 1 || grid.Ny < 1 || grid.Nz < 1)
         return false;
@@ -354,16 +483,15 @@ SimulationConfig SimulationConfig::from_json(const std::filesystem::path& path) 
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open config file: " + path.string());
     }
-    json j = json::parse(file);
-    auto cfg = parse_config(j);
+    const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    auto cfg = parse_config(parse_json(text));
     cfg.validate();
     spdlog::info("Configuration loaded from {}", path.string());
     return cfg;
 }
 
 SimulationConfig SimulationConfig::from_json_string(const std::string& json_str) {
-    json j = json::parse(json_str);
-    auto cfg = parse_config(j);
+    auto cfg = parse_config(parse_json(json_str));
     cfg.validate();
     return cfg;
 }
@@ -527,6 +655,14 @@ void SimulationConfig::validate() const {
         throw std::invalid_argument("checkpoint keep_last must be >= 1");
     if (checkpoint.restart_file.has_value() && checkpoint.restart_file->empty())
         throw std::invalid_argument("checkpoint restart_file must not be empty (omit it instead)");
+    // The engine creates both directories (std::filesystem::create_directories), which
+    // fails for an empty path, after the solver has allocated the fields.
+    if (output.output_dir.empty())
+        throw std::invalid_argument("output.output_dir must not be empty (omit it for ./out)");
+    if (checkpoint.checkpoint_dir.empty()) {
+        throw std::invalid_argument(
+            "checkpoint.checkpoint_dir must not be empty (omit it for ./checkpoints)");
+    }
 
     // Initial condition
     if (initial.seed_radius <= 0.0)
@@ -641,6 +777,28 @@ void SimulationConfig::validate() const {
     for (const int id : gpu.device_ids) {
         if (id < 0)
             throw std::invalid_argument("gpu.device_ids must be >= 0, got " + std::to_string(id));
+    }
+    // SimulationEngine::create_solver splits the grid only with multi_gpu; otherwise the
+    // run uses device_ids[0], and every other id would be ignored.
+    const std::size_t devices = gpu.device_ids.size();
+    if (devices > 1 && !gpu.multi_gpu) {
+        throw std::invalid_argument(
+            "gpu.device_ids lists " + std::to_string(devices) +
+            " devices but gpu.multi_gpu is false, so the run would use device " +
+            std::to_string(gpu.device_ids.front()) +
+            " only; set multi_gpu to true to split the grid's X planes between them, or list "
+            "one device");
+    }
+    // The split's last domain owns Nx / devices planes (MultiGPUSolver).
+    const std::size_t last_planes = static_cast<std::size_t>(grid.Nx) / devices;
+    if (devices > 1 && last_planes < static_cast<std::size_t>(kMinOwnedPlanes)) {
+        throw std::invalid_argument(
+            "grid.Nx = " + std::to_string(grid.Nx) + " is too small for " +
+            std::to_string(devices) + " domains (gpu.device_ids): the last would own " +
+            std::to_string(last_planes) + " X plane(s), and each must own at least " +
+            std::to_string(kMinOwnedPlanes) +
+            " (the BC at an X wall reads the plane next to it, which the domain at that wall "
+            "must own)");
     }
 
     spdlog::info("Configuration validated: {}x{}x{} grid, dt={}, {} scheme, {} stencil", grid.Nx,

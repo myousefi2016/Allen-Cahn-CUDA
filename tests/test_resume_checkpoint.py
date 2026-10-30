@@ -330,6 +330,28 @@ class ResumeHelperTest(unittest.TestCase):
                       res.stderr)
         self.assertIn("skipping checkpoint_200.acbin: spacing", res.stderr)
 
+    # 11 ---------------------------------------------------------------------
+    def test_rejects_a_key_given_twice(self) -> None:
+        # json.load keeps the last value of a repeated key, and the resume
+        # config written from it would carry that one only. The binary
+        # rejects such a base config, so the helper must too (exit 2), at the
+        # root and in a section, without writing a resume config.
+        write_checkpoint(self.ckpt, 100)
+        text = json.dumps(self.config)
+        for old, new, key in (
+                ('"time": {', '"time": {"scheme": "rk4"}, "time": {', "time"),
+                ('"checkpoint_dir": ', '"checkpoint_dir": "./other", "checkpoint_dir": ',
+                 "checkpoint_dir")):
+            self.assertEqual(text.count(old), 1)
+            (self.work / "config" / "run.json").write_text(text.replace(old, new))
+            res = self.run_helper()
+            self.assertEqual(res.returncode, 2, res.stderr)
+            self.assertEqual(res.stdout, "")
+            self.assertIn(f"key '{key}' appears twice in one object", res.stderr)
+            self.assertFalse((self.work / "config" / "run_resume.json").exists())
+        self.write_config(self.config)
+        self.assert_resumes_from(100)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

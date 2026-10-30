@@ -121,10 +121,21 @@ struct CheckpointParams {
 };
 
 // ── GPU parameters ─────────────────────────────────────────────────────────
+/// One domain per entry of device_ids (an id may repeat) when multi_gpu is true and there
+/// are several; otherwise the whole grid runs on device_ids[0], and validate() rejects a
+/// list of several ids, of which all but the first would be ignored.
 struct GPUParams {
     std::vector<int> device_ids = {0};
     bool multi_gpu = false;
 };
+
+/// X planes every domain of a multi-GPU split must own (MultiGPUSolver): the BC at an X
+/// wall reads the plane next to it, which the first and the last domain must own, as must
+/// the periodic wrap sources, global planes 1 and Nx - 2; the neighbours' halos are copied
+/// from owned planes (MultiGPUSolver asserts that its halo width does not exceed this).
+/// The split gives every domain Nx / domains planes and one more to the first
+/// Nx % domains, so the last domain owns the fewest.
+inline constexpr int kMinOwnedPlanes = 2;
 
 // ── Initial condition ──────────────────────────────────────────────────────
 struct InitialCondition {

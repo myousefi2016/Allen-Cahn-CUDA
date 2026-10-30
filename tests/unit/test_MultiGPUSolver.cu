@@ -336,12 +336,39 @@ TEST_F(MultiGPUSolverTest, RejectsFewerThanTwoDomains) {
 }
 
 TEST_F(MultiGPUSolverTest, RejectsDomainsThinnerThanTwoPlanes) {
-    // 5 planes over 3 domains leaves domains with a single owned plane: the
-    // first domain would not own the plane next to its X wall, which the
-    // wall's BC reads.
+    // 5 planes over 3 domains split 2/2/1 (the remainder goes to the first
+    // domains): the last domain would own only plane 4, its X wall's plane, and
+    // not plane 3 next to it, which the wall's BC reads.
     auto cfg = make_config({TimeScheme::Euler, 3, BcLayout::Uniform, 5});
     cfg.gpu.device_ids = shared_device(3);
     EXPECT_THROW(MultiGPUSolver solver(cfg), std::invalid_argument);
+}
+
+// validate() rejects exactly the splits the constructor rejects, so a
+// configuration that --validate-config accepts does not fail at startup
+// for its split, and none that the solver can run is rejected.
+TEST_F(MultiGPUSolverTest, ValidateRejectsExactlyTheSplitsTheSolverRejects) {
+    for (int domains = 2; domains <= 4; ++domains) {
+        for (int Nx = 3; Nx <= 3 * domains; ++Nx) {
+            auto cfg = make_config({TimeScheme::Euler, domains, BcLayout::Uniform, Nx});
+            cfg.gpu.multi_gpu = true;
+            cfg.gpu.device_ids = shared_device(domains);
+            bool solver_rejects = false;
+            try {
+                MultiGPUSolver solver(cfg);
+            } catch (const std::invalid_argument&) {
+                solver_rejects = true;
+            }
+            bool validate_rejects = false;
+            try {
+                cfg.validate();
+            } catch (const std::invalid_argument&) {
+                validate_rejects = true;
+            }
+            EXPECT_EQ(validate_rejects, solver_rejects) << Nx << " planes over " << domains;
+            EXPECT_EQ(solver_rejects, Nx / domains < 2) << Nx << " planes over " << domains;
+        }
+    }
 }
 
 // The saturation guard's reduction reads the interior cells next to the
