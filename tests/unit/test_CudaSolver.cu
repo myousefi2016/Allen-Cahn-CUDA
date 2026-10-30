@@ -52,6 +52,19 @@ protected:
     }
 };
 
+// The solver checks the point count itself (it may be given an unvalidated config), before
+// it allocates anything, and without overflow: 2^21 points per axis are 2^63 points.
+TEST_F(CudaSolverTest, RejectsGridsBeyond32BitIndicesBeforeAllocating) {
+    auto cfg = make_config();
+    cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 1 << 21;
+    try {
+        CudaSolver solver(cfg);
+        FAIL() << "constructed a solver for 2^63 points";
+    } catch (const std::invalid_argument& e) {
+        EXPECT_NE(std::string(e.what()).find("32-bit indexing"), std::string::npos) << e.what();
+    }
+}
+
 TEST_F(CudaSolverTest, EulerStepPreservesSymmetry) {
     int N = 16;
     auto cfg = make_config(N, TimeScheme::Euler);

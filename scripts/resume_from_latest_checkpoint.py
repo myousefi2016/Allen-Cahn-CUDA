@@ -19,8 +19,9 @@
 #
 # A checkpoint is accepted only if its 128-byte CheckpointIO::Header has the
 # ACCHKPT magic, version 1, num_fields 2, the config's Nx/Ny/Nz and spacing
-# (exactly, as the engine compares them; positive and not NaN) and the step
-# in its file name; the file is exactly
+# (exactly, as the engine compares them; positive and not NaN), the step in
+# its file name, a finite time >= 0 and a finite dt > 0 (as CheckpointIO::read
+# requires; the CRC does not cover the header); the file is exactly
 # 128 + 2*Nx*Ny*Nz*8 bytes; and, when data_crc32 != 0, the CRC-32 of the
 # phi||u payload matches it. Anything else (a truncated or foreign file, a
 # checkpoint from another grid, corrupted data) is skipped with a warning and
@@ -81,6 +82,7 @@ REAL_BYTES = 8  # Real is double (src/core/Grid.hpp)
 DEFAULT_GRID = {"Nx": 600, "Ny": 600, "Nz": 600}
 INT_MAX = 2**31 - 1  # the engine reads grid dimensions as int
 DEFAULT_SPACING = {"dx": 0.4, "dy": 0.4, "dz": 0.4}  # GridParams defaults
+DEFAULT_MAX_STEPS = 6000  # TimeParams default (src/core/SimulationConfig.hpp)
 
 # The CRC is streamed so memory stays bounded (a 600^3 payload is 3.2 GiB).
 CRC_CHUNK_BYTES = 16 * 1024 * 1024
@@ -220,6 +222,12 @@ def read_valid_header(path: Path, step: int,
         if hdr.step != step:
             raise InvalidCheckpoint(
                 f"header step {hdr.step} does not match the file name")
+        # The run state CheckpointIO::read accepts (the step is the file
+        # name's, >= 0): the CRC covers the fields only.
+        if not (math.isfinite(hdr.time) and hdr.time >= 0.0):
+            raise InvalidCheckpoint(f"time {hdr.time!r} is not a finite value >= 0")
+        if not (math.isfinite(hdr.dt) and hdr.dt > 0.0):
+            raise InvalidCheckpoint(f"dt {hdr.dt!r} is not a finite value > 0")
 
         size = os.fstat(fh.fileno()).st_size
         if size != expected_bytes:
@@ -341,8 +349,8 @@ def main(argv: list[str]) -> int:
         json.dump(cfg, fh, indent=4)
 
     # Sanity: warn if max_steps <= step (resume would do nothing)
-    max_steps = cfg.get("time", {}).get("max_steps", 0)
-    if max_steps and step >= max_steps:
+    max_steps = cfg.get("time", {}).get("max_steps", DEFAULT_MAX_STEPS)
+    if step >= max_steps:
         sys.stderr.write(
             f"  WARN: checkpoint step {step} >= time.max_steps {max_steps}; "
             "the engine will not advance.  Increase max_steps in the base config.\n"

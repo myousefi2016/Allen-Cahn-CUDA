@@ -30,6 +30,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import struct
 import subprocess
 import sys
@@ -64,6 +66,8 @@ def write_checkpoint(ckpt_dir: Path, step: int, *,
                      num_fields: int = 2,
                      spacing: float = 0.4,
                      header_step: int | None = None,
+                     dt: float = 0.005,
+                     time: float | None = None,
                      crc: int | None = None,
                      flip_payload_byte: bool = False,
                      truncate_to: int | None = None,
@@ -72,7 +76,8 @@ def write_checkpoint(ckpt_dir: Path, step: int, *,
     data = payload(grid, seed=step)
     stored_crc = zlib.crc32(data) if crc is None else crc
     header = struct.pack(HEADER_FMT, magic, version, *grid,
-                         spacing, spacing, spacing, 0.005, step * 0.005,
+                         spacing, spacing, spacing, dt,
+                         step * 0.005 if time is None else time,
                          step if header_step is None else header_step,
                          num_fields, stored_crc, b"\0" * 52)
     if flip_payload_byte:
@@ -169,6 +174,55 @@ class ResumeHelperTest(unittest.TestCase):
         write_checkpoint(self.ckpt, 200, flip_payload_byte=True)
         res = self.assert_resumes_from(100)
         self.assertIn("CRC32 mismatch", res.stderr)
+
+    # 4b ---------------------------------------------------------------------
+    # The binary rejects a header whose time or dt is out of range (the CRC
+    # covers the fields only), so the helper skips it and resumes from the
+    # next-older checkpoint.
+    def test_skips_invalid_run_state(self) -> None:
+        write_checkpoint(self.ckpt, 100)
+        write_checkpoint(self.ckpt, 200, dt=math.nan)
+        write_checkpoint(self.ckpt, 300, dt=0.0)
+        write_checkpoint(self.ckpt, 400, time=math.inf)
+        write_checkpoint(self.ckpt, 500, time=-1.0)
+        res = self.assert_resumes_from(100)
+        self.assertIn("skipping checkpoint_200.acbin: dt nan is not a finite value > 0",
+                      res.stderr)
+        self.assertIn("skipping checkpoint_300.acbin: dt 0.0 is not a finite value > 0",
+                      res.stderr)
+        self.assertIn("skipping checkpoint_400.acbin: time inf is not a finite value >= 0",
+                      res.stderr)
+        self.assertIn("skipping checkpoint_500.acbin: time -1.0 is not a finite value >= 0",
+                      res.stderr)
+
+    # 4c ---------------------------------------------------------------------
+    # A config without time.max_steps runs the engine's default, 6000 steps:
+    # a checkpoint at step 6000 leaves nothing to do, and the helper says so.
+    def test_omitted_max_steps_is_the_engines_default(self) -> None:
+        del self.config["time"]["max_steps"]
+        self.write_config(self.config)
+        write_checkpoint(self.ckpt, 6000)
+        res = self.assert_resumes_from(6000)
+        self.assertIn("checkpoint step 6000 >= time.max_steps 6000; the engine will not "
+                      "advance", res.stderr)
+        self.assertIn("target step 6000, remaining ~0 steps", res.stderr)
+
+    # 4d ---------------------------------------------------------------------
+    # The defaults the helper fills in for omitted keys are the C++ ones.
+    def test_defaults_match_the_engine(self) -> None:
+        header = (Path(__file__).resolve().parents[1] / "src" / "core"
+                  / "SimulationConfig.hpp").read_text()
+        grid = re.search(r"int Nx = (\d+), Ny = (\d+), Nz = (\d+);", header)
+        spacing = re.search(r"Real dx = ([\d.]+), dy = ([\d.]+), dz = ([\d.]+);", header)
+        steps = re.search(r"int max_steps = (\d+);", header)
+        self.assertIsNotNone(grid)
+        self.assertIsNotNone(spacing)
+        self.assertIsNotNone(steps)
+        self.assertEqual(resume.DEFAULT_GRID,
+                         dict(zip(("Nx", "Ny", "Nz"), map(int, grid.groups()))))
+        self.assertEqual(resume.DEFAULT_SPACING,
+                         dict(zip(("dx", "dy", "dz"), map(float, spacing.groups()))))
+        self.assertEqual(resume.DEFAULT_MAX_STEPS, int(steps.group(1)))
 
     # 5 ----------------------------------------------------------------------
     def test_accepts_legacy_file_without_crc(self) -> None:

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <string>
 #include <unistd.h>
 #include <vector>
 
@@ -34,8 +36,30 @@ uint32_t CheckpointIO::compute_crc32(const void* data, std::size_t len, uint32_t
     return crc ^ 0xFFFFFFFFu;
 }
 
+namespace {
+
+/// The run state a checkpoint records, as the engine produces it: a step >= 0, a finite
+/// time >= 0 (the sum of the positive steps) and a finite dt > 0 (validated, or adapted
+/// within [dt_min, dt_max]). Empty if it is, else what is wrong. A restart takes them as
+/// they are: a negative step would count the loop through negative steps, a NaN dt passes
+/// the adaptive restart's clamp.
+std::string invalid_run_state(int step, double time, double dt) {
+    if (step < 0)
+        return "a negative step " + std::to_string(step);
+    if (!std::isfinite(time) || time < 0.0)
+        return "time " + std::to_string(time) + " (not a finite value >= 0)";
+    if (!std::isfinite(dt) || !(dt > 0.0))
+        return "dt " + std::to_string(dt) + " (not a finite value > 0)";
+    return {};
+}
+
+} // namespace
+
 void CheckpointIO::write(const std::filesystem::path& path, int step, double time, double dt,
                          const Grid& grid, const FieldData& phi, const FieldData& u) {
+    if (const std::string why = invalid_run_state(step, time, dt); !why.empty())
+        throw std::invalid_argument("Refusing to write a checkpoint with " + why + ": " +
+                                    path.string());
     std::filesystem::create_directories(path.parent_path());
 
     // Write to a temporary file first, then atomically rename to avoid corruption
@@ -131,6 +155,10 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) 
     if (hdr.num_fields != 2) {
         throw std::runtime_error("Checkpoint has unexpected num_fields: " +
                                  std::to_string(hdr.num_fields));
+    }
+    // The CRC covers the fields only: the header's run state is checked here.
+    if (const std::string why = invalid_run_state(hdr.step, hdr.time, hdr.dt); !why.empty()) {
+        throw std::runtime_error("Checkpoint has " + why + ": " + path.string());
     }
     // The file must be exactly the header and the two fields of the header's
     // grid. Checked before allocating: a corrupted header cannot request an

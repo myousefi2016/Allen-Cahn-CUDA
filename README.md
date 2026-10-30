@@ -313,10 +313,11 @@ Crash safety:
 - Checkpoints every 48 000 steps (15 time units, 11.5 minutes of compute at 14.4 ms per step on an RTX 4090, the most lost on `SIGKILL` / suspend).
 - `keep_last = 3` (340 MB on disk for 192³).
 - `cuda-resume-dendrite` finds the highest-numbered intact checkpoint
-  (the 128-byte header must match the config's grid, the file size must be
-  exact and the stored CRC32 must match the data; truncated, foreign-grid
-  and corrupted files are skipped), injects it into the config, and resumes
-  the binary at the next step. If no usable checkpoint exists it cold-starts.
+  (the 128-byte header must match the config's grid and hold a step >= 0, a
+  finite time >= 0 and a finite dt > 0, the file size must be exact and the
+  stored CRC32 must match the data; truncated, foreign-grid and corrupted
+  files are skipped), injects it into the config, and resumes the binary at
+  the next step. If no usable checkpoint exists it cold-starts.
 
 Exit status of `allen-cahn-cuda`:
 

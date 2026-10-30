@@ -148,6 +148,38 @@ TEST_F(SimulationConfigTest, ValidationBoundsTotalPointsTo32BitIndexing) {
     EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
+// The bound is computed without overflow: 2^21 points per axis are 2^63 points, which a
+// long long product Nx * Ny * Nz wraps to -2^63, and 2^22 x 2^22 x 2^20 are 2^64, which it
+// wraps to 0, both below the bound; (2^31 - 1)^3 and 2^31 - 1 points along one axis of a
+// 3 x 3 cross-section exceed it too. Every one is rejected by the point-count check, and
+// grid_points_fit_int agrees at the exact bound.
+TEST_F(SimulationConfigTest, PointCountBoundDoesNotOverflow) {
+    const int big = std::numeric_limits<int>::max();
+    struct Dims {
+        int nx, ny, nz;
+    };
+    for (const Dims d :
+         {Dims{1 << 21, 1 << 21, 1 << 21}, Dims{1 << 22, 1 << 22, 1 << 20}, Dims{big, big, big},
+          Dims{3, 3, big}, Dims{big, 3, 3}, Dims{1 << 16, 1 << 16, 1 << 16}}) {
+        SimulationConfig cfg;
+        cfg.grid.Nx = d.nx;
+        cfg.grid.Ny = d.ny;
+        cfg.grid.Nz = d.nz;
+        try {
+            cfg.validate();
+            ADD_FAILURE() << "accepted " << d.nx << " x " << d.ny << " x " << d.nz;
+        } catch (const std::invalid_argument& e) {
+            EXPECT_NE(std::string(e.what()).find("32-bit cell indices"), std::string::npos)
+                << e.what();
+        }
+        EXPECT_FALSE(grid_points_fit_int(cfg.grid));
+    }
+    EXPECT_TRUE(grid_points_fit_int(GridParams{3, 3, 238609294, 0.4, 0.4, 0.4}));
+    EXPECT_FALSE(grid_points_fit_int(GridParams{3, 3, 238609295, 0.4, 0.4, 0.4}));
+    EXPECT_FALSE(grid_points_fit_int(GridParams{0, 3, 3, 0.4, 0.4, 0.4}));
+    EXPECT_FALSE(grid_points_fit_int(GridParams{-3, 3, 3, 0.4, 0.4, 0.4}));
+}
+
 TEST_F(SimulationConfigTest, ValidationRejectsEmptyRestartFile) {
     SimulationConfig cfg;
     cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 10;

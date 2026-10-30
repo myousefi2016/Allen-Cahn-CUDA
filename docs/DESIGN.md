@@ -598,7 +598,9 @@ concatenated field bytes; the table is generated once in
 ### 8.3 Read protocol
 
 `CheckpointIO::read` validates magic, version, `num_fields`, dimensions of at
-least 3, positive grid spacing, that the file size is exactly the header plus
+least 3, positive grid spacing, the run state (a step >= 0, a finite time
+>= 0 and a finite dt > 0; the CRC covers only the fields, and `write`
+refuses the same values), that the file size is exactly the header plus
 two fields of the header's grid (before allocating; a header whose size
 overflows 64 bits is rejected), and the CRC32 if present.
 `SimulationEngine::initialize_from_checkpoint` additionally rejects a

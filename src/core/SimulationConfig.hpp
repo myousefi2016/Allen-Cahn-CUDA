@@ -76,6 +76,10 @@ struct GridParams {
     Real dx = 0.4, dy = 0.4, dz = 0.4;
 };
 
+/// Whether every dimension is >= 1 and Nx * Ny * Nz fits int, the kernels' 32-bit cell
+/// index; computed without overflow (the product itself can exceed 2^63).
+[[nodiscard]] bool grid_points_fit_int(const GridParams& grid);
+
 // ── Time integration ───────────────────────────────────────────────────────
 enum class TimeScheme { Euler, Heun, RK4, IMEX };
 

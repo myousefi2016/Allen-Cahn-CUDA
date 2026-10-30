@@ -11,6 +11,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -147,6 +148,67 @@ TEST_F(CheckpointIOTest, StoredCrcCoversFieldPayload) {
     EXPECT_EQ(hdr.data_crc32, payload_crc);
 }
 
+// The CRC covers the fields only, so the header's run state is checked on its own: a
+// negative step, a negative or non-finite time, and a non-finite or non-positive dt are
+// rejected on restore (a restart would count through negative steps, or step with a NaN
+// dt, which the adaptive restart's clamp passes through), and write() refuses to produce
+// them. The edges inside the ranges (step 0 and INT_MAX, time 0, the largest double, the
+// smallest positive dt) round-trip.
+TEST_F(CheckpointIOTest, RunStateOutsideItsRangeIsRejected) {
+    Grid grid(Dim3{6, 5, 4}, Spacing{0.4, 0.4, 0.4});
+    FieldData phi(grid, "phi");
+    FieldData u(grid, "u");
+    phi.fill(0.25);
+    u.fill(-0.75);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    struct Case {
+        int step;
+        double time, dt;
+        const char* field;
+    };
+    const auto refused = test_dir_ / "refused.acbin";
+    for (const Case c :
+         {Case{-5, 0.1, 0.01, "step"}, Case{7, nan, 0.01, "time"}, Case{7, -1.0, 0.01, "time"},
+          Case{7, inf, 0.01, "time"}, Case{7, 0.1, nan, "dt"}, Case{7, 0.1, 0.0, "dt"},
+          Case{7, 0.1, -0.01, "dt"}, Case{7, 0.1, inf, "dt"}}) {
+        SCOPED_TRACE(std::string("step ") + std::to_string(c.step) + " time " +
+                     std::to_string(c.time) + " dt " + std::to_string(c.dt));
+        const auto path = test_dir_ / "state.acbin";
+        CheckpointIO::write(path, 7, 0.5, 0.01, grid, phi, u);
+        {
+            std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+            CheckpointIO::Header hdr{};
+            f.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+            hdr.step = c.step;
+            hdr.time = c.time;
+            hdr.dt = c.dt;
+            f.seekp(0);
+            f.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+            ASSERT_TRUE(f.good());
+        }
+        try {
+            (void)CheckpointIO::read(path);
+            ADD_FAILURE() << "read() accepted the header";
+        } catch (const std::runtime_error& e) {
+            EXPECT_NE(std::string(e.what()).find(c.field), std::string::npos) << e.what();
+        }
+        EXPECT_THROW(CheckpointIO::write(refused, c.step, c.time, c.dt, grid, phi, u),
+                     std::invalid_argument);
+        EXPECT_FALSE(std::filesystem::exists(refused));
+    }
+    for (const Case c :
+         {Case{0, 0.0, std::numeric_limits<double>::denorm_min(), ""},
+          Case{std::numeric_limits<int>::max(), std::numeric_limits<double>::max(), 1e300, ""}}) {
+        const auto path = test_dir_ / "edge.acbin";
+        CheckpointIO::write(path, c.step, c.time, c.dt, grid, phi, u);
+        const auto back = CheckpointIO::read(path);
+        EXPECT_EQ(back.step, c.step);
+        EXPECT_EQ(back.time, c.time);
+        EXPECT_EQ(back.dt, c.dt);
+    }
+}
+
 // A single flipped bit in the field payload must be rejected on restore.
 TEST_F(CheckpointIOTest, CorruptedPayloadIsRejected) {
     Grid grid(Dim3{8, 8, 8}, Spacing{0.5, 0.5, 0.5});
@@ -221,6 +283,9 @@ TEST_F(CheckpointIOTest, LongAxisIsReadAndAnOverflowingHeaderIsRejected) {
     CheckpointIO::Header hdr{};
     hdr.Nx = hdr.Ny = hdr.Nz = 1 << 30;
     hdr.dx = hdr.dy = hdr.dz = 0.4;
+    hdr.step = 7; // a valid run state: the size check is what this header is for
+    hdr.time = 0.7;
+    hdr.dt = 0.1;
     hdr.num_fields = 2;
     const auto huge = test_dir_ / "huge.acbin";
     std::ofstream(huge, std::ios::binary)

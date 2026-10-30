@@ -339,6 +339,16 @@ static SimulationConfig parse_config(const json& j) {
     return cfg;
 }
 
+bool grid_points_fit_int(const GridParams& grid) {
+    if (grid.Nx < 1 || grid.Ny < 1 || grid.Nz < 1)
+        return false;
+    // Nx * Ny < 2^62 fits long long; only when it fits int is the product with Nz compared,
+    // and then that product is below 2^62 as well.
+    const long long plane = static_cast<long long>(grid.Nx) * grid.Ny;
+    return plane <= std::numeric_limits<int>::max() &&
+           plane * grid.Nz <= std::numeric_limits<int>::max();
+}
+
 SimulationConfig SimulationConfig::from_json(const std::filesystem::path& path) {
     std::ifstream file(path);
     if (!file.is_open()) {
@@ -367,11 +377,11 @@ void SimulationConfig::validate() const {
         throw std::invalid_argument("Grid spacing must be positive");
     }
     // Kernels index cells with 32-bit int (idx3d, linear_to_3d).
-    if (static_cast<long long>(grid.Nx) * grid.Ny * grid.Nz > std::numeric_limits<int>::max()) {
+    if (!grid_points_fit_int(grid)) {
         throw std::invalid_argument(
-            "Grid has " + std::to_string(static_cast<long long>(grid.Nx) * grid.Ny * grid.Nz) +
-            " points; at most " + std::to_string(std::numeric_limits<int>::max()) +
-            " are supported (32-bit cell indices)");
+            "Grid has " + std::to_string(grid.Nx) + " x " + std::to_string(grid.Ny) + " x " +
+            std::to_string(grid.Nz) + " points, more than the " +
+            std::to_string(std::numeric_limits<int>::max()) + " that 32-bit cell indices support");
     }
 
     // 27-point isotropic stencil requires cubic grid spacing

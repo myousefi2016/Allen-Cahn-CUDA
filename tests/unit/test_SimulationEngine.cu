@@ -6,10 +6,13 @@
 #include "io/CheckpointIO.hpp"
 #include "logging/Logger.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <limits>
 #include <string>
+#include <vector>
 
 using namespace ac;
 
@@ -335,6 +338,50 @@ TEST_F(SimulationEngineTest, RestoreRejectsDifferentGridSpacing) {
         FAIL() << "restored a checkpoint with dx = 0.5 into a dx = 0.4 run";
     } catch (const std::runtime_error& e) {
         EXPECT_NE(std::string(e.what()).find("spacing"), std::string::npos) << e.what();
+    }
+}
+
+// validate() accepts every max_steps >= 1, INT_MAX included: the loop ends there. A
+// restart from step INT_MAX - 2 runs exactly the steps INT_MAX - 1 and INT_MAX (a
+// checkpoint after each), a restart from INT_MAX none.
+TEST_F(SimulationEngineTest, RunEndsAtTheLargestMaxSteps) {
+    const int last = std::numeric_limits<int>::max();
+    for (const int from : {last - 2, last}) {
+        SCOPED_TRACE("restart from step " + std::to_string(from));
+        auto cfg = make_config(8, 10);
+        cfg.time.max_steps = last;
+        cfg.output.frequency = last;
+        cfg.checkpoint.frequency = 1;
+        cfg.checkpoint.keep_last = 3;
+        cfg.checkpoint.checkpoint_dir = test_dir_ / ("ckpt_" + std::to_string(from));
+        cfg.output.output_dir = test_dir_ / ("out_" + std::to_string(from));
+        ASSERT_NO_THROW(cfg.validate());
+        Grid grid(Dim3{8, 8, 8}, Spacing{0.4, 0.4, 0.4});
+        FieldData phi(grid, "phi"), u(grid, "u");
+        phi.fill(-1.0);
+        u.fill(-0.8);
+        const auto file = test_dir_ / ("restart_" + std::to_string(from) + ".acbin");
+        CheckpointIO::write(file, from, 0.1, 0.001, grid, phi, u);
+        cfg.checkpoint.restart_file = file;
+
+        SimulationEngine engine(cfg);
+        ASSERT_NO_THROW(engine.run());
+        std::vector<std::string> written;
+        if (std::filesystem::exists(cfg.checkpoint.checkpoint_dir))
+            for (const auto& entry :
+                 std::filesystem::directory_iterator(cfg.checkpoint.checkpoint_dir))
+                written.push_back(entry.path().filename().string());
+        std::sort(written.begin(), written.end());
+        if (from == last - 2) {
+            EXPECT_EQ(written, (std::vector<std::string>{"checkpoint_2147483646.acbin",
+                                                         "checkpoint_2147483647.acbin"}));
+            EXPECT_EQ(
+                CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_2147483647.acbin")
+                    .step,
+                last);
+        } else {
+            EXPECT_TRUE(written.empty());
+        }
     }
 }
 
