@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 
 namespace ac {
@@ -46,9 +47,15 @@ public:
     /// result as `crc` to continue a running checksum over consecutive buffers.
     static uint32_t compute_crc32(const void* data, std::size_t len, uint32_t crc = 0);
 
-    /// Write a checkpoint to disk.
+    /// Write a checkpoint to disk: phi and u hold the grid's cells in FieldData's order
+    /// (throws std::invalid_argument if their sizes are not the grid's).
     static void write(const std::filesystem::path& path, int step, double time, double dt,
-                      const Grid& grid, const FieldData& phi, const FieldData& u);
+                      const Grid& grid, std::span<const Real> phi, std::span<const Real> u);
+    static void write(const std::filesystem::path& path, int step, double time, double dt,
+                      const Grid& grid, const FieldData& phi, const FieldData& u) {
+        write(path, step, time, dt, grid, std::span<const Real>(phi.data(), phi.size()),
+              std::span<const Real>(u.data(), u.size()));
+    }
 
     /// Read a checkpoint from disk. Returns the restored fields.
     struct RestoreData {

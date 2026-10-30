@@ -1,7 +1,10 @@
 #include "io/VTKWriter.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
@@ -9,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <unistd.h>
 
 #ifdef AC_HAS_VTK
 #include <vtkDoubleArray.h>
@@ -21,6 +25,34 @@
 #endif
 
 namespace ac {
+
+namespace {
+
+/// Stores a written file's data (fsync), renames it into place and stores the rename
+/// (fsync of the directory), as CheckpointIO::write does for a checkpoint: the engine
+/// writes a checkpoint only after the frames before it, which a resume never writes
+/// again, so they must survive whatever the checkpoint survives.
+void publish(const std::filesystem::path& tmp, const std::filesystem::path& path) {
+    const int fd = ::open(tmp.c_str(), O_RDONLY);
+    if (fd < 0) {
+        throw std::runtime_error("Cannot open " + tmp.string() +
+                                 " to sync it: " + std::strerror(errno));
+    }
+    if (::fsync(fd) != 0) {
+        const int error = errno;
+        ::close(fd);
+        throw std::runtime_error("fsync failed for " + tmp.string() + ": " + std::strerror(error));
+    }
+    ::close(fd);
+    std::filesystem::rename(tmp, path);
+    const int dir_fd = ::open(path.parent_path().c_str(), O_RDONLY);
+    if (dir_fd >= 0) {
+        ::fsync(dir_fd);
+        ::close(dir_fd);
+    }
+}
+
+} // namespace
 
 VTKWriter::VTKWriter(const Grid& grid, const OutputParams& params) : grid_(grid), params_(params) {
     // Ensure output directory exists
@@ -42,12 +74,15 @@ VTKWriter::~VTKWriter() {
     }
 }
 
-void VTKWriter::write_async(int step, double time, const FieldData& phi, const FieldData& u) {
+void VTKWriter::write_async(int step, double time, const FieldData& phi, const FieldData& u,
+                            bool frame, Checkpoint checkpoint) {
     WriteJob job;
     job.step = step;
     job.time = time;
     job.phi_data.assign(phi.data(), phi.data() + phi.size());
     job.u_data.assign(u.data(), u.data() + u.size());
+    job.frame = frame;
+    job.checkpoint = std::move(checkpoint);
 
     {
         std::unique_lock<std::mutex> lock(queue_mutex_);
@@ -81,6 +116,7 @@ int VTKWriter::pending_jobs() const {
 void VTKWriter::writer_loop() {
     while (true) {
         WriteJob job;
+        bool failed_before = false;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             queue_cv_.wait(lock, [this] { return !job_queue_.empty() || stop_; });
@@ -93,30 +129,44 @@ void VTKWriter::writer_loop() {
             job = std::move(job_queue_.front());
             job_queue_.pop();
             ++active_jobs_;
+            failed_before = static_cast<bool>(first_error_);
         }
 
+        // After a failure the later snapshots are dropped: a checkpoint after a lost frame
+        // would make a resume skip it, and the run stops at the next write_async() or
+        // flush() anyway.
         std::exception_ptr error;
+        const char* what = "output";
         try {
-            // Compute and cache field statistics
-            auto phi_stats = compute_statistics(job.phi_data, job.step, "phi");
-            auto u_stats = compute_statistics(job.u_data, job.step, "u");
+            if (!failed_before && job.frame) {
+                // Compute and cache field statistics
+                auto phi_stats = compute_statistics(job.phi_data, job.step, "phi");
+                auto u_stats = compute_statistics(job.u_data, job.step, "u");
 
-            spdlog::debug("Step {} stats: phi=[{:.4f}, {:.4f}], u=[{:.4f}, {:.4f}]", job.step,
-                          phi_stats.min_val, phi_stats.max_val, u_stats.min_val, u_stats.max_val);
+                spdlog::debug("Step {} stats: phi=[{:.4f}, {:.4f}], u=[{:.4f}, {:.4f}]", job.step,
+                              phi_stats.min_val, phi_stats.max_val, u_stats.min_val,
+                              u_stats.max_val);
 
-            if (params_.format == "vts") {
-                write_vtk_file(job);
-            } else {
-                write_raw_file(job);
+                if (params_.format == "vts") {
+                    write_vtk_file(job);
+                } else {
+                    write_raw_file(job);
+                }
+            }
+            if (!failed_before && job.checkpoint) {
+                what = "checkpoint";
+                job.checkpoint(job.step, job.time, job.phi_data, job.u_data);
             }
         } catch (const std::exception& e) {
-            spdlog::error("VTK writer failed for step {}: {}", job.step, e.what());
-            error = std::make_exception_ptr(std::runtime_error(
-                "output write failed for step " + std::to_string(job.step) + ": " + e.what()));
+            spdlog::error("{} write failed for step {}: {}", what, job.step, e.what());
+            error = std::make_exception_ptr(
+                std::runtime_error(std::string(what) + " write failed for step " +
+                                   std::to_string(job.step) + ": " + e.what()));
         } catch (...) {
-            spdlog::error("VTK writer failed for step {} with unknown error", job.step);
-            error = std::make_exception_ptr(std::runtime_error(
-                "output write failed for step " + std::to_string(job.step) + ": unknown error"));
+            spdlog::error("{} write failed for step {} with unknown error", what, job.step);
+            error = std::make_exception_ptr(
+                std::runtime_error(std::string(what) + " write failed for step " +
+                                   std::to_string(job.step) + ": unknown error"));
         }
 
         // Mark job as done (recording the first failure) and notify flush()
@@ -192,7 +242,7 @@ void VTKWriter::write_vtk_file(const WriteJob& job) {
                                  " failed: " + vtkErrorCode::GetStringFromErrorCode(code));
     }
     try {
-        std::filesystem::rename(tmp_filename, filename);
+        publish(tmp_filename, filename);
     } catch (...) {
         std::error_code ec;
         std::filesystem::remove(tmp_filename, ec);
@@ -224,7 +274,7 @@ void VTKWriter::write_raw_file(const WriteJob& job) {
             if (ofs.fail()) {
                 throw std::runtime_error("Failed to write file: " + tmp);
             }
-            std::filesystem::rename(tmp, path);
+            publish(tmp, path);
         } catch (...) {
             std::error_code ec;
             std::filesystem::remove(tmp, ec);

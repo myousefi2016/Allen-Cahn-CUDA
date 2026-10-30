@@ -57,10 +57,17 @@ std::string invalid_run_state(int step, double time, double dt) {
 } // namespace
 
 void CheckpointIO::write(const std::filesystem::path& path, int step, double time, double dt,
-                         const Grid& grid, const FieldData& phi, const FieldData& u) {
+                         const Grid& grid, std::span<const Real> phi, std::span<const Real> u) {
     if (const std::string why = invalid_run_state(step, time, dt); !why.empty())
         throw std::invalid_argument("Refusing to write a checkpoint with " + why + ": " +
                                     path.string());
+    const auto cells = static_cast<std::size_t>(grid.total_points());
+    if (phi.size() != cells || u.size() != cells) {
+        throw std::invalid_argument("CheckpointIO::write: " + std::to_string(phi.size()) +
+                                    " phi and " + std::to_string(u.size()) +
+                                    " u values for a grid of " + std::to_string(cells) +
+                                    " cells: " + path.string());
+    }
     std::filesystem::create_directories(path.parent_path());
 
     // Write to a temporary file first, then atomically rename to avoid corruption

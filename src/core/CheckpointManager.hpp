@@ -6,6 +6,7 @@
 #include "io/CheckpointIO.hpp"
 
 #include <filesystem>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -20,7 +21,11 @@ public:
     [[nodiscard]] bool should_checkpoint(int step) const;
 
     /// Save a checkpoint, enforcing the rolling retention policy.
-    void save(int step, double time, double dt, const FieldData& phi, const FieldData& u);
+    void save(int step, double time, double dt, std::span<const Real> phi, std::span<const Real> u);
+    void save(int step, double time, double dt, const FieldData& phi, const FieldData& u) {
+        save(step, time, dt, std::span<const Real>(phi.data(), phi.size()),
+             std::span<const Real>(u.data(), u.size()));
+    }
 
     /// Restore from checkpoint.restart_file if it is set, else from the newest
     /// checkpoint in checkpoint_dir of this run's grid that reads back intact

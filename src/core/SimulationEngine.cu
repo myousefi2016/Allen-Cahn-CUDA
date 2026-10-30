@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <span>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <string>
@@ -90,7 +91,7 @@ void SimulationEngine::run() {
 
     // Write initial state
     if (start_step_ == 0) {
-        output_step(0, 0.0);
+        write_step(0, 0.0, config_.time.dt, true, false);
     }
 
     // Main time loop
@@ -239,38 +240,25 @@ int SimulationEngine::time_loop() {
                          time, dt, step_ms);
         }
 
-        // Output
-        if (step % config_.output.frequency == 0) {
-            output_step(step, time);
-        }
-
-        // Checkpoint
-        if (checkpoint_mgr_->should_checkpoint(step)) {
-            checkpoint_step(step, time, dt);
-        }
-
-        // Graceful shutdown on SIGINT/SIGTERM
+        // A step ends the run on SIGINT/SIGTERM (graceful shutdown) or when the solid
+        // reaches a wall (saturation guard); its state is then written as output and as a
+        // checkpoint, as on the output and checkpoint steps.
+        bool last = false;
         if (g_shutdown_requested.load(std::memory_order_relaxed)) {
-            spdlog::warn("Shutdown requested at step {}. Writing checkpoint and flushing output...",
-                         step);
-            if (!checkpoint_mgr_->should_checkpoint(step))
-                checkpoint_step(step, time, dt);
-            if (step % config_.output.frequency != 0)
-                output_step(step, time);
-            break;
-        }
-
-        // Saturation guard
-        if (sat_guard && step % sat_freq == 0 && check_saturation(step)) {
+            spdlog::warn("Shutdown requested at step {}. Writing output and checkpoint...", step);
+            last = true;
+        } else if (sat_guard && step % sat_freq == 0 && check_saturation(step)) {
             spdlog::warn("Saturation detected at step {} (phi > {:.3f} next to a wall). "
-                         "Writing final checkpoint and exiting cleanly.",
+                         "Writing final output and checkpoint and exiting cleanly.",
                          step, config_.time.saturation_threshold);
-            if (!checkpoint_mgr_->should_checkpoint(step))
-                checkpoint_step(step, time, dt);
-            if (step % config_.output.frequency != 0)
-                output_step(step, time);
-            break;
+            last = true;
         }
+        const bool frame = last || step % config_.output.frequency == 0;
+        const bool checkpoint = last || checkpoint_mgr_->should_checkpoint(step);
+        if (frame || checkpoint)
+            write_step(step, time, dt, frame, checkpoint);
+        if (last)
+            break;
     }
     return last_step;
 }
@@ -297,20 +285,18 @@ void SimulationEngine::copy_u_if_needed(int step) {
     }
 }
 
-void SimulationEngine::output_step(int step, double time) {
+void SimulationEngine::write_step(int step, double time, double dt, bool frame, bool checkpoint) {
     copy_phi_if_needed(step);
     copy_u_if_needed(step);
     ensure_finite(phi_host_, "phi", step);
     ensure_finite(u_host_, "u", step);
-    vtk_writer_->write_async(step, time, phi_host_, u_host_);
-}
-
-void SimulationEngine::checkpoint_step(int step, double time, double dt) {
-    copy_phi_if_needed(step);
-    copy_u_if_needed(step);
-    ensure_finite(phi_host_, "phi", step);
-    ensure_finite(u_host_, "u", step);
-    checkpoint_mgr_->save(step, time, dt, phi_host_, u_host_);
+    VTKWriter::Checkpoint save;
+    if (checkpoint) {
+        save = [this, dt](int s, double t, std::span<const Real> phi, std::span<const Real> u) {
+            checkpoint_mgr_->save(s, t, dt, phi, u);
+        };
+    }
+    vtk_writer_->write_async(step, time, phi_host_, u_host_, frame, std::move(save));
 }
 
 double SimulationEngine::adapt_time_step(double current_dt, int step) {

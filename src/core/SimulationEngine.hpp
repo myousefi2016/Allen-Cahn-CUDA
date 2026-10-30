@@ -42,8 +42,11 @@ private:
     void initialize_from_checkpoint();
     /// Runs the steps; returns the last step executed (start_step_ if none).
     int time_loop();
-    void output_step(int step, double time);
-    void checkpoint_step(int step, double time, double dt);
+    /// Enqueue the state of `step` with the writer: as an output frame when `frame`, then
+    /// as a checkpoint when `checkpoint`. The writer saves a checkpoint only after every
+    /// frame before it is on disk: a resume continues at the checkpoint's step + 1 and
+    /// never writes those frames again.
+    void write_step(int step, double time, double dt, bool frame, bool checkpoint);
     double adapt_time_step(double current_dt, int step);
     void copy_phi_if_needed(int step);
     void copy_u_if_needed(int step);
@@ -63,8 +66,10 @@ private:
     FieldData u_host_;
 
     std::unique_ptr<cuda::ISolver> solver_;
-    std::unique_ptr<VTKWriter> vtk_writer_;
+    // Declared before the writer, which saves checkpoints through it on its thread: the
+    // writer (and that thread) is destroyed first.
     std::unique_ptr<CheckpointManager> checkpoint_mgr_;
+    std::unique_ptr<VTKWriter> vtk_writer_;
 
     int start_step_ = 0;
     double start_time_ = 0.0;

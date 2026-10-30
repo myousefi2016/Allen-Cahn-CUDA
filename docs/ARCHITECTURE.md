@@ -182,19 +182,17 @@ sequenceDiagram
         Eng->>Sol: step(dt)
         Eng->>Sol: synchronize()
         Note over Eng: step time from a host steady_clock
-        opt Output step
-            Eng->>Sol: copy_phi_to_host(), copy_u_to_host()
-            Eng->>VTK: write_async(step, time, phi, u)
-        end
-        opt Checkpoint step
-            Eng->>Mgr: save(step, time, dt, phi, u)
-        end
         opt SIGINT / SIGTERM
-            Note over Eng: g_shutdown_requested set,<br/>final checkpoint + output, break
+            Note over Eng: g_shutdown_requested set:<br/>this step is the last
         end
         opt Saturation guard
             Eng->>Sol: compute_boundary_max_phi()
-            Note over Eng: final checkpoint + output and break<br/>if > saturation_threshold
+            Note over Eng: > saturation_threshold:<br/>this step is the last
+        end
+        opt Output or checkpoint step, or the last step
+            Eng->>Sol: copy_phi_to_host(), copy_u_to_host()
+            Eng->>VTK: write_async(step, time, phi, u, frame, checkpoint)
+            VTK->>Mgr: save(step, time, dt, phi, u)<br/>on the writer thread, after the frames before it
         end
     end
 
@@ -374,7 +372,8 @@ sequenceDiagram
     Q-->>BG: WriteJob
     BG->>LRU: compute_statistics(phi)  (cached or computed)
     LRU-->>BG: FieldStatistics
-    BG->>FS: write to <name>.tmp + atomic rename
+    BG->>FS: frame: <name>.tmp, fsync, rename, fsync of the directory
+    BG->>FS: then the job's checkpoint (CheckpointManager::save)
     Sim->>Q: flush()
     Note over Sim: blocks until queue empty<br/>and active_jobs == 0
 ```
@@ -387,10 +386,14 @@ Backpressure: producers wait on `queue_cv_` when the queue depth plus
 in-flight jobs would exceed `max_queue_depth_`
 (`VTKWriter::write_async` in `VTKWriter.cpp`).
 
-Crash-safety: every write goes to `<file>.tmp` first and is renamed
-atomically once it is complete (for raw writes, which use `std::ofstream`
-in `VTKWriter::write_raw_file`, once `close()` has flushed it); a failed
-write removes its `<file>.tmp`.
+Crash-safety: every write goes to `<file>.tmp` first, is synced and is
+renamed atomically once it is complete (for raw writes, which use
+`std::ofstream` in `VTKWriter::write_raw_file`, once `close()` has flushed
+it), and the directory is synced; a failed write removes its `<file>.tmp`.
+Checkpoints are saved by the same thread after the frames enqueued before
+them (`SimulationEngine::write_step`), and once a job fails the later ones
+are dropped: a checkpoint never precedes a frame up to its step, which a
+resume would not write again.
 
 ---
 

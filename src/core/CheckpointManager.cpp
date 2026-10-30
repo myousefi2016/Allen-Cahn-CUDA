@@ -54,8 +54,8 @@ bool CheckpointManager::should_checkpoint(int step) const {
     return params_.frequency > 0 && step > 0 && (step % params_.frequency == 0);
 }
 
-void CheckpointManager::save(int step, double time, double dt, const FieldData& phi,
-                             const FieldData& u) {
+void CheckpointManager::save(int step, double time, double dt, std::span<const Real> phi,
+                             std::span<const Real> u) {
     auto path = params_.checkpoint_dir / ("checkpoint_" + std::to_string(step) + ".acbin");
 
     CheckpointIO::write(path, step, time, dt, grid_, phi, u);

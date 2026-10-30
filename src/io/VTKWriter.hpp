@@ -9,8 +9,10 @@
 #include <condition_variable>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <queue>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -25,11 +27,16 @@ struct FieldStatistics {
     double l2_norm = 0.0;
 };
 
-/// VTK / raw field writer running on a background thread.
+/// VTK / raw field writer running on a background thread, which also saves the
+/// checkpoints a snapshot carries, after its frame.
 /// With OutputParams::async_io the simulation continues while a snapshot is
 /// written (bounded queue, backpressure); without it write_async() returns
-/// only once that snapshot is on disk. A failed write is never dropped: the
-/// first failure is rethrown by the next write_async() or flush().
+/// only once that snapshot is done. Snapshots are done one at a time in the
+/// order they were enqueued, and once one fails the later ones are dropped:
+/// a checkpoint is saved only when every frame before it is on disk, so a
+/// resume, which continues after the checkpoint's step, misses none. A failed
+/// write is never dropped: the first failure is rethrown by the next
+/// write_async() or flush().
 /// Caches field statistics via LRU cache for efficient metadata output.
 class VTKWriter {
 public:
@@ -39,11 +46,17 @@ public:
     VTKWriter(const VTKWriter&) = delete;
     VTKWriter& operator=(const VTKWriter&) = delete;
 
-    /// Enqueue a snapshot (the fields are copied). Blocks while the queue
+    /// Saves a checkpoint of the snapshot's fields (CheckpointManager::save).
+    using Checkpoint = std::function<void(int step, double time, std::span<const Real> phi,
+                                          std::span<const Real> u)>;
+
+    /// Enqueue a snapshot (the fields are copied): written as a frame when `frame`,
+    /// then passed to `checkpoint` when it is set. Blocks while the queue
     /// already holds max_queue_depth jobs (backpressure against unbounded
     /// memory growth) and, when async_io is false, until the snapshot is
-    /// written. Throws the error of an earlier failed write.
-    void write_async(int step, double time, const FieldData& phi, const FieldData& u);
+    /// done. Throws the error of an earlier failed write.
+    void write_async(int step, double time, const FieldData& phi, const FieldData& u,
+                     bool frame = true, Checkpoint checkpoint = {});
 
     /// Wait for all pending writes; throws if any write has failed.
     void flush();
@@ -61,6 +74,8 @@ private:
         double time;
         std::vector<Real> phi_data;
         std::vector<Real> u_data;
+        bool frame = true;
+        Checkpoint checkpoint;
     };
 
     void writer_loop();

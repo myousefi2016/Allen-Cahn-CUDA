@@ -121,13 +121,11 @@ flowchart LR
         direction TB
         G --> H["adapt_time_step()<br/>(reduction + CFL clamp)"]
         H --> I["solver.step(dt)"]
-        I --> J{"Output<br/>step?"}
-        J -->|Yes| K["copy_*_if_needed<br/>+ vtk.write_async"]
-        J -->|No| L{"Checkpoint<br/>step?"}
-        K --> L
-        L -->|Yes| M["mgr.save()<br/>CRC32 + fsync"]
-        L -->|No| N{"shutdown or<br/>saturation?"}
-        M --> N
+        I --> J["shutdown or saturation?<br/>(then this step is the last)"]
+        J --> K{"output or checkpoint<br/>step, or the last?"}
+        K -->|Yes| L["copy_*_if_needed<br/>+ vtk.write_async<br/>(writer thread: frame, then<br/>mgr.save(), CRC32 + fsync)"]
+        K -->|No| N{"last step?"}
+        L --> N
         N -->|No| G
     end
 
@@ -317,7 +315,7 @@ them by the end. `cuda-run-dendrite` (160³, ε = 0.12) ends at t = 17.5
 (31 τ₀).
 
 Crash safety:
-- Checkpoints every 48 000 steps (15 time units, 11.5 minutes of compute at 14.4 ms per step on an RTX 4090, the most lost on `SIGKILL` / suspend).
+- Checkpoints every 48 000 steps (15 time units, 11.5 minutes of compute at 14.4 ms per step on an RTX 4090, the most lost on `SIGKILL` / suspend). The background writer saves a checkpoint only after every frame before it is on disk (written, synced and renamed into place), so a resume, which continues after the checkpoint's step, misses no frame.
 - `keep_last = 3` (340 MB on disk for 192³).
 - `cuda-resume-dendrite` finds the highest-numbered intact checkpoint
   (the 128-byte header must match its own CRC-32 and the config's grid and
@@ -582,7 +580,7 @@ configurations, not to the compiled-in values.
 | `gpu.device_ids`      | CUDA device ids ≥ 0; several only with `gpu.multi_gpu` (an id may repeat: several domains on one GPU) |
 | `gpu.multi_gpu`       | `true`: split the X planes between the ids, at least 2 planes each (Multi-GPU Domain Decomposition) |
 | `output.format`       | `"vts"` (VTK structured grid), `"raw"` (binary) |
-| `output.async_io`     | `true`: write snapshots in the background; `false`: each output step waits until its file is on disk |
+| `output.async_io`     | `true`: write snapshots and checkpoints in the background, in order; `false`: each output and checkpoint step waits until its files are on disk |
 
 Unknown keys are errors (keys starting with `_` are comments), so a typo
 cannot silently fall back to a default; so is a key given twice in one
@@ -814,7 +812,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer and no halo; `validate()` rejects exactly the splits the solver rejects; engine run |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states |
-| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (capped at the stability limits after the dt_min clamp, also after a restart; growth when φ is at rest), short run, saturation stop, shutdown, divergence errors, restart-file and spacing checks, dt after a restart |
+| `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (capped at the stability limits after the dt_min clamp, also after a restart; growth when φ is at rest), short run, saturation stop, shutdown, divergence errors, no checkpoint before the frames up to its step (also at a shutdown or saturation), a failed checkpoint stops the run, restart-file and spacing checks, dt after a restart |
 | `test_VTKWriter.cpp`          | Async and synchronous writes, raw / VTS output, VTS topology, write failures reported (never a published broken file, also when only `close()` fails, and no temporary file left), statistics cache |
 
 ### Integration tests (`tests/integration/`, 8 files)

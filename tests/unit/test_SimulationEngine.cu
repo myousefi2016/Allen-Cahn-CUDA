@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <limits>
 #include <string>
@@ -243,6 +244,78 @@ TEST_F(SimulationEngineTest, ShutdownRequestWritesCheckpointAndStops) {
         CheckpointIO::is_valid_checkpoint(cfg.checkpoint.checkpoint_dir / "checkpoint_1.acbin"));
     EXPECT_TRUE(std::filesystem::exists(cfg.output.output_dir / "output_1.vts"));
     EXPECT_FALSE(std::filesystem::exists(cfg.checkpoint.checkpoint_dir / "checkpoint_2.acbin"));
+}
+
+// A resume continues after its checkpoint's step and never writes the frames up
+// to that step again, so they must be on disk before the checkpoint. Here the
+// frame of the checkpoint's step cannot be written (its temporary file is
+// /dev/full, as on a full disk) with asynchronous output, at a regular
+// checkpoint step and where a shutdown request and the saturation guard end the
+// run: each run must stop with the write error and without that checkpoint.
+// Before, the checkpoint was committed while the frame was still queued (at a
+// shutdown or saturation even before it was queued), and the failure surfaced
+// only afterwards. With the frame writable, both are written.
+TEST_F(SimulationEngineTest, NoCheckpointBeforeTheFramesUpToItsStep) {
+    ASSERT_TRUE(std::filesystem::exists("/dev/full")) << "the test needs /dev/full";
+    for (const std::string ending : {"checkpoint step", "shutdown", "saturation"}) {
+        for (const bool writable : {false, true}) {
+            SCOPED_TRACE(ending + (writable ? ", frame writable" : ", frame fails"));
+            std::filesystem::remove_all(test_dir_);
+            auto cfg = make_config(8, 4);
+            cfg.output.async_io = true;
+            cfg.output.format = "raw";
+            cfg.time.exit_on_saturation = ending == "saturation";
+            cfg.time.saturation_check_freq = 1;
+            cfg.initial.seed_radius = ending == "saturation" ? 2.0 : 1.0;
+            const int step = ending == "checkpoint step" ? 2 : 1;
+            if (ending == "checkpoint step")
+                cfg.output.frequency = cfg.checkpoint.frequency = 2;
+            std::filesystem::create_directories(cfg.output.output_dir);
+            const auto frame =
+                cfg.output.output_dir / ("output_" + std::to_string(step) + "_phi.raw");
+            if (!writable)
+                std::filesystem::create_symlink("/dev/full", frame.string() + ".tmp");
+            const auto checkpoint =
+                cfg.checkpoint.checkpoint_dir / ("checkpoint_" + std::to_string(step) + ".acbin");
+
+            SimulationEngine engine(cfg);
+            g_shutdown_requested.store(ending == "shutdown");
+            bool threw = false;
+            try {
+                engine.run();
+            } catch (const std::runtime_error& e) {
+                threw = true;
+                EXPECT_NE(std::string(e.what()).find("output write failed for step " +
+                                                     std::to_string(step)),
+                          std::string::npos)
+                    << e.what();
+            }
+            g_shutdown_requested.store(false);
+            EXPECT_EQ(threw, !writable);
+            EXPECT_EQ(std::filesystem::exists(checkpoint), writable);
+            EXPECT_EQ(std::filesystem::exists(frame), writable);
+        }
+    }
+}
+
+// The writer saves the checkpoints on its thread: one that fails there (its
+// directory has become a regular file) must still stop the run with that error,
+// at the next write or at the end of the run, like a failed frame.
+TEST_F(SimulationEngineTest, FailedCheckpointStopsTheRun) {
+    auto cfg = make_config(8, 4);
+    cfg.output.async_io = true;
+    cfg.checkpoint.frequency = 2;
+    SimulationEngine engine(cfg);
+    std::filesystem::remove_all(cfg.checkpoint.checkpoint_dir);
+    std::ofstream(cfg.checkpoint.checkpoint_dir) << "not a directory";
+    try {
+        engine.run();
+        ADD_FAILURE() << "the run finished although its checkpoint failed";
+    } catch (const std::runtime_error& e) {
+        EXPECT_NE(std::string(e.what()).find("checkpoint write failed for step 2"),
+                  std::string::npos)
+            << e.what();
+    }
 }
 
 // dt*D/h^2 = 12.5 is far beyond explicit-Euler stability: the fields overflow

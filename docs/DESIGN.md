@@ -601,7 +601,8 @@ and `data_crc32 == 0` there means that no payload CRC was computed.
 
 ### 8.2 Write protocol (crash-safe)
 
-`CheckpointIO::write` (`CheckpointIO.cpp`) does:
+`CheckpointIO::write` (`CheckpointIO.cpp`), which the engine runs on the
+writer thread after the frames enqueued before the checkpoint (9), does:
 
 1. `open` `path.tmp` with `O_WRONLY | O_CREAT | O_TRUNC`.
 2. Compute CRC32 over `[phi || u]`.
@@ -675,15 +676,18 @@ is skipped with a warning
 | Condition | Detection | Result |
 |---|---|---|
 | NaN/Inf field | host scan before every output and checkpoint and after the last step; NaN-propagating `compute_max_dphi` (adaptive dt) and `compute_boundary_max_phi` (saturation guard) | `std::runtime_error`, exit 1, nothing of the diverged state written |
-| `SIGINT` / `SIGTERM` | lock-free atomics set by the handler, checked after every step | checkpoint + output of the current step, exit 128 + signal |
-| Solid reaches a wall | saturation guard every `saturation_check_freq` steps | checkpoint + output, exit 0 |
+| `SIGINT` / `SIGTERM` | lock-free atomics set by the handler, checked after every step | output + checkpoint of the current step, exit 128 + signal |
+| Solid reaches a wall | saturation guard every `saturation_check_freq` steps | output + checkpoint, exit 0 |
+| A frame or checkpoint write fails | the writer thread; the first failure is rethrown by the next `write_async` or the final `flush` | later snapshots dropped (no checkpoint after a failed frame), `std::runtime_error`, exit 1 |
 | Grid above 2^31 − 1 points | `SimulationConfig::validate`, `CudaSolver` constructor | `std::invalid_argument` (kernels use 32-bit cell indices) |
 
 ---
 
 ## 9. Async I/O Pipeline (`VTKWriter`)
 
-`src/io/VTKWriter.cpp` runs a single background writer thread:
+`src/io/VTKWriter.cpp` runs a single background writer thread, which writes
+the frames and saves the checkpoints in the order the engine enqueues them
+(`SimulationEngine::write_step`: at a step with both, the frame first):
 
 ```mermaid
 sequenceDiagram
@@ -700,7 +704,8 @@ sequenceDiagram
     Q-->>BG: job
     BG->>LRU: compute_statistics(phi)
     LRU-->>BG: stats (cached or computed + stored)
-    BG->>FS: write to <name>.tmp + atomic rename
+    BG->>FS: frame: <name>.tmp, fsync, rename, fsync of the directory
+    BG->>FS: then the job's checkpoint (CheckpointManager::save)
     Sim->>Q: flush()
     Note over Sim: blocks until queue empty<br/>and active_jobs == 0
 ```
@@ -722,6 +727,12 @@ Key invariants:
   buffer, 8 KiB in libstdc++, reaches the file only there).
 - A failed or unpublishable output file (VTS or raw) is removed before the
   error is reported.
+- Every frame is synced before its rename and its directory after it, as a
+  checkpoint is (8.2); one job runs at a time, in order, and once one has
+  failed the later ones are dropped. So a checkpoint exists only when every
+  frame up to its step is on disk: a resume continues at the step after it
+  and does not write those frames again. The simulation thread does not
+  wait for either (it only copies the fields into the job).
 - Field statistics (min, max, mean, L2-norm) are cached by
   `step:fieldname` in an `LRUCache<string, FieldStatistics>`
   (`VTKWriter::compute_statistics`).
@@ -801,6 +812,6 @@ to your hardware should be done with `make cuda-run-default` against
 | O(1) field swap | `DeviceField.cuh` (friend `swap`) | Pointer swap replaces `cudaMemcpy` of full fields per step. |
 | Pre-allocated reduction scratch | `reduction_scratch_` (`CudaSolver.cu`, constructor) | Avoids per-call `cudaMalloc` in the reduction launcher. |
 | Grid-stride reduction kernels | `ReductionKernels.cu` | Reductions correctly cover all elements even when scratch is undersized — no silent loss. |
-| Atomic file writes | `VTKWriter::write_vtk_file` / `write_raw_file` (`VTKWriter.cpp`), `CheckpointIO::write` (`CheckpointIO.cpp`) | `tmp + rename` (+ parent dir `fsync` for checkpoints) makes crash-mid-write recoverable. |
+| Atomic file writes | `VTKWriter::write_vtk_file` / `write_raw_file` (`VTKWriter.cpp`), `CheckpointIO::write` (`CheckpointIO.cpp`) | `tmp` + `fsync` + `rename` + `fsync` of the parent directory makes crash-mid-write recoverable; checkpoints follow the frames before them on the writer thread. |
 | Boundary-only saturation reduction | `boundary_max_kernel` (`CudaSolver.cu`) | O(N²) instead of O(N³); avoids full host transfer. |
 | `__launch_bounds__(256)` on hot kernels | various `.cu` files | Bounds register pressure for predictable occupancy. |
