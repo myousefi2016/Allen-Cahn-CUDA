@@ -60,17 +60,17 @@ void gradient_energy_hessian(const double n[3], double epsilon, double H[3][3]) 
     const double s =
         n[0] * n[0] * n[0] * n[0] + n[1] * n[1] * n[1] * n[1] + n[2] * n[2] * n[2] * n[2];
     const double a = 1.0 - 3.0 * epsilon + 4.0 * epsilon * s;
-    double D[3];
+    double d[3];
     for (int i = 0; i < 3; ++i)
-        D[i] = n[i] * (n[i] * n[i] - s);
+        d[i] = n[i] * (n[i] * n[i] - s);
     for (int i = 0; i < 3; ++i) {
         const double ni2 = n[i] * n[i];
-        H[i][i] = a * a + 32.0 * epsilon * a * D[i] * n[i] +
+        H[i][i] = a * a + 32.0 * epsilon * a * d[i] * n[i] +
                   16.0 * epsilon *
-                      (16.0 * epsilon * D[i] * D[i] +
+                      (16.0 * epsilon * d[i] * d[i] +
                        a * (3.0 * ni2 - 6.0 * ni2 * ni2 - s + 4.0 * s * ni2));
         for (int j = i + 1; j < 3; ++j) // H is symmetric: one evaluation per pair
-            H[i][j] = H[j][i] = 256.0 * epsilon * epsilon * D[i] * D[j] +
+            H[i][j] = H[j][i] = 256.0 * epsilon * epsilon * d[i] * d[j] +
                                 32.0 * epsilon * a * n[i] * n[j] * (s - ni2 - n[j] * n[j]);
     }
 }
@@ -122,24 +122,24 @@ void phis(const T v[3], const EpsCoefficients& k, Objective objective, T out[7])
         n4[i] = n2[i] * n2[i];
     }
     const T s = n4[0] + n4[1] + n4[2];
-    const T A = k.one_minus_3 + k.four * s;
-    T Dv[3];
+    const T an = k.one_minus_3 + k.four * s;
+    T dv[3];
     for (int i = 0; i < 3; ++i)
-        Dv[i] = n[i] * (n2[i] - s);
+        dv[i] = n[i] * (n2[i] - s);
     const bool growth = objective == Objective::Growth;
-    const T w = growth ? inv(A * A) : constant<T>(1.0);
+    const T w = growth ? inv(an * an) : constant<T>(1.0);
     for (int i = 0; i < 3; ++i) {
         const T inner = 3.0 * n2[i] - 6.0 * n4[i] - s + 4.0 * (s * n2[i]);
-        const T Hii = A * A + k.thirty_two * (A * Dv[i] * n[i]) +
-                      k.sixteen * (k.sixteen * (Dv[i] * Dv[i]) + A * inner);
-        out[i] = growth ? Hii * w : -Hii;
+        const T hii = an * an + k.thirty_two * (an * dv[i] * n[i]) +
+                      k.sixteen * (k.sixteen * (dv[i] * dv[i]) + an * inner);
+        out[i] = growth ? hii * w : -hii;
     }
     int m = 3;
     for (int i = 0; i < 3; ++i)
         for (int j = i + 1; j < 3; ++j) {
-            const T Hij = k.two_fifty_six_sq * (Dv[i] * Dv[j]) +
-                          k.thirty_two * (A * (n[i] * n[j]) * (s - n2[i] - n2[j]));
-            out[m++] = growth ? Hij * w : -Hij;
+            const T hij = k.two_fifty_six_sq * (dv[i] * dv[j]) +
+                          k.thirty_two * (an * (n[i] * n[j]) * (s - n2[i] - n2[j]));
+            out[m++] = growth ? hij * w : -hij;
         }
     out[6] = w;
 }
@@ -175,23 +175,23 @@ struct Problem {
 };
 
 Problem make_problem(Objective objective, double eps, double beta, double W0, const double h[3]) {
-    Problem P{};
-    P.objective = objective;
-    P.eps = eps;
-    P.beta = beta;
-    P.W0 = W0;
-    std::copy(h, h + 3, P.h);
-    P.k = eps_coefficients(eps);
-    P.W = sq(Iv(W0));
+    Problem problem{};
+    problem.objective = objective;
+    problem.eps = eps;
+    problem.beta = beta;
+    problem.W0 = W0;
+    std::copy(h, h + 3, problem.h);
+    problem.k = eps_coefficients(eps);
+    problem.W = sq(Iv(W0));
     for (int d = 0; d < 3; ++d) {
-        P.inv_h[d] = inv(Iv(h[d]));
-        P.inv_h2[d] = inv(sq(Iv(h[d])));
+        problem.inv_h[d] = inv(Iv(h[d]));
+        problem.inv_h2[d] = inv(sq(Iv(h[d])));
     }
-    P.beta_i = Iv(beta);
-    P.two_beta_W = Iv(2.0) * P.beta_i * P.W;
-    P.four_beta = Iv(4.0) * P.beta_i;
-    P.kappa = objective == Objective::Growth ? 2.0 : -2.0;
-    return P;
+    problem.beta_i = Iv(beta);
+    problem.two_beta_W = Iv(2.0) * problem.beta_i * problem.W;
+    problem.four_beta = Iv(4.0) * problem.beta_i;
+    problem.kappa = objective == Objective::Growth ? 2.0 : -2.0;
+    return problem;
 }
 
 /// theta-dependent quantities over a theta box (or a point): c_d, q_d, their first (c1,
@@ -293,19 +293,19 @@ double taylor_bound(const Problem& P, const Iv phi[7], const TData& t, const dou
     for (int d = 0; d < 3; ++d)
         for (int e = 0; e < 3; ++e) {
             if (d == e) {
-                Iv Hdd = P.W * phi[d] * t.c2[d];
+                Iv hdd = P.W * phi[d] * t.c2[d];
                 for (int f = 0; f < 3; ++f)
                     if (f != d)
-                        Hdd = Hdd + Iv(2.0) * P.W * phi[offdiag(d, f)] * (t.q2[d] * t.q[f]);
-                Hdd = Hdd - P.two_beta_W * phi[6] * P.W * sq(t.c1[d]) -
+                        hdd = hdd + Iv(2.0) * P.W * phi[offdiag(d, f)] * (t.q2[d] * t.q[f]);
+                hdd = hdd - P.two_beta_W * phi[6] * P.W * sq(t.c1[d]) -
                       P.two_beta_W * phi[6] * t.Wm2 * t.c2[d];
                 // 1/2 H_dd delta_d^2 <= 1/2 max(H_dd, 0) r_d^2
                 taylor =
-                    add_up(taylor, mul_up(mul_up(mul_up(0.5, std::max(Hdd.hi, 0.0)), r[d]), r[d]));
+                    add_up(taylor, mul_up(mul_up(mul_up(0.5, std::max(hdd.hi, 0.0)), r[d]), r[d]));
             } else {
-                const Iv Hde = Iv(2.0) * P.W * phi[offdiag(d, e)] * (t.q1[d] * t.q1[e]) -
+                const Iv hde = Iv(2.0) * P.W * phi[offdiag(d, e)] * (t.q1[d] * t.q1[e]) -
                                P.two_beta_W * phi[6] * P.W * (t.c1[d] * t.c1[e]);
-                taylor = add_up(taylor, mul_up(mul_up(mul_up(0.5, mag(Hde)), r[d]), r[e]));
+                taylor = add_up(taylor, mul_up(mul_up(mul_up(0.5, mag(hde)), r[d]), r[e]));
             }
         }
     return taylor;
@@ -429,8 +429,8 @@ Iv enclose_mode(const Problem& P, const double n[3], const double th[3]) {
 // ── Point evaluation (search guidance only; never part of a bound) ─────────
 
 double point_value(const Problem& P, const double n[3], const double th[3]) {
-    double H[3][3];
-    gradient_energy_hessian(n, P.eps, H);
+    double hess[3][3];
+    gradient_energy_hessian(n, P.eps, hess);
     const double s =
         n[0] * n[0] * n[0] * n[0] + n[1] * n[1] * n[1] * n[1] + n[2] * n[2] * n[2] * n[2];
     const double A = 1.0 - 3.0 * P.eps + 4.0 * P.eps * s;
@@ -442,10 +442,10 @@ double point_value(const Problem& P, const double n[3], const double th[3]) {
         mu += c[d];
     }
     for (int d = 0; d < 3; ++d) {
-        sigma += H[d][d] * c[d];
+        sigma += hess[d][d] * c[d];
         for (int e = 0; e < 3; ++e)
             if (e != d)
-                sigma += H[d][e] * q[d] * q[e];
+                sigma += hess[d][e] * q[d] * q[e];
     }
     const double L = (W * mu + 2.0) * (W * mu + 2.0);
     if (P.objective == Objective::Growth)
@@ -594,14 +594,14 @@ struct Search {
     double inner(const NBox& B, const NData& nd, std::vector<TBox>& survivors) {
         auto cmp = [](const TBox& x, const TBox& y) { return x.ub < y.ub; };
         std::priority_queue<TBox, std::vector<TBox>, decltype(cmp)> pq(cmp);
-        for (TBox T : B.theta) {
-            const TData t = theta_data(P, T.lo, T.hi);
+        for (TBox box : B.theta) {
+            const TData t = theta_data(P, box.lo, box.hi);
             count();
             if (theta_monotone(P, nd, t))
                 continue;
-            T.ub = box_bound(P, nd, t, T.lo, T.hi, cutoff());
-            if (T.ub > cutoff())
-                pq.push(T);
+            box.ub = box_bound(P, nd, t, box.lo, box.hi, cutoff());
+            if (box.ub > cutoff())
+                pq.push(box);
         }
         survivors.clear();
         auto drain = [&](const TBox* extra) {
@@ -613,45 +613,45 @@ struct Search {
             }
         };
         for (long spent = 0; !pq.empty() && !witnessed();) {
-            const TBox T = pq.top();
-            if (T.ub <= cutoff())
+            const TBox top = pq.top();
+            if (top.ub <= cutoff())
                 return cutoff(); // pruned
             if (++spent > kInnerBudget) {
                 drain(nullptr);
-                return T.ub;
+                return top.ub;
             }
             pq.pop();
             double c[3];
             for (int d = 0; d < 3; ++d)
-                c[d] = 0.5 * (T.lo[d] + T.hi[d]);
+                c[d] = 0.5 * (top.lo[d] + top.hi[d]);
             consider(B, c);
             // Both bounds at the single point c already exceed the cutoff: refining theta
             // cannot prune this n-box; the outer search splits it.
             count();
             const double at_point = box_bound(P, nd, theta_data(P, c, c), c, c, cutoff());
             if (at_point > cutoff()) {
-                drain(&T);
-                return std::max(T.ub, at_point);
+                drain(&top);
+                return std::max(top.ub, at_point);
             }
             int k = 0;
             for (int d = 1; d < 3; ++d)
-                if (T.hi[d] - T.lo[d] > T.hi[k] - T.lo[k])
+                if (top.hi[d] - top.lo[d] > top.hi[k] - top.lo[k])
                     k = d;
-            TBox L = T, R = T;
-            L.hi[k] = R.lo[k] = 0.5 * (T.lo[k] + T.hi[k]);
-            if (L.hi[k] == T.lo[k] || L.hi[k] == T.hi[k]) {
+            TBox left = top, right = top;
+            left.hi[k] = right.lo[k] = 0.5 * (top.lo[k] + top.hi[k]);
+            if (left.hi[k] == top.lo[k] || left.hi[k] == top.hi[k]) {
                 stopped = "met a wave-number box it cannot split in double precision";
-                drain(&T);
-                return std::max(T.ub, at_point);
+                drain(&top);
+                return std::max(top.ub, at_point);
             }
-            for (TBox* X : {&L, &R}) {
+            for (TBox* child : {&left, &right}) {
                 count();
-                const TData t = theta_data(P, X->lo, X->hi);
+                const TData t = theta_data(P, child->lo, child->hi);
                 if (theta_monotone(P, nd, t))
                     continue;
-                X->ub = box_bound(P, nd, t, X->lo, X->hi, cutoff());
-                if (X->ub > cutoff())
-                    pq.push(*X);
+                child->ub = box_bound(P, nd, t, child->lo, child->hi, cutoff());
+                if (child->ub > cutoff())
+                    pq.push(*child);
             }
         }
         return cutoff();
@@ -688,20 +688,20 @@ struct Search {
                 stopped = "met a direction box it cannot split in double precision";
                 break;
             }
-            NBox B = pq.top();
+            NBox box = pq.top();
             pq.pop();
-            NBox L = B, R = B;
+            NBox left = box, right = box;
             if (split_a)
-                L.a1 = R.a0 = mid;
+                left.a1 = right.a0 = mid;
             else
-                L.b1 = R.b0 = mid;
-            for (NBox* X : {&L, &R}) {
-                const NData nd = expand(P, X->face, X->a0, X->a1, X->b0, X->b1);
+                left.b1 = right.b0 = mid;
+            for (NBox* child : {&left, &right}) {
+                const NData nd = expand(P, child->face, child->a0, child->a1, child->b0, child->b1);
                 std::vector<TBox> survivors;
-                X->ub = inner(*X, nd, survivors);
-                X->theta = std::move(survivors);
-                if (!X->theta.empty() && X->ub > cutoff())
-                    pq.push(std::move(*X));
+                child->ub = inner(*child, nd, survivors);
+                child->theta = std::move(survivors);
+                if (!child->theta.empty() && child->ub > cutoff())
+                    pq.push(std::move(*child));
             }
         }
         if (witnessed())
@@ -760,11 +760,11 @@ bool cubic_spacing(const double h[3]) {
 /// and the lower end of the enclosure at the best mode. Damping (decision mode): 0 when
 /// F <= 0 is proven, else a witness whose lower end is > 0.
 LiquidModeBound search(const Problem& P, const LiquidMode& start, long budget) {
-    Search S{P, P.objective == Objective::Damping};
-    S.budget = budget;
-    S.record(start.n, start.theta);
-    const double bound = S.run(cubic_spacing(P.h));
-    return {bound, S.best, S.mode};
+    Search state{P, P.objective == Objective::Damping};
+    state.budget = budget;
+    state.record(start.n, start.theta);
+    const double bound = state.run(cubic_spacing(P.h));
+    return {bound, state.best, state.mode};
 }
 
 /// Damping in terms of Lam + beta L = -F: the bound 0 (every mode >= 0) or the upper end
