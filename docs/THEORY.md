@@ -418,10 +418,18 @@ and the increment `δφ = φⁿ⁺¹ − φⁿ` solves
 (τ/dt + βL) δφ = ∇·F(∇φⁿ) − ∂F/∂φ(φⁿ, uⁿ) − β M(φⁿ)
 ```
 
-on the interior cells. Every ∇² is the 7-point Laplacian with the
+on the interior cells. Every ∇² is the 7-point Laplacian. The ∇² of φ in ω
+reads φ's own boundary values: `willmore_omega` runs on `phi_old_`, whose
+boundary cells hold φ's boundary condition (set by `apply_phi_bc`; in a
+multi-GPU run the halo exchange fills the halo planes and the periodic X
+ghost planes). Inside walls that hold φ = −1, φ ≡ −1 therefore gives ω = 0
+(`UniformLiquidInsideInhomogeneousWallsStaysExact` keeps φ exactly −1 there).
+The ∇² in `L` and the ∇² of ω act on fields whose boundary cells hold the
 homogeneous form of φ's boundary condition (Dirichlet 0, zero flux, periodic,
-Robin with γ = 0), which is symmetric for every accepted boundary condition;
-`L` is its square and τ > 0, so the matrix is symmetric positive definite. It
+Robin with γ = 0; `hom_phi_faces_` in `src/cuda/CudaSolver.cu`). That
+Laplacian is symmetric for every accepted boundary condition, `L` is the
+square of `W₀²∇² − 2` with this ∇² (§4.4) and τ > 0, so the matrix is
+symmetric positive definite. It
 is solved to a relative residual of 1e-10 by conjugate gradients with a
 Chebyshev polynomial preconditioner (§4.4). β = 0 recovers explicit Euler.
 The scheme requires `time.scheme` euler or imex (heun and rk4 are fully
@@ -849,20 +857,28 @@ graph TD
 
 | Neighbor Type | Count | Distance | Weight | Total Contribution |
 |---------------|-------|----------|--------|--------------------|
-| Face          | 6     | `h`      | 4      | 24                 |
-| Edge          | 12    | `h√2`   | 2      | 24                 |
+| Face          | 6     | `h`      | 14     | 84                 |
+| Edge          | 12    | `h√2`   | 3      | 36                 |
 | Corner        | 8     | `h√3`   | 1      | 8                  |
-| Center        | 1     | 0        | -56    | -56                |
+| Center        | 1     | 0        | -128   | -128               |
 
 **Properties:**
-- 4th-order isotropic (eliminates leading-order anisotropy artifacts)
+- 2nd-order accurate with an isotropic leading error: for smooth φ it gives
+  `∇²φ + (h²/12)·∇²∇²φ + O(h⁴)`, and its `O(h⁴)` term is not isotropic. On
+  the same cubic grid the 7-point stencil gives
+  `∇²φ + (h²/12)·Σ_d ∂⁴φ/∂x_d⁴ + O(h⁴)`, whose `h²` term is not isotropic
 - Requires `dx = dy = dz` (isotropic grid)
 - 27 stencil points → higher bandwidth cost per point
-- Better suited for dendritic growth where grid anisotropy is undesirable
+- `stencil` selects only the Laplacian of u: the solver calls `laplacian()`
+  (`Kernels.cuh`) only in the thermal kernels (`ThermalKernels.cu`), and the
+  IMEX Jacobi sweep (`jacobi_step_kernel` in `CudaSolver.cu`) uses the same
+  weights. The Allen–Cahn rate (`allen_cahn_rate`, `[∇·F − dF_dphi]/τn` with
+  the face-flux ∇·F of §11) and the Willmore 7-point Laplacian (`lap7` in
+  `WillmoreKernels.cu`) do not depend on `stencil`
 
 **When to use which stencil:**
 - **7-point**: Faster, works with anisotropic grids, sufficient for many problems
-- **27-point**: More accurate for dendritic growth, eliminates grid-induced anisotropy
+- **27-point**: isotropic leading error in the Laplacian of u; requires `dx = dy = dz`
 
 ---
 
@@ -1111,7 +1127,9 @@ Sets the field to a prescribed value at the boundary.
 ∂φ/∂n|_Γ = q
 ```
 Zero-flux (`q=0`): `φ[boundary] = φ[interior]` (copies nearest interior value).
-Non-zero flux: `φ[boundary] = φ[interior] ± q·h`.
+Non-zero flux: `φ[boundary] = φ[interior] + q·h` on lo and hi faces alike, q
+the outward normal derivative and h the spacing along the face normal
+(`src/cuda/BoundaryKernels.cu`).
 
 **Periodic:**
 ```
@@ -1577,18 +1595,31 @@ run. The full protocol and its evidence are in `DESIGN.md` §7.
 
 ## 13. Advanced Data Structures
 
-The code uses several advanced data structures for performance and memory
-optimization.
+The three structures below are header-only (`src/core/LRUCache.hpp`,
+`src/core/SpatialHash.hpp`, `src/core/ConcurrentMap.hpp`; none has a `.cpp`).
+Only the LRU cache is used by the program (`src/io/VTKWriter.hpp`); the
+spatial hash and the striped hash map are included only by their unit tests
+(`tests/unit/test_SpatialHash.cpp`, `tests/unit/test_ConcurrentMap.cpp`).
 
 ### 13.1 Thread-Safe LRU Cache
 
-Used in `VTKWriter` for caching field statistics (mean, min, max, standard
-deviation) to avoid redundant computation.
+Used in `VTKWriter` to cache, keyed by `step:field`, the statistics of phi and
+u that `compute_statistics` computes before each frame is written: min, max,
+mean and root mean square `√(Σv²/n)` of the field's n = Nx × Ny × Nz values
+(the `l2_norm` member of `FieldStatistics` in `src/io/VTKWriter.hpp`). A
+cached entry would be returned without being recomputed, but a run enqueues
+each step at most once, so every lookup in a simulation misses; the entries
+are read back only by `get_cached_stats`, which only a unit test calls.
 
 **Implementation:**
 - Doubly-linked list (std::list) for LRU ordering
 - Hash map (std::unordered_map) for O(1) key lookup
-- `std::shared_mutex` for concurrent read access (readers don't block each other)
+- `std::shared_mutex`: `get()` takes it exclusively, as `put()`, `erase()` and
+  `clear()` do, since a hit moves the entry to the front of the list and every
+  call increments the hit or miss counter; `contains()`, `size()`,
+  `hit_count()`, `miss_count()` and `hit_rate()` take it shared
+  (`src/core/LRUCache.hpp`). `VTKWriter` reads the cache only through `get()`
+  (`src/io/VTKWriter.cpp`), so its reads exclude each other.
 - Hit/miss counters for cache performance monitoring
 
 **Complexity:**
@@ -1604,19 +1635,27 @@ deviation) to avoid redundant computation.
 3D spatial bucketing for efficient neighbor queries, useful for interface
 tracking and adaptive refinement region identification.
 
-**Hash function** (FNV-1a):
+**Hash function** (`CellCoordHash`, `src/core/SpatialHash.hpp`): the FNV-1a
+XOR-then-multiply step with the 64-bit FNV offset basis and prime, in
+`std::size_t` arithmetic, once per cell coordinate (not per byte):
 ```
-hash = 2166136261
-hash = (hash XOR ix) × 16777619
-hash = (hash XOR iy) × 16777619
-hash = (hash XOR iz) × 16777619
-bucket = hash % num_buckets
+cx = static_cast<int>(floor(x * inv_cell_size))   (cy, cz likewise; inv_cell_size = 1 / cell_size, set once)
+hash = 14695981039346656037
+hash = (hash XOR cx) × 1099511628211
+hash = (hash XOR cy) × 1099511628211
+hash = (hash XOR cz) × 1099511628211
 ```
+A `std::unordered_map<CellCoord, std::vector<Value>, CellCoordHash>` holds the
+cells and maps the hash to its bucket.
 
-**Operations:**
-- `insert(x, y, z, data)` — O(1) amortized
-- `query(ix, iy, iz)` — O(k) where k = items in bucket
-- `radius_query(x, y, z, r)` — O(m) where m = cells in radius
+**Operations** (x, y, z are physical coordinates):
+- `insert(x, y, z, data)` — appends `data` to the values of the cell of (x, y, z)
+- `query_cell(x, y, z)` — a pointer to the values of that cell, `nullptr` if
+  the map has no entry for it
+- `query_radius(x, y, z, radius_cells = 1)` — a copy of the values of the
+  (2·radius_cells + 1)³ cells around it
+
+Each is one `unordered_map` lookup per cell (O(1) on average).
 
 ### 13.3 Concurrent Striped Hash Map
 
@@ -1752,8 +1791,10 @@ Bytes per cell measured with `cudaMemGetInfo` around the construction of
 `CudaSolver` (256³ grid, RTX 4090). The 600³ column is the fields alone,
 8 bytes per cell for each double-precision and 4 for each single-precision
 field times 600³ = 2.16 × 10⁸ cells; one double-precision field is 1.61 GiB
-there. The rest, 0.125 bytes per cell at 256³, is reduction scratch and
-allocation granularity: 2 to 7 MiB on grids from 128³ to 384³.
+there. The rest is reduction scratch and allocation granularity, measured
+as 2 MiB (0.125 bytes per cell at 256³) for every scheme at 128³, 256³ and
+384³ and at 192³ with β = 0, 7 MiB at 192³ with β > 0, and 12.125 MiB at
+160³ with `run_dendrite.json` (Euler, β > 0).
 
 | Scheme | Double / single fields | Bytes per cell | 600³ |
 |---|---|---|---|

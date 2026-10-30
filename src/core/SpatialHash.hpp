@@ -43,6 +43,8 @@ struct CellCoordHash {
 ///   - Adaptive refinement regions
 ///   - Localized statistics computation
 ///
+/// Not used in src/: only tests/unit/test_SpatialHash.cpp includes this header.
+///
 /// Cell size should be chosen based on the expected query radius.
 /// A cell_size of ~10*dx gives good balance between memory and query speed.
 template <typename Value = int> class SpatialHash {

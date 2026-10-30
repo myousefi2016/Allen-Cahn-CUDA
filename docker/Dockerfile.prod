@@ -7,8 +7,10 @@
 # Usage:
 #   docker compose --profile prod up prod
 #   mkdir -p output && docker run --gpus all --user "$(id -u):$(id -g)" \
-#       -v "$PWD/output:/output" allencahn-prod /app/config/default.json
-#   -> results in ./output/out, checkpoints in ./output/checkpoints
+#       -v "$PWD/output:/output" allencahn-cuda:prod /app/config/default.json
+#   -> results in ./output/out/default, checkpoints in ./output/checkpoints/default
+#   allencahn-cuda:prod is the tag of the compose build (docker-compose.yml);
+#   `make docker-build-prod` tags allencahn-cuda:latest and :$(IMAGE_TAG).
 # ============================================================================
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────

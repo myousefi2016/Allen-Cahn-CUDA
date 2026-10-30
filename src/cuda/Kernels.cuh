@@ -122,12 +122,12 @@ __device__ __forceinline__ double laplacian_27pt(const double* __restrict__ phi,
                                                  int z, int Ny, int Nz, double h) {
     double center = phi[idx3d(x, y, z, Ny, Nz)];
 
-    // 6 face neighbors (weight 4)
+    // 6 face neighbors (weight 14)
     double face = phi[idx3d(x + 1, y, z, Ny, Nz)] + phi[idx3d(x - 1, y, z, Ny, Nz)] +
                   phi[idx3d(x, y + 1, z, Ny, Nz)] + phi[idx3d(x, y - 1, z, Ny, Nz)] +
                   phi[idx3d(x, y, z + 1, Ny, Nz)] + phi[idx3d(x, y, z - 1, Ny, Nz)];
 
-    // 12 edge neighbors (weight 2)
+    // 12 edge neighbors (weight 3)
     double edge = phi[idx3d(x + 1, y + 1, z, Ny, Nz)] + phi[idx3d(x + 1, y - 1, z, Ny, Nz)] +
                   phi[idx3d(x - 1, y + 1, z, Ny, Nz)] + phi[idx3d(x - 1, y - 1, z, Ny, Nz)] +
                   phi[idx3d(x + 1, y, z + 1, Ny, Nz)] + phi[idx3d(x + 1, y, z - 1, Ny, Nz)] +

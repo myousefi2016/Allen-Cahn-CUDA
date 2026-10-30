@@ -1,8 +1,7 @@
 # Design Document
 
 This document covers the algorithms, data structures, numerical schemes, and
-multi-GPU strategy used by Allen-Cahn-CUDA. Every claim cites the source file
-and line where it lives.
+multi-GPU strategy used by Allen-Cahn-CUDA.
 
 ---
 
@@ -770,7 +769,7 @@ Key invariants:
 |-------------------|------------------------------|-------------------------------------|-----|
 | `LRUCache<K,V>`   | `src/core/LRUCache.hpp`       | `std::shared_mutex`                 | VTK statistics cache (writer thread + main thread) |
 | `ConcurrentMap<K,V>` | `src/core/ConcurrentMap.hpp` | 16 `std::shared_mutex` shards (lock striping) | Future high-contention shared state |
-| `SpatialHash<V>`  | `src/core/SpatialHash.hpp`    | None — build-then-query                | 3D bucketing of field coordinates (FNV-1a hash) |
+| `SpatialHash<V>`  | `src/core/SpatialHash.hpp`    | None — build-then-query                | Not used in `src/` (unit tests only); 3D bucketing of field coordinates (FNV-1a hash) |
 
 `ConcurrentMap`'s shard count is the template parameter `NumStripes`,
 default 16 (`ConcurrentMap.hpp`). The shard index is

@@ -6,8 +6,11 @@
 
 namespace ac {
 
-/// Fundamental numeric type used throughout the simulation.
-/// Change to float for single-precision builds.
+/// Floating-point type of host-side data such as FieldData, grid spacing, the configuration,
+/// and checkpoint and VTK I/O. No kernel in src/cuda/ uses it. It must stay double:
+/// CudaSolver copies FieldData::data() into and out of DeviceField<double>
+/// (src/cuda/CudaSolver.cu), and scripts/resume_from_latest_checkpoint.py accepts only
+/// checkpoints sized for 8-byte reals (the checkpoint header records no element size).
 using Real = double;
 
 /// Index type for grid addressing.

@@ -16,13 +16,16 @@ namespace ac::cuda {
 // linearisation L = W0^4 lap^2 - 4 W0^2 lap + 4, taken implicitly: the
 // increment dphi = phi^{n+1} - phi^n solves
 //   (tau/dt + beta L) dphi = div F - dF/dphi - beta M(phi^n)      (all at t^n)
-// on the interior cells, where every lap acts on a field whose boundary cells
-// are set by the homogeneous form of phi's BCs (Dirichlet 0, zero flux,
-// periodic, Robin with gamma = 0). That lap is symmetric, so the matrix is
-// symmetric positive definite (L is a square, tau > 0). It is solved by
-// flexible conjugate gradients in double precision with a Chebyshev
-// polynomial preconditioner applied in single precision (WillmoreSolve.cuh).
-// beta = 0 gives explicit Euler. All laps are 7-point.
+// on the interior cells. lap(phi) in omega reads phi's own boundary cells
+// (phi_old, filled by apply_phi_bc and, in a multi-GPU run, on the halo and
+// periodic X ghost planes by the halo exchange). Every other lap (of omega,
+// of the CG direction and of its lap, and in the preconditioner) acts on a
+// field whose boundary cells are set by the homogeneous form of phi's BCs
+// (Dirichlet 0, zero flux, periodic, Robin with gamma = 0). That lap is
+// symmetric, so the matrix is symmetric positive definite (L is a square,
+// tau > 0). It is solved by flexible conjugate gradients in double precision
+// with a Chebyshev polynomial preconditioner applied in single precision
+// (WillmoreSolve.cuh). beta = 0 gives explicit Euler. All laps are 7-point.
 
 /// omega = W0^2 lap(phi) + phi - phi^3 on interior cells (boundary cells untouched).
 void launch_willmore_omega(const double* phi, double* omega, const KernelParams& p,

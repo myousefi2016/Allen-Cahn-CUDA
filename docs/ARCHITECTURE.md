@@ -3,8 +3,6 @@
 This document describes the high-level architecture of Allen-Cahn-CUDA:
 how the source tree is organised into layered libraries, how the runtime
 components interact, and what the threading and memory model look like.
-Every claim cites the source file and line where the corresponding code
-lives.
 
 ---
 
@@ -131,11 +129,14 @@ A few non-obvious facts about the build graph:
   `LiquidModes.cpp` and `KernelRanges.cpp` (`src/CMakeLists.txt`; the last holds
   the values of kernel quantities `validate()` checks, such as the Willmore
   diagonal `d_L`, which `willmore_spectrum` takes from there). `LRUCache`, `SpatialHash`, and
-  `ConcurrentMap` are header-only utilities included by downstream
-  libraries; they have no `.cpp`. So is `Interval.hpp`, the outward-rounded
-  interval arithmetic `LiquidModes.cpp` builds its certified bounds from;
-  `LiquidModesDetail.hpp` exposes that search's pieces to
-  `tests/unit/test_LiquidModes.cpp`.
+  `ConcurrentMap` are header-only utilities; they have no `.cpp`. So is
+  `Interval.hpp`, the outward-rounded interval arithmetic `LiquidModes.cpp`
+  builds its certified bounds from; `LiquidModesDetail.hpp` exposes that
+  search's pieces to `tests/unit/test_LiquidModes.cpp`. Of the three
+  utilities only `LRUCache` is used in `src/`: `src/io/VTKWriter.hpp`
+  includes it for its statistics cache. `SpatialHash.hpp` and
+  `ConcurrentMap.hpp` are included only by their unit tests
+  (`tests/unit/test_SpatialHash.cpp`, `tests/unit/test_ConcurrentMap.cpp`).
 - **`CheckpointManager.cpp` lives under `src/core/` but compiles into
   `ac_io`** (`src/CMakeLists.txt`). It is grouped there because
   `CheckpointManager.hpp` includes `io/CheckpointIO.hpp`, so the only
@@ -444,9 +445,9 @@ order is **Z, Y, X** so that periodic faces see the latest values
 
 | Component        | Synchronisation                          | Access pattern                                |
 |------------------|-------------------------------------------|------------------------------------------------|
-| `LRUCache`       | `std::shared_mutex`                       | Shared reads, exclusive writes                 |
-| `ConcurrentMap`  | 16 striped `std::shared_mutex` shards     | Distributed contention                         |
-| `SpatialHash`    | None (build-then-query)                   | Single-threaded build, read-only after         |
+| `LRUCache`       | `std::shared_mutex`                       | Exclusive: `get()` (a hit moves the entry to the front; every call counts a hit or a miss), `put()`, `erase()`, `clear()`. Shared: `contains()`, `size()`, `hit_count()`, `miss_count()`, `hit_rate()` |
+| `ConcurrentMap`  | 16 striped `std::shared_mutex` shards     | Distributed contention; not used in `src/`, only in its unit tests |
+| `SpatialHash`    | None (build-then-query)                   | Single-threaded build, read-only after; not used in `src/`, only in its unit tests |
 | `VTKWriter`      | `std::mutex` + `std::condition_variable`  | Producer-consumer with bounded queue           |
 | `DeviceField`    | None (single CUDA stream per solver)      | Stream ordering provides serialisation          |
 | `MultiGPUSolver` | Per-domain streams + CUDA events           | Every halo stream waits on every domain's compute event; host syncs halo streams |

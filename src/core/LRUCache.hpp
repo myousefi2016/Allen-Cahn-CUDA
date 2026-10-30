@@ -14,7 +14,9 @@ namespace ac {
 
 /// Thread-safe LRU cache with configurable capacity.
 /// Uses a doubly-linked list for O(1) eviction and a hash map for O(1) lookup.
-/// Read operations use shared locks; write operations use exclusive locks.
+/// get() takes the lock exclusively, as put(), erase() and clear() do: a hit moves the entry
+/// to the front, and every call increments hit_count_ or miss_count_. contains(), size(),
+/// hit_count(), miss_count() and hit_rate() take it shared.
 template <typename Key, typename Value, typename Hash = std::hash<Key>> class LRUCache {
 public:
     explicit LRUCache(std::size_t capacity) : capacity_(capacity) {

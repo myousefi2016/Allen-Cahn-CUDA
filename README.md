@@ -44,7 +44,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Crash-safe binary checkpointing**: 128-byte fixed header with magic `ACCHKPT`, CRC-32 over the header and over the field data, atomic rename + parent-directory `fsync`, and rolling retention that keeps one consistent trajectory per directory.
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
-- **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
+- **Thread-safe LRU cache** (`std::shared_mutex`) for the VTK writer's field statistics. `src/core/` also holds a striped concurrent map (16 shards) and a spatial hash (FNV-1a 3D bucketing); the program uses neither, and only their unit tests include them.
 - **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and nine end-to-end tests (four of the binary, five of the Makefile's targets); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
@@ -110,9 +110,17 @@ graph TB
 ```mermaid
 flowchart LR
     A["Load JSON config"] --> B["validate()"]
-    B --> C{"Restart file<br/>exists?"}
-    C -->|Yes| D["Restore state<br/>(grid-dim check)"]
-    C -->|No| E["tanh(r-r0)<br/>seed IC"]
+    B --> C{"checkpoint.restart_file<br/>set?"}
+    C -->|"No, without --resume"| E["tanh(r-r0)<br/>seed IC"]
+    C -->|"No, with --resume"| R{"restore_latest(): an intact<br/>checkpoint of this grid<br/>whose header step matches<br/>its file name?"}
+    C -->|Yes| X{"--resume, or restart_file<br/>not a regular file?"}
+    X -->|Yes| Z["Error, exit 1"]
+    X -->|No| Q{"CheckpointIO::read()<br/>accepts it?"}
+    Q -->|No| Z
+    Q -->|Yes| D["Restore state<br/>(grid-dim, spacing and<br/>finiteness checks)"]
+    R -->|"Yes (the newest)"| D
+    R -->|No| E
+    D -->|"a check fails"| Z
     D --> F["solver.initialize()<br/>H2D copy"]
     E --> F
     F --> G["time_loop()"]
@@ -669,9 +677,12 @@ Device memory allocated by `CudaSolver`, measured with `cudaMemGetInfo`
 around its construction on a 256³ grid (RTX 4090), per grid cell, and the
 fields' total for 600³ = 2.16 × 10⁸ cells (GiB = 2³⁰ bytes). Every
 double-precision field costs 8 bytes per cell and every single-precision
-one 4; the rest (0.125 bytes per cell at 256³, 2 to 7 MiB on grids from
-128³ to 384³) is reduction scratch and allocation granularity and is not in
-the 600³ column. The fused Allen–Cahn kernel stores no flux or index arrays.
+one 4; the rest is reduction scratch and allocation granularity and is not
+in the 600³ column. It was measured as 2 MiB (0.125 bytes per cell at 256³)
+for every scheme at 128³, 256³ and 384³ and at 192³ with `willmore_beta` 0,
+7 MiB at 192³ with `willmore_beta > 0`, and 12.125 MiB at 160³ with
+`config/run_dendrite.json` (Euler, `willmore_beta > 0`). The fused Allen–Cahn
+kernel stores no flux or index arrays.
 
 | Scheme | Fields | Bytes per cell | 600³ |
 |---|---|---|---|
@@ -683,7 +694,9 @@ the 600³ column. The fused Allen–Cahn kernel stores no flux or index arrays.
 
 A regularised 600³ Euler run fits on a 24 GB GPU (measured on the RTX 4090:
 21.7 GiB allocated, 1.4 GiB left); a regularised 600³ IMEX run does not. A
-grid fits when N³ times the bytes per cell is below the free memory: on a
+grid fits when N³ times the fields' bytes per cell (32, 48, 112, 108 or 124:
+the column without its 0.125-byte rest), plus the rest measured above, is
+below the free memory: on a
 16 GB-class GPU (e.g. T4, about 15 GiB free) that is about 500³ for RK4 and
 the regularised schemes. Larger grids can use several GPUs
 (`gpu.device_ids` with `gpu.multi_gpu: true`), which split the X planes
@@ -855,9 +868,9 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
-| `test_SphereRegression.cu`    | Dendritic growth from spherical seed reproduces reference behaviour              |
+| `test_SphereRegression.cu`    | 50 Euler steps from a φ = 1 ball of radius 5 cells (32³, Dirichlet φ = −1, u = −0.8): the number of cells with φ > 0 changes, φ ends in [−1.5, 1.5] and u in (−10, 10), φ > 0 at the centre cell and φ < 0 at cell (0, 0, 0); 10 Heun steps from a radius-3 ball (16³) leave φ finite |
 | `test_EulerConvergence.cu`    | Forward Euler shows expected error reduction under dt refinement                 |
-| `test_EnergyConservation.cu`  | Phase-field free-energy decreases monotonically                                  |
+| `test_EnergyConservation.cu`  | 100 Euler steps of a uniform liquid (16³, φ = −1, u = −0.8, Dirichlet at those values) leave φ within 0.01 of −1; after 20 Euler steps from a radius-3 ball, φ and u are finite and, if the mean of (φ + 1)/2 changed by at least 0.01, Σu changed in the same direction |
 | `test_SchemeComparison.cu`    | Euler vs Heun vs RK4 agreement; at 3× the explicit thermal limit `validate()` rejects Euler, which overflows, and IMEX stays finite |
 | `test_CheckpointRestart.cu`   | Checkpoint at midpoint then restart matches uninterrupted run                    |
 | `test_StencilComparison.cu`   | 7-point vs 27-point: bounded fields, smoother 27-pt interface, same physics      |

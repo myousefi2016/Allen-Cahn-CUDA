@@ -523,8 +523,10 @@ TEST_F(MultiGPUEngineTest, AdaptiveRunMatchesSingleGpuBitwise) {
     base.time.adaptive_tolerance = 0.002;
     base.time.dt_min = 1e-6;
     base.time.dt_max = 0.02;
-    // Seed well inside the box: the saturation guard (on by default) runs
-    // compute_boundary_max_phi every step and must not end the run early.
+    // Seed well inside the box. Started from the initial condition (no
+    // checkpoint restore), the saturation guard (on by default) checks only on
+    // steps that are multiples of time.saturation_check_freq (100 by default),
+    // so it does not run in these 30 steps.
     base.initial.seed_radius = 1.2;
     base.output.frequency = steps; // the final step is copied to the host
     base.output.async_io = false;

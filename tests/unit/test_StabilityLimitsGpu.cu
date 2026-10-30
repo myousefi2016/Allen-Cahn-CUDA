@@ -48,10 +48,10 @@ double checkerboard(int x, int y, int z, int axes = 7) {
 }
 
 /// Perturbs u (thermal) or phi (phase field) of the liquid by eta = 1e-6
-/// times the checkerboard over `axes` and returns the factor per step over
+/// (1e-9 with `background`) times the checkerboard over `axes` and returns the factor per step over
 /// 40 steps, measured at one cell. `background` adds to phi the periodic ramp
 /// 1e-6 cos(2 pi (x + y + z - 3) / 16), whose central differences point
-/// along -<111> at the measured cell (5, 5, 5), with phi still -1 to 1e-6.
+/// along +<111> at the measured cell (5, 5, 5), with phi still -1 to 1e-6.
 double amplification(const SimulationConfig& cfg, double dt, bool thermal, int axes = 7,
                      bool background = false) {
     const Grid grid = cfg.make_grid();

@@ -96,9 +96,11 @@ struct TimeParams {
     // the cells next to a wall, the run no longer represents growth into an
     // unbounded melt (the wall's boundary condition now acts on the solid), so
     // the engine writes a final checkpoint and output and exits cleanly.
+    // A check reduces those cells on the GPU and copies one double per domain
+    // to the host, not the field (CudaSolver::compute_boundary_max_phi).
     bool exit_on_saturation = true;
     Real saturation_threshold = -0.5; ///< phi above this next to a wall => saturated
-    int saturation_check_freq = 100;  ///< check every N steps (D2H copy is ~5 ms)
+    int saturation_check_freq = 100;  ///< check every N steps
 };
 
 // ── Stencil type ───────────────────────────────────────────────────────────

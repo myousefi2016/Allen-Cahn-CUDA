@@ -15,10 +15,7 @@ namespace ac {
 /// Provides O(1) amortized lookup/insert with reduced lock contention
 /// compared to a single-mutex approach.
 ///
-/// Used for:
-///   - Runtime statistics accumulation from multiple threads
-///   - Dynamic parameter overrides during simulation
-///   - Field metadata caching
+/// Not used in src/: only tests/unit/test_ConcurrentMap.cpp includes this header.
 template <typename Key, typename Value, std::size_t NumStripes = 16, typename Hash = std::hash<Key>>
 class ConcurrentMap {
 public:
