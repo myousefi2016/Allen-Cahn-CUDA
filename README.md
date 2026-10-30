@@ -317,14 +317,17 @@ them by the end. `cuda-run-dendrite` (160³, ε = 0.12) ends at t = 17.5
 Crash safety:
 - Checkpoints every 48 000 steps (15 time units, 11.5 minutes of compute at 14.4 ms per step on an RTX 4090, the most lost on `SIGKILL` / suspend). The background writer saves a checkpoint only after every frame before it is on disk (written, synced and renamed into place), so a resume, which continues after the checkpoint's step, misses no frame.
 - `keep_last = 3` (340 MB on disk for 192³).
-- `cuda-resume-dendrite` finds the highest-numbered intact checkpoint
-  (the 128-byte header must match its own CRC-32 and the config's grid and
-  hold a step >= 0, a finite time >= 0 and a finite dt > 0, the file size
-  must be exact and the stored CRC-32 must match the data; truncated,
-  foreign-grid and corrupted files are skipped, as are version-1 files,
-  written before the header CRC, only when a checked field is wrong),
-  injects it into the config, and resumes the binary at the next step. If
-  no usable checkpoint exists it cold-starts.
+- `cuda-resume-dendrite` runs the binary with `--resume
+  config/run_dendrite_long.json`: it restores the newest checkpoint in the
+  config's `checkpoint_dir` that it can restore (the 128-byte header must
+  match its own CRC-32 and the config's grid, record the step of the file
+  name and hold a step >= 0, a finite time >= 0 and a finite dt > 0, the
+  file size must be exact and the stored CRC-32 must match the data;
+  truncated, foreign-grid, corrupted and misnamed files are skipped with a
+  warning, as are version-1 files, written before the header CRC, only when
+  a checked field is wrong) and continues at the next step. If no usable
+  checkpoint exists it cold-starts. The recipe is the one command, so
+  `make -n cuda-resume-dendrite` only prints it.
 
 Exit status of `allen-cahn-cuda`:
 
@@ -384,15 +387,18 @@ Ctrl-C once. At the third press the docker client returns at once, while the
 container still finishes that checkpoint and then exits (`docker ps` lists it
 until then); wait for it before resuming.
 
-The resume mechanism is implemented in `scripts/resume_from_latest_checkpoint.py`,
-which is idempotent and safe to invoke repeatedly. It restarts from the
-newest checkpoint the binary can restore on the configuration's grid (magic
-and version, for version 2 the header's CRC-32, header `Nx`, `Ny`, `Nz` and
-spacing equal to the configuration's, the step of its file name, exact file
-size, and the payload's CRC-32, which version 1 may omit) and skips any
-other with a warning (`tests/test_resume_checkpoint.py`). Like the binary, it refuses a
-configuration with a key given twice in one object (exit 2): the resume
-configuration it writes would keep only the last value.
+`scripts/resume_from_latest_checkpoint.py` makes the same choice outside
+the binary, for a run started without `--resume`: the newest checkpoint the
+binary can restore on the configuration's grid (magic and version, for
+version 2 the header's CRC-32, header `Nx`, `Ny`, `Nz` and spacing equal to
+the configuration's, the step of its file name, exact file size, and the
+payload's CRC-32, which version 1 may omit), skipping any other with a
+warning, written into a copy of the configuration as
+`checkpoint.restart_file` (`<config>_resume.json`, whose path it prints;
+`tests/test_resume_checkpoint.py`). It is idempotent and safe to invoke
+repeatedly. Like the binary, it refuses a configuration with a key given
+twice in one object (exit 2): the resume configuration it writes would keep
+only the last value.
 
 Override defaults on the command line:
 
@@ -854,8 +860,8 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at; a `SIGTERM` once it has logged its last step leaves the run complete (exit 0) |
 | `cli_arguments.py` | Only the documented command lines are accepted: an argument after them (`config.json --validate-config`, `config.json extra`, `--help extra`, `--resume` without a file or with two) is an error that starts nothing, without a GPU |
 | `k8s_job_resume.py` | A retry of the shipped Kubernetes Job, run with `job.yaml`'s container arguments on a small copy of the base payload, continues from the interrupted pod's checkpoint and keeps it |
-| `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` call the resume helper with only the config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), so it searches the config's own `checkpoint_dir`; checked with `make -n` and a stub helper, without docker |
-| `makefile_run_signals.py` | Every target that runs the simulation in a container (`cuda-run` and the targets that use it, the long and large runs and their resume targets, `cuda-dendrite-demo`, `cuda-all`; the list is checked against make's data base) gives the binary itself as the container's command, right after the dev image, as the calling user, and the dev image keeps the entrypoint that execs its command, so Ctrl-C and `docker stop` reach the binary's handlers; checked with `make -n`, a stub helper and a stub docker, without docker |
+| `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` run the binary with `--resume` and the run's config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), and a dry run runs nothing: no recipe line of these targets or their prerequisites is one make runs under `-n` (from make's data base), and `make -n` calls neither docker nor python3 (recording stubs) and leaves `config/` as it was; without docker |
+| `makefile_run_signals.py` | Every target that runs the simulation in a container (`cuda-run` and the targets that use it, the long and large runs and their resume targets, `cuda-dendrite-demo`, `cuda-all`; the list is checked against make's data base) gives the binary itself as the container's command, right after the dev image, as the calling user, and the dev image keeps the entrypoint that execs its command, so Ctrl-C and `docker stop` reach the binary's handlers; checked with `make -n` and a recording docker stub, without docker |
 | `makefile_viz_out.py` | `make cuda-visualize` renders into `viz/<name of the run>` however `VIZ_IN` is spelled (`out/run_vtk`, `out/run_vtk/`, `out/run_vtk//`, `out/run_vtk/.`, `./out/run_vtk`, an absolute path), and `VIZ_ROOT` and `VIZ_OUT` override it; checked with `make -n`, without docker |
 | `validate_shipped_configs.py` | Every shipped configuration (`config/*.json`, k8s payloads, the Makefile's `run_vtk.json`, docs examples) passes `--validate-config` and prints its thermal and phase-field dt limits for its scheme and stencil; a `time.dt` equal to a printed limit (thermal, phase-field, adaptive cap) is accepted and one double above it rejected, and an infinite limit prints as `none`; a misspelled key, integer fields that are not ints (64.5 cells, 4294967297 steps) and copies that break a validation rule (ε > 1/15 without β, β with heun, β < 0, one-sided periodic, Robin α and β of opposite signs, `saturation_check_freq` 0) are rejected; the runs from the repository root use their own output and checkpoint directories |
 
@@ -893,7 +899,8 @@ Allen-Cahn-CUDA/
 │   ├── unit/                  # 29 unit-test files
 │   ├── integration/           # 8 integration-test files
 │   ├── e2e/                   # signal_exit.py, cli_arguments.py, k8s_job_resume.py, validate_shipped_configs.py,
-│   │                          # makefile_resume_call.py, makefile_run_signals.py, makefile_viz_out.py
+│   │                          # makefile_resume_call.py, makefile_run_signals.py, makefile_viz_out.py,
+│   │                          # makefile_common.py (what the Makefile tests share)
 │   ├── visualize_smoke.py     # PyVista visualizer self-test
 │   ├── test_resume_checkpoint.py  # resume helper: checkpoint choice and config rewrite
 │   ├── test_gpu_runner_guard.py   # self-hosted GPU runner guard

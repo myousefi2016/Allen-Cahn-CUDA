@@ -21,8 +21,8 @@
 #      nothing on stdout, no resume config written
 #   8. the CRC is computed correctly when streamed in small chunks
 #   9. a config without usable grid dimensions exits 2, never 1
-#  9a. given only the config, as the Makefile's resume targets call it, the
-#      helper searches the config's own checkpoint_dir
+#  9a. given only the config, the helper searches the config's own
+#      checkpoint_dir, as the binary's --resume does
 #  10. checkpoints of another spacing, or with NaN spacing, are skipped
 #  11. a config with a key given twice in one object exits 2
 #  12. the checkpoint's size is reported in MB of 10^6 bytes
@@ -295,10 +295,9 @@ class ResumeHelperTest(unittest.TestCase):
 
     # 9a --------------------------------------------------------------------
     def test_reads_the_checkpoint_dir_from_the_config(self) -> None:
-        # The Makefile's resume targets pass only the config (checked by
-        # tests/e2e/makefile_resume_call.py): the helper must search the
-        # config's own checkpoint_dir, not a shared one (where another run
-        # left a higher step of the same grid).
+        # Given only the config, the helper must search the config's own
+        # checkpoint_dir, as the binary's --resume does, not a shared one
+        # (where another run left a higher step of the same grid).
         own = self.ckpt / "run_a"
         own.mkdir()
         cfg = dict(self.config)

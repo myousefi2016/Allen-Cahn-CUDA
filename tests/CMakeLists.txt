@@ -130,9 +130,9 @@ add_test(NAME e2e.ShippedConfigsValidate
 )
 set_tests_properties(e2e.ShippedConfigsValidate PROPERTIES TIMEOUT 300)
 
-# The Makefile's resume targets must pass the resume helper only the config, so
-# that it searches the config's own checkpoint_dir. Runs `make -n` with a stub
-# helper (GNU make on PATH; no binary, docker or GPU).
+# The Makefile's resume targets run the binary with --resume and the run's config,
+# and `make -n` of them runs nothing. Reads make's data base and runs `make -n`
+# with recording docker and python3 stubs (GNU make on PATH; no binary, docker or GPU).
 add_test(NAME e2e.MakefileResumeCall
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_resume_call.py
             ${PROJECT_SOURCE_DIR}
@@ -141,8 +141,8 @@ set_tests_properties(e2e.MakefileResumeCall PROPERTIES TIMEOUT 60)
 
 # Every Makefile target that runs the simulation in a container gives the binary
 # itself as the container's command, as the calling user, so that Ctrl-C and
-# `docker stop` reach its signal handlers. Runs `make -n` with a stub helper and a
-# stub docker (GNU make on PATH; no binary, docker or GPU).
+# `docker stop` reach its signal handlers. Runs `make -n` with a recording docker
+# stub (GNU make on PATH; no binary, docker or GPU).
 add_test(NAME e2e.MakefileRunSignals
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_run_signals.py
             ${PROJECT_SOURCE_DIR}

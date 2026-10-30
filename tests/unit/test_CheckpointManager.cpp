@@ -223,6 +223,30 @@ TEST_F(CheckpointManagerTest, RestoreFallsBackToTheNewestIntactCheckpointOfThisG
     EXPECT_THROW((void)mgr.restore(), std::runtime_error);
 }
 
+// A checkpoint's step is the one of its name: retention orders and deletes by it. A newest
+// file whose header records another step (a copy of step 15 named checkpoint_30) is
+// skipped like a damaged one, as the resume helper skips it. Restored, it would restart the
+// run at step 15, and the first save after it would delete checkpoint_20 as a checkpoint
+// left above the restart point.
+TEST_F(CheckpointManagerTest, RestoreSkipsACheckpointWhoseHeaderStepIsNotItsName) {
+    CheckpointManager mgr(make_params(10), grid_);
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    CheckpointIO::write(test_dir_ / "checkpoint_20.acbin", 20, 0.2, 0.01, grid_, phi, u);
+    CheckpointIO::write(test_dir_ / "checkpoint_30.acbin", 15, 0.15, 0.01, grid_, phi, u);
+
+    const auto latest = mgr.restore_latest();
+    ASSERT_TRUE(latest.has_value());
+    EXPECT_EQ(latest->step, 20);
+    EXPECT_EQ(latest->time, 0.2);
+    EXPECT_EQ(mgr.restore().step, 20);
+
+    mgr.save(latest->step + 1, latest->time + 0.01, 0.01, phi, u);
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_20.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_21.acbin"));
+}
+
 TEST_F(CheckpointManagerTest, RestoreEmptyDirThrows) {
     // Create a fresh empty directory
     auto empty_dir = ac::test::unique_temp_dir("test_ckpt_empty");

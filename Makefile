@@ -73,7 +73,6 @@ VIZ_EXTRA_ARGS     ?=
 # Long-run dendrite simulation (resumable; 27 minutes of compute on an RTX 4090)
 LONG_CONFIG        ?= config/run_dendrite_long.json
 LONG_LOG           ?= run_long.log
-RESUME_HELPER      ?= scripts/resume_from_latest_checkpoint.py
 
 # Large-box dendrite simulation (384^3; 179 minutes of compute on an RTX 4090)
 LARGE_CONFIG       ?= config/run_dendrite_large.json
@@ -320,10 +319,11 @@ cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, be
 #
 # After an interrupt (SIGINT, container kill, host suspend, ...), simply:
 #   make cuda-resume-dendrite
-# which scans the config's checkpoint_dir for the highest-numbered intact checkpoint,
-# skipping any whose header, exact size or CRC32 does not match the config's
-# grid (truncated, foreign-grid or corrupted files), generates
-# config/run_dendrite_long_resume.json, and restarts the binary.
+# which runs the binary with --resume: it restarts from the newest checkpoint in the
+# config's checkpoint_dir that it can restore on the config's grid, skipping with a
+# warning any that is truncated, corrupted (header or payload CRC32), of another grid or
+# named after another step than its header's, and starts at step 0 if there is none.
+# The recipe is one command line without $(MAKE), so `make -n` only prints it.
 cuda-run-dendrite-long: cuda-build ## (docker) Long 192^3 dendrite run (eps=0.15) until saturation, with checkpoints
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
 	@echo "==> LONG dendrite run on 192^3 until saturation (RTX 4090: 27 min of compute, 1.06 GB VTK output)."
@@ -337,25 +337,10 @@ cuda-run-dendrite-long: cuda-build ## (docker) Long 192^3 dendrite run (eps=0.15
 	@echo ""
 	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $(LONG_CONFIG)
 
-cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from latest intact checkpoint (cold start if none)
+cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from its newest intact checkpoint (cold start if none)
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
-	@set +e; \
-	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LONG_CONFIG)); \
-	rc_helper=$$?; \
-	if [ $$rc_helper -eq 0 ]; then \
-	  case "$$RESUME_CFG" in /*) \
-	    echo "ERROR: $$RESUME_CFG is outside $$PWD, the only directory mounted into the container (at /work)"; \
-	    exit 1;; \
-	  esac; \
-	  echo "==> Resuming with $$RESUME_CFG"; \
-	  $(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $$RESUME_CFG; \
-	elif [ $$rc_helper -eq 1 ]; then \
-	  echo "==> No usable checkpoint found — falling back to cold start with $(LONG_CONFIG)"; \
-	  $(MAKE) cuda-run-dendrite-long; \
-	else \
-	  echo "ERROR: resume helper exited $$rc_helper (likely a config/JSON problem)"; \
-	  exit 1; \
-	fi
+	@echo "==> Resuming ./$(NATIVE_BIN) --resume $(LONG_CONFIG) (inside container)"
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) --resume $(LONG_CONFIG)
 
 # ── Large-box dendrite run (384^3, until saturation) ──────────────────────
 # Tanh initial condition, eps = 0.10 with willmore_beta. Measured on an RTX
@@ -375,25 +360,10 @@ cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run until saturat
 	@echo ""
 	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $(LARGE_CONFIG)
 
-cuda-resume-dendrite-large: cuda-build ## (docker) Resume the large run from latest checkpoint
+cuda-resume-dendrite-large: cuda-build ## (docker) Resume the large run from its newest intact checkpoint (cold start if none)
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
-	@set +e; \
-	RESUME_CFG=$$(python3 $(RESUME_HELPER) $(LARGE_CONFIG)); \
-	rc_helper=$$?; \
-	if [ $$rc_helper -eq 0 ]; then \
-	  case "$$RESUME_CFG" in /*) \
-	    echo "ERROR: $$RESUME_CFG is outside $$PWD, the only directory mounted into the container (at /work)"; \
-	    exit 1;; \
-	  esac; \
-	  echo "==> Resuming with $$RESUME_CFG"; \
-	  $(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $$RESUME_CFG; \
-	elif [ $$rc_helper -eq 1 ]; then \
-	  echo "==> No usable checkpoint found — falling back to cold start with $(LARGE_CONFIG)"; \
-	  $(MAKE) cuda-run-dendrite-large; \
-	else \
-	  echo "ERROR: resume helper exited $$rc_helper (likely a config/JSON problem)"; \
-	  exit 1; \
-	fi
+	@echo "==> Resuming ./$(NATIVE_BIN) --resume $(LARGE_CONFIG) (inside container)"
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) --resume $(LARGE_CONFIG)
 
 cuda-watch-dendrite: ## Tail run_long.log (only useful after 'nohup make cuda-run-dendrite-long')
 	@if [ -f $(LONG_LOG) ]; then \

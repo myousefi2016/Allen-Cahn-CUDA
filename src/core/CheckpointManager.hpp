@@ -30,11 +30,12 @@ public:
 
     /// Restore from checkpoint.restart_file if it is set, else from the newest
     /// checkpoint in checkpoint_dir of this run's grid that reads back intact
-    /// (older ones are tried past a damaged one or one of another grid).
+    /// (restore_latest).
     [[nodiscard]] CheckpointIO::RestoreData restore() const;
 
     /// The newest checkpoint in checkpoint_dir of this run's grid that reads back intact
-    /// (older ones are tried past a damaged one or one of another grid), or none.
+    /// and whose header records the step of its name (older ones are tried past a damaged
+    /// one, one of another grid or one of another step), or none.
     [[nodiscard]] std::optional<CheckpointIO::RestoreData> restore_latest() const;
 
     /// True when checkpoint.restart_file is configured. The file is not

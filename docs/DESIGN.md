@@ -654,8 +654,9 @@ command line `allen-cahn-cuda --resume config.json`
 (`SimulationEngine::Start::ResumeLatest`) instead restores the newest
 checkpoint of the run's grid in `checkpoint_dir` that reads back intact
 (`CheckpointManager::restore_latest`), or starts at step 0 if there is none;
-`restart_file` must not be set with it. The Kubernetes Job runs this way, so
-a retry continues the interrupted pod's run. A restored state that is
+`restart_file` must not be set with it. The Kubernetes Job and the
+Makefile's `cuda-resume-*` targets run this way, so a retry continues the
+interrupted run. A restored state that is
 saturated (the saturation guard's final checkpoint) is not advanced.
 
 ### 8.4 Rolling retention
@@ -684,9 +685,13 @@ namespace
 (`allen-cahn-dev`, `allen-cahn-prod`).
 `restore()` without a `restart_file` walks the directory in descending
 step order and returns the first checkpoint of this run's grid that reads
-back intact: one of another grid, or a damaged one (header, size or CRC),
-is skipped with a warning
-(`CheckpointManagerTest.RestoreFallsBackToTheNewestIntactCheckpointOfThisGrid`).
+back intact and whose header records the step of its name: one of another
+grid, a damaged one (header, size or CRC) or one of another step (a copy
+under another name, which restored would restart at its older step and make
+the next save delete the genuine newer checkpoints as left above it) is
+skipped with a warning
+(`CheckpointManagerTest.RestoreFallsBackToTheNewestIntactCheckpointOfThisGrid`,
+`RestoreSkipsACheckpointWhoseHeaderStepIsNotItsName`).
 
 ### 8.5 Failure and exit semantics
 

@@ -7,15 +7,11 @@
 # `checkpoint.restart_file`, write the modified config to a
 # `<base>_resume.json` sibling file, and print the new path on stdout.
 #
-# Used by the `make cuda-resume-dendrite` target to drive a checkpoint-based
-# resume of a long simulation that was interrupted (Ctrl-C, container kill,
-# host suspend, etc.).
-#
-# Why we need this: SimulationEngine::run (SimulationEngine.cu) only
-# restarts when CheckpointManager::restart_requested() returns true, which
-# (per CheckpointManager.cpp) only checks the explicit `restart_file`
-# field — it does NOT auto-discover by directory. So we have to set that
-# field ourselves before invoking the binary.
+# The binary makes the same choice itself with `--resume CONFIG`
+# (CheckpointManager::restore_latest), which the Makefile's resume targets and
+# the Kubernetes Job use. This helper is for a run started without --resume:
+# the binary then restarts only from an explicit `checkpoint.restart_file`,
+# which the resume config written here sets.
 #
 # A checkpoint is accepted only if its 128-byte CheckpointIO::Header has the
 # ACCHKPT magic, version 1 or 2, for version 2 a header_crc32 that matches the
@@ -36,13 +32,13 @@
 # Usage
 #   python3 scripts/resume_from_latest_checkpoint.py CONFIG_PATH [CHECKPOINT_DIR]
 #
-# Stdout  -> path of the new resume-config (consumed by the Makefile)
+# Stdout  -> path of the new resume-config
 # Stderr  -> human-readable progress
 #
 # Paths written to stdout and into `restart_file` are relative to the current
-# directory whenever they lie inside it (see portable_path), because the
-# Makefile runs this helper on the host from the repository root but runs
-# the binary in a container that mounts that directory at /work (-w /work).
+# directory whenever they lie inside it (see portable_path), so that a binary
+# run in a container that mounts that directory as its working directory (as
+# the Makefile's `docker run -v $PWD:/work -w /work`) finds them.
 #
 # Exit codes
 #   0 = OK, resume config written
@@ -403,7 +399,7 @@ def main(argv: list[str]) -> int:
                      f"target step {max_steps}, "
                      f"remaining ~{max_steps - step} steps\n")
 
-    # Stdout = JUST the path, for clean Makefile consumption.
+    # Stdout = JUST the path, for a caller to capture ($(...) in a shell).
     sys.stdout.write(str(portable_path(resume_path)))
     sys.stdout.write("\n")
     return 0

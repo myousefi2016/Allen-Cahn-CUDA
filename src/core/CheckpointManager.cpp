@@ -81,11 +81,14 @@ CheckpointIO::RestoreData CheckpointManager::restore() const {
 
 std::optional<CheckpointIO::RestoreData> CheckpointManager::restore_latest() const {
     // The newest checkpoint of this run's grid that reads back intact. One of another grid
-    // (retention leaves those in the directory) or a damaged one (header, size or CRC) is
-    // skipped with a warning, and the next older one is tried.
+    // (retention leaves those in the directory), a damaged one (header, size or CRC) or one
+    // whose header records another step than its name is skipped with a warning, and the
+    // next older one is tried. Retention orders and deletes by the step in the name: a
+    // copy restored under a higher name would restart at its older step, and the next save
+    // would delete the checkpoints named above that step, the genuine newer ones among them.
     const auto files = list_checkpoints();
     for (auto it = files.rbegin(); it != files.rend(); ++it) {
-        const auto& path = it->second;
+        const auto& [step, path] = *it;
         const auto header = CheckpointIO::read_header(path);
         if (!header) {
             spdlog::warn("Skipping checkpoint {}: no intact checkpoint header", path.string());
@@ -95,6 +98,12 @@ std::optional<CheckpointIO::RestoreData> CheckpointManager::restore_latest() con
             spdlog::warn("Skipping checkpoint {}: of a {}x{}x{} grid, not this run's {}x{}x{}",
                          path.string(), header->Nx, header->Ny, header->Nz, grid_.Nx(), grid_.Ny(),
                          grid_.Nz());
+            continue;
+        }
+        if (header->step != step) {
+            spdlog::warn("Skipping checkpoint {}: its header records step {}, not the step of "
+                         "its name",
+                         path.string(), header->step);
             continue;
         }
         try {
