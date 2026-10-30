@@ -6,6 +6,7 @@
 #include "logging/Logger.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -467,43 +468,107 @@ TEST_F(MultiGPUSolverTest, BoundaryMaxReadsTheCellsNextToTheWalls) {
 // cell of a single wall layer, in turn for each of the six layers and, for
 // the Y layer, on the planes where two or three domains split the grid
 // (x = 4, 6, 8). The reduction must return 0.5 on one GPU and on two and
-// three domains.
+// three domains. Two face layouts. With zero-flux faces (the uniform phi_bc
+// path) every boundary cell is a copy of a cell next to a wall, so that layout
+// cannot tell a wall layer from the boundary plane beyond it. With a
+// Dirichlet face on every side, each at its own value in (0.5, 1], every
+// boundary cell lies strictly above every cell of the wall layers (-0.9 and
+// the 0.5 spike): a reduction that reads boundary cells in place of, or
+// besides, the layer next to a wall returns more than 0.5. Off its edges each
+// face holds its own value, so a reduction that reads a face's plane there
+// returns that face's value, which names the face.
 TEST_F(MultiGPUSolverTest, BoundaryMaxSeesEveryWallLayerAndNothingElse) {
-    SimulationConfig cfg;
-    cfg.grid.Nx = 12;
-    cfg.grid.Ny = 7;
-    cfg.grid.Nz = 9;
-    cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = 0.4;
-    cfg.physics.epsilon = 0.05;
-    cfg.time.scheme = TimeScheme::Euler;
     BoundaryConfig zero_flux;
     zero_flux.type = BCType::Neumann;
-    cfg.boundary.phi_bc = zero_flux;
-    cfg.boundary.u_bc = zero_flux;
-    cfg.validate();
-    const Grid grid = cfg.make_grid();
+    // Dirichlet phi of the faces in Face order (XLo, XHi, YLo, YHi, ZLo, ZHi):
+    // distinct dyadic values above the spike and at most 1 (validate() keeps a
+    // phi Dirichlet value in [-1, 1]), none equal to -0.9, 0.5 or 0.9.
+    const std::array<double, 6> wall = {1.0, 0.9375, 0.875, 0.8125, 0.75, 0.6875};
     struct Spike {
         int x, y, z;
     };
-    for (const Spike sp : {Spike{1, 3, 4}, Spike{10, 3, 4}, Spike{4, 1, 4}, Spike{6, 1, 4},
-                           Spike{8, 1, 4}, Spike{5, 5, 4}, Spike{8, 3, 1}, Spike{4, 3, 7}}) {
-        SCOPED_TRACE("spike at " + std::to_string(sp.x) + "," + std::to_string(sp.y) + "," +
-                     std::to_string(sp.z));
-        FieldData phi(grid, "phi"), u(grid, "u");
-        phi.fill(-0.9);
-        u.fill(-0.5);
-        phi(6, 3, 4) = 0.9;
-        phi(sp.x, sp.y, sp.z) = 0.5;
-        CudaSolver single(cfg);
-        single.initialize(phi, u);
-        EXPECT_EQ(single.compute_boundary_max_phi(), 0.5);
-        for (int domains : {2, 3}) {
-            auto multi_cfg = cfg;
-            multi_cfg.gpu.multi_gpu = true;
-            multi_cfg.gpu.device_ids = shared_device(domains);
-            MultiGPUSolver multi(multi_cfg);
-            multi.initialize(phi, u);
-            EXPECT_EQ(multi.compute_boundary_max_phi(), 0.5) << domains << " domains";
+    for (bool dirichlet_walls : {false, true}) {
+        SCOPED_TRACE(dirichlet_walls
+                         ? "Dirichlet faces XLo..ZHi = 1, 0.9375, 0.875, 0.8125, 0.75, 0.6875"
+                         : "zero-flux faces");
+        SimulationConfig cfg;
+        cfg.grid.Nx = 12;
+        cfg.grid.Ny = 7;
+        cfg.grid.Nz = 9;
+        cfg.grid.dx = cfg.grid.dy = cfg.grid.dz = 0.4;
+        cfg.physics.epsilon = 0.05;
+        cfg.time.scheme = TimeScheme::Euler;
+        if (dirichlet_walls) {
+            cfg.boundary.per_face = true;
+            for (std::size_t f = 0; f < wall.size(); ++f)
+                cfg.boundary.phi_faces.faces[f] = bc_of(BCType::Dirichlet, wall[f]);
+            cfg.boundary.u_faces = PerFaceBoundary::uniform(zero_flux);
+        } else {
+            cfg.boundary.phi_bc = zero_flux;
+            cfg.boundary.u_bc = zero_flux;
+        }
+        cfg.validate();
+        const Grid grid = cfg.make_grid();
+        const int Nx = cfg.grid.Nx, Ny = cfg.grid.Ny, Nz = cfg.grid.Nz;
+        for (const Spike sp : {Spike{1, 3, 4}, Spike{10, 3, 4}, Spike{4, 1, 4}, Spike{6, 1, 4},
+                               Spike{8, 1, 4}, Spike{5, 5, 4}, Spike{8, 3, 1}, Spike{4, 3, 7}}) {
+            SCOPED_TRACE("spike at " + std::to_string(sp.x) + "," + std::to_string(sp.y) + "," +
+                         std::to_string(sp.z));
+            FieldData phi(grid, "phi"), u(grid, "u");
+            phi.fill(-0.9);
+            u.fill(-0.5);
+            phi(6, 3, 4) = 0.9;
+            phi(sp.x, sp.y, sp.z) = 0.5;
+            CudaSolver single(cfg);
+            single.initialize(phi, u);
+            FieldData applied(grid, "phi");
+            single.copy_phi_to_host(applied);
+            if (dirichlet_walls) {
+                // What this layout relies on: the BC fill leaves every cell
+                // inside the walls as it was, and every boundary cell of a
+                // face off its edges (the cells a reduction reading that
+                // face's plane in place of its wall layer would see) holds
+                // that face's value.
+                std::size_t changed_inside = 0, not_the_face_value = 0;
+                for (int x = 0; x < Nx; ++x)
+                    for (int y = 0; y < Ny; ++y)
+                        for (int z = 0; z < Nz; ++z) {
+                            const bool bx = x == 0 || x == Nx - 1, by = y == 0 || y == Ny - 1,
+                                       bz = z == 0 || z == Nz - 1;
+                            const int faces_here = (bx ? 1 : 0) + (by ? 1 : 0) + (bz ? 1 : 0);
+                            if (faces_here == 0 && applied(x, y, z) != phi(x, y, z))
+                                ++changed_inside;
+                            if (faces_here != 1)
+                                continue;
+                            std::size_t f = 0;
+                            if (bx)
+                                f = x == 0 ? 0u : 1u;
+                            else if (by)
+                                f = y == 0 ? 2u : 3u;
+                            else
+                                f = z == 0 ? 4u : 5u;
+                            if (applied(x, y, z) != wall[f])
+                                ++not_the_face_value;
+                        }
+                ASSERT_EQ(changed_inside, 0u);
+                ASSERT_EQ(not_the_face_value, 0u);
+            }
+            EXPECT_EQ(single.compute_boundary_max_phi(), 0.5);
+            for (int domains : {2, 3}) {
+                auto multi_cfg = cfg;
+                multi_cfg.gpu.multi_gpu = true;
+                multi_cfg.gpu.device_ids = shared_device(domains);
+                MultiGPUSolver multi(multi_cfg);
+                multi.initialize(phi, u);
+                // The domains hold the same cells as one GPU, boundary cells
+                // included.
+                FieldData gathered(grid, "phi");
+                multi.copy_phi_to_host(gathered);
+                std::string where;
+                ASSERT_EQ(count_mismatches(applied, gathered, where), 0u)
+                    << domains << " domains: " << where;
+                EXPECT_EQ(multi.compute_boundary_max_phi(), 0.5) << domains << " domains";
+            }
         }
     }
 }
