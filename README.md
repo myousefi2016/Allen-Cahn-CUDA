@@ -221,6 +221,8 @@ Halo width is 1 because every stencil reads ±1 cell: the Allen–Cahn operator 
 | `spdlog`         | ≥ 1.12        | Auto     | `FetchContent` (URL tarball)           |
 | GoogleTest       | ≥ 1.14        | Auto     | `FetchContent` (tests only)            |
 | VTK              | ≥ 9.0         | Optional | Required for `.vts` output             |
+| Python 3 with PyYAML | 3.12, 3.14 tested | Tests | The end-to-end tests (`tests/e2e`); CMake's FindPython3 picks the interpreter, `-DPython3_EXECUTABLE=` chooses one that has PyYAML |
+| GNU make         | 4.3, 4.4.1 tested | Tests | The end-to-end tests of the Makefile's targets |
 | HDF5             | any           | Optional | Optional checkpoint backend            |
 
 ---

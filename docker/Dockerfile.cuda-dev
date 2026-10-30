@@ -62,10 +62,13 @@ RUN pip3 install --no-cache-dir \
         'matplotlib>=3.7'
 
 # ---- Runs as root ------------------------------------------------------------
-# No USER on purpose: the cuda-* targets bind-mount the checkout at /work and
-# run without --user, so the container is root. CUDA_CHOWN in the Makefile then
-# hands build/, out/, checkpoints/ and viz/ back to the host UID/GID at the end
-# of every job, and cuda-clean relies on root to remove them. (The base image
-# already has user/group `ubuntu` at UID/GID 1000, so creating another account
-# with those IDs would fail the build.)
+# No USER on purpose: the cuda-* targets bind-mount the checkout at /work. The
+# build, test and visualization targets run without --user, so the container is
+# root, and CUDA_CHOWN in the Makefile hands build/, out/, checkpoints/ and viz/
+# back to the host UID/GID at the end of each; cuda-clean relies on root to
+# remove them. The simulation runs (CUDA_DOCKER_RUN_SIM) pass --user with the
+# host UID/GID and run the binary as the container's command, so its signal
+# handlers get Ctrl-C and `docker stop`. (The base image already has user/group
+# `ubuntu` at UID/GID 1000, so creating another account with those IDs would
+# fail the build.)
 WORKDIR /work

@@ -112,13 +112,15 @@ jobs:
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
 
+      # The README's build command, AC_BUILD_TESTS from its default (ON) on the
+      # fresh checkout: configured that way, a CMakeLists.txt that defines the
+      # option after Dependencies.cmake reads it fails (no GTest::gtest_main).
       - name: Configure CMake
         run: |
           cmake -B build \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_CUDA_ARCHITECTURES=native \
-            -DAC_BUILD_TESTS=ON
+            -DCMAKE_CUDA_ARCHITECTURES=native
 
       - name: Build
         run: cmake --build build --parallel $(nproc)
@@ -255,8 +257,9 @@ jobs:
             uid: "1000"
             workdir: /output
             write_dirs: /output
-          # Root by design: the cuda-* make targets chown results back to the
-          # host user (CUDA_CHOWN), see docker/Dockerfile.cuda-dev.
+          # Root by design: the cuda-* build, test and visualization targets
+          # chown results back to the host user (CUDA_CHOWN); the simulation
+          # runs pass --user. See docker/Dockerfile.cuda-dev.
           - target: cuda-dev
             user: root
             uid: "0"

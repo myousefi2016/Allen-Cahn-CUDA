@@ -18,6 +18,12 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES native)
 endif()
 
+# ── Options ─────────────────────────────────────────────────────────────────
+# Before the modules: Dependencies.cmake finds or fetches GoogleTest only when
+# AC_BUILD_TESTS is set, so on a fresh build directory the option must be defined
+# (and default ON) by then, or tests/ links a GTest::gtest_main that was never made.
+option(AC_BUILD_TESTS "Build unit and integration tests" ON)
+
 # ── CMake modules ───────────────────────────────────────────────────────────
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
@@ -28,7 +34,6 @@ include(Dependencies)
 add_subdirectory(src)
 
 # ── Tests ───────────────────────────────────────────────────────────────────
-option(AC_BUILD_TESTS "Build unit and integration tests" ON)
 if(AC_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
