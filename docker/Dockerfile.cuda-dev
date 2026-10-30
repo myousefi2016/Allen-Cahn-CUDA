@@ -10,8 +10,12 @@
 
 FROM nvidia/cuda:12.6.0-devel-ubuntu24.04
 
+# PYTHONDONTWRITEBYTECODE: the cuda-* targets run Python as root on the bind-mounted
+# checkout (make cuda-visualize-self-test imports scripts/visualize_dendrite.py), and the
+# byte-compiled files would be left there owned by root (scripts/__pycache__).
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYVISTA_OFF_SCREEN=true \
     DISPLAY=:99
 
@@ -30,6 +34,9 @@ RUN apt-get update && \
         python3 \
         python3-pip \
         python3-dev \
+        # PyYAML: the end-to-end tests that read the k8s manifests (make cuda-test,
+        # cuda-test-e2e, cuda-all), as the CI images install it
+        python3-yaml \
         xvfb \
         libgl1 \
         libglu1-mesa \
