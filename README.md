@@ -809,7 +809,7 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 
 | Suite             | Files | ctest tests |
 |-------------------|-------|-------------|
-| Unit tests        | 29    | 361         |
+| Unit tests        | 29    | 364         |
 | Integration tests | 8     | 19          |
 | End-to-end tests  | 11    | 11          |
 
@@ -860,7 +860,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_CudaSolver.cu`          | Solver lifecycle, all 4 time schemes, per-face BC end-to-end, NaN-propagating reductions |
 | `test_ImexJacobi.cu`          | IMEX thermal solve: error within 1e-10 of a long-double solution at s ≈ 17 (both stencils, every kind of u face, one GPU and three domains); NaN temperature and a tolerance below rounding throw; the stopping rule on the host, and whether its rounding message says a smaller dt can certify |
 | `test_StabilityLimitsGpu.cu`  | The solver's explicit updates have these limits: a mode decays at 0.99× and grows at 1.01× its limit (thermal: every scheme and stencil; phase field: the uniform liquid's 3-D, 1-D and 2-D checkerboards with and without the Willmore term and its uniform shift, a liquid with a ⟨111⟩ gradient, and the wave across a ⟨101⟩ gradient that binds with the Willmore term, which grows at 0.99× the limit the checkerboards gave) |
-| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer and no halo; `validate()` rejects exactly the splits the solver rejects; engine run |
+| `test_MultiGPUSolver.cu`      | Multi-GPU vs single-GPU, bit for bit: every scheme, BC layout and split, with and without the Willmore term; the interface-tracking boundary maximum reads every wall layer and no halo; `validate()` rejects exactly the splits the solver rejects; engine runs: the engine builds the multi-GPU solver (its log), an adaptive run, and the saturation guard at every step stops a three-domain run at the step of the single-GPU run when the solid reaches x_lo, x_hi or y_hi, each read by a different domain |
 | `test_Willmore.cu`            | Willmore step: one step of a Fourier mode vs its analytic amplification factor, β → 0 equals explicit Euler, first order in time, scheme and ε > 1/15 rules |
 | `test_WillmorePreconditioner.cu` | Spectral bounds vs exact eigenvalues (every BC, anisotropic spacing), lowest-degree Chebyshev plan and its polynomial, single-precision preconditioner vs the exact polynomial, power-of-two scaling, true residual, per-step plans, non-finite states, a failed step naming its cause |
 | `test_SimulationEngine.cu`    | Engine init, IC, adaptive dt (capped at the stability limits after the dt_min clamp, also after a restart; growth when φ is at rest), short run, saturation stop (a restart from a saturated state computes nothing), shutdown (interrupted only before `max_steps`), `--resume` (the newest intact checkpoint, step 0 without one), divergence errors, no checkpoint before the frames up to its step (also at a shutdown or saturation), a failed checkpoint stops the run, restart-file and spacing checks, dt after a restart |

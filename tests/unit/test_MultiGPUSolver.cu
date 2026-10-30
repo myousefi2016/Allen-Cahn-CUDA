@@ -11,6 +11,8 @@
 #include <cstring>
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <memory>
+#include <spdlog/sinks/ostream_sink.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -309,10 +311,19 @@ std::vector<Case> all_cases() {
     return cases;
 }
 
-std::string case_name(const ::testing::TestParamInfo<Case>& info) {
-    const Case& c = info.param;
+std::string case_label(const Case& c) {
     return std::string(scheme_name(c.scheme)) + "_" + std::to_string(c.domains) + "dom_" +
            bc_name(c.bc) + "_Nx" + std::to_string(c.Nx) + (c.willmore ? "_Willmore" : "");
+}
+
+std::string case_name(const ::testing::TestParamInfo<Case>& info) {
+    return case_label(info.param);
+}
+
+/// gtest prints a parameter with PrintTo; ctest names the case after that text (without
+/// it, after a dump of the struct's bytes).
+void PrintTo(const Case& c, std::ostream* os) {
+    *os << case_label(c);
 }
 
 } // namespace
@@ -497,7 +508,53 @@ TEST_F(MultiGPUSolverTest, BoundaryMaxSeesEveryWallLayerAndNothingElse) {
     }
 }
 
-// ── Engine level: solver selection, adaptive dt and the step timer ────────
+// ── Engine level: solver selection, adaptive dt and the saturation guard ──
+
+namespace {
+
+/// What the program logs at info level while `body` runs: the default logger is replaced
+/// by one that writes into a string.
+template <class Body> std::string logged(Body&& body) {
+    auto stream = std::make_shared<std::ostringstream>();
+    const auto previous = spdlog::default_logger();
+    auto logger = std::make_shared<spdlog::logger>(
+        "capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(*stream));
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+    try {
+        body();
+    } catch (...) {
+        spdlog::set_default_logger(previous);
+        throw;
+    }
+    spdlog::set_default_logger(previous);
+    return stream->str();
+}
+
+std::size_t occurrences(const std::string& text, const std::string& needle) {
+    std::size_t n = 0;
+    for (auto at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1))
+        ++n;
+    return n;
+}
+
+/// The steps of the checkpoints in `dir` (checkpoint_<step>.acbin), in increasing order.
+std::vector<int> checkpoint_steps(const std::filesystem::path& dir) {
+    std::vector<int> steps;
+    if (!std::filesystem::is_directory(dir))
+        return steps;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        const std::string name = entry.path().filename().string();
+        const std::string prefix = "checkpoint_", suffix = ".acbin";
+        if (name.size() > prefix.size() + suffix.size() && name.starts_with(prefix) &&
+            name.ends_with(suffix))
+            steps.push_back(std::stoi(name.substr(prefix.size())));
+    }
+    std::sort(steps.begin(), steps.end());
+    return steps;
+}
+
+} // namespace
 
 class MultiGPUEngineTest : public ::testing::Test {
 protected:
@@ -512,6 +569,11 @@ protected:
 
     std::filesystem::path test_dir_;
 };
+
+// The engine builds a MultiGPUSolver for a multi_gpu configuration with several devices
+// and a CudaSolver otherwise. Both give the same bits here, so which one ran shows only
+// in what the engine logs as it creates the solver.
+constexpr const char* kMultiGpuSolverLog = "Creating MultiGPUSolver with 3 GPUs";
 
 TEST_F(MultiGPUEngineTest, AdaptiveRunMatchesSingleGpuBitwise) {
     const int N = 16;
@@ -541,10 +603,19 @@ TEST_F(MultiGPUEngineTest, AdaptiveRunMatchesSingleGpuBitwise) {
     multi_cfg.gpu.multi_gpu = true;
     multi_cfg.gpu.device_ids = shared_device(3);
 
-    SimulationEngine single(single_cfg);
-    single.run();
-    SimulationEngine multi(multi_cfg);
-    multi.run();
+    std::unique_ptr<SimulationEngine> single_engine, multi_engine;
+    const std::string single_log = logged([&] {
+        single_engine = std::make_unique<SimulationEngine>(single_cfg);
+        single_engine->run();
+    });
+    const std::string multi_log = logged([&] {
+        multi_engine = std::make_unique<SimulationEngine>(multi_cfg);
+        multi_engine->run();
+    });
+    const SimulationEngine& single = *single_engine;
+    const SimulationEngine& multi = *multi_engine;
+    EXPECT_EQ(occurrences(multi_log, kMultiGpuSolverLog), 1u) << multi_log;
+    EXPECT_EQ(occurrences(single_log, "MultiGPUSolver"), 0u) << single_log;
 
     std::string where;
     EXPECT_EQ(count_mismatches(single.phi(), multi.phi(), where), 0u) << "phi " << where;
@@ -568,3 +639,118 @@ TEST_F(MultiGPUEngineTest, AdaptiveRunMatchesSingleGpuBitwise) {
         moved = std::max(moved, std::abs(ic.phi().data()[i] - single.phi().data()[i]));
     EXPECT_GT(moved, 1e-3);
 }
+
+namespace {
+
+/// The wall whose phi has zero flux (the other five hold phi = -1), and the domain of the
+/// three (cut_planes) whose cells next to it rise above the saturation threshold first.
+struct SaturatingWall {
+    Face face;
+    int domain;
+    const char* name;
+};
+
+/// The ctest name of the case (a dump of the struct's bytes would show the address in
+/// `name`).
+void PrintTo(const SaturatingWall& w, std::ostream* os) {
+    *os << w.name;
+}
+
+} // namespace
+
+class MultiGPUEngineSaturation : public MultiGPUEngineTest,
+                                 public ::testing::WithParamInterface<SaturatingWall> {};
+
+// The saturation guard, every step, through the multi-GPU solver. The seed (radius 1.5,
+// centred in 16^3 cells) puts phi = -0.65 on the cells next to every wall; next to the
+// zero-flux wall phi rises above the threshold -0.5 first (at step 28 of 200, the other
+// walls' cells at -0.73; exp/round26/mgpu_engine/probe.txt), and only one domain reads
+// those cells: x_lo's the first, x_hi's the last, y_hi's (where the seed's arm meets it,
+// x = 7..8) the middle one. The single- and the multi-GPU run stop at the same step, with
+// the same fields.
+TEST_P(MultiGPUEngineSaturation, StopsAtTheStepOfTheSingleGpuRun) {
+    const SaturatingWall wall = GetParam();
+    const int N = 16;
+    const int max_steps = 200;
+    auto base = make_config({TimeScheme::Euler, 3, BcLayout::Uniform, N});
+    base.grid.Ny = base.grid.Nz = N;
+    base.time.max_steps = max_steps;
+    base.time.saturation_check_freq = 1;
+    base.boundary.per_face = true;
+    base.boundary.phi_faces = PerFaceBoundary::uniform(bc_of(BCType::Dirichlet, -1.0));
+    base.boundary.phi_faces[wall.face] = bc_of(BCType::Neumann);
+    base.boundary.u_faces = PerFaceBoundary::uniform(bc_of(BCType::Dirichlet, -0.55));
+    base.initial.seed_radius = 1.5;
+    base.output.frequency = max_steps;
+    base.output.async_io = false;
+    base.checkpoint.frequency = 0; // a checkpoint only where the guard stops the run
+    ASSERT_TRUE(base.time.exit_on_saturation);
+    ASSERT_NO_THROW(base.validate());
+
+    auto single_cfg = base;
+    single_cfg.output.output_dir = test_dir_ / "single";
+    single_cfg.checkpoint.checkpoint_dir = test_dir_ / "single_ckpt";
+    auto multi_cfg = base;
+    multi_cfg.output.output_dir = test_dir_ / "multi";
+    multi_cfg.checkpoint.checkpoint_dir = test_dir_ / "multi_ckpt";
+    multi_cfg.gpu.multi_gpu = true;
+    multi_cfg.gpu.device_ids = shared_device(3);
+
+    SimulationEngine single(single_cfg);
+    single.run();
+    std::unique_ptr<SimulationEngine> multi_engine;
+    const std::string multi_log = logged([&] {
+        multi_engine = std::make_unique<SimulationEngine>(multi_cfg);
+        multi_engine->run();
+    });
+    EXPECT_EQ(occurrences(multi_log, kMultiGpuSolverLog), 1u) << multi_log;
+
+    const std::vector<int> stops = checkpoint_steps(single_cfg.checkpoint.checkpoint_dir);
+    ASSERT_EQ(stops.size(), 1u) << "the single-GPU run did not stop at the guard";
+    EXPECT_GT(stops[0], 1);
+    EXPECT_LT(stops[0], max_steps);
+    EXPECT_EQ(checkpoint_steps(multi_cfg.checkpoint.checkpoint_dir), stops);
+    std::string where;
+    EXPECT_EQ(count_mismatches(single.phi(), multi_engine->phi(), where), 0u) << "phi " << where;
+    EXPECT_EQ(count_mismatches(single.u(), multi_engine->u(), where), 0u) << "u " << where;
+
+    // At the stop step only the cells next to the zero-flux wall are above the threshold,
+    // and only those of the domain that reads them.
+    const std::vector<int> cuts = cut_planes(N, 3);
+    const int x_begin = wall.domain == 0 ? 0 : cuts[wall.domain - 1];
+    const int x_end = wall.domain == 2 ? N : cuts[wall.domain];
+    const double threshold = base.time.saturation_threshold;
+    const FieldData& phi = single.phi();
+    for (int f = 0; f < 6; ++f) {
+        const int axis = f / 2;
+        const int layer = f % 2 == 0 ? 1 : N - 2;
+        double max_phi = -2.0;
+        int above = 0, outside = 0;
+        for (int a = 1; a < N - 1; ++a)
+            for (int b = 1; b < N - 1; ++b) {
+                const int x = axis == 0 ? layer : a;
+                const int y = axis == 1 ? layer : (axis == 0 ? a : b);
+                const int z = axis == 2 ? layer : b;
+                max_phi = std::max(max_phi, phi(x, y, z));
+                if (phi(x, y, z) > threshold) {
+                    ++above;
+                    outside += x < x_begin || x >= x_end;
+                }
+            }
+        if (static_cast<Face>(f) == wall.face) {
+            EXPECT_GT(above, 0) << "face " << f << ": max " << max_phi;
+            EXPECT_EQ(outside, 0) << "face " << f << ": cells above the threshold outside ["
+                                  << x_begin << ", " << x_end << ")";
+        } else {
+            EXPECT_EQ(above, 0) << "face " << f << ": max " << max_phi;
+        }
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Walls, MultiGPUEngineSaturation,
+                         ::testing::Values(SaturatingWall{Face::XLo, 0, "XLo"},
+                                           SaturatingWall{Face::XHi, 2, "XHi"},
+                                           SaturatingWall{Face::YHi, 1, "YHi"}),
+                         [](const ::testing::TestParamInfo<SaturatingWall>& info) {
+                             return std::string(info.param.name);
+                         });
