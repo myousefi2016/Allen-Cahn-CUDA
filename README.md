@@ -809,7 +809,7 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 
 | Suite             | Files | ctest tests |
 |-------------------|-------|-------------|
-| Unit tests        | 29    | 379         |
+| Unit tests        | 29    | 380         |
 | Integration tests | 8     | 18          |
 | End-to-end tests  | 11    | 11          |
 
@@ -848,7 +848,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_CheckpointManager.cpp`  | Frequency, retention (just-written file kept, one trajectory after a restart, checkpoints of other grids and unreadable files left alone, not counted toward `keep_last` and warned about once, removals logged at info), restart-from-latest (past damaged checkpoints and those of other grids), missing restart file; a checkpoint differing from this run in any one of Nx, Ny, Nz, dx, dy, dz is another run's (left alone by retention, skipped by the restore) |
 | `test_LRUCache.cpp`           | LRU eviction order, capacity, hit/miss, concurrent access                        |
 | `test_SpatialHash.cpp`        | 3D bucket insert/query, FNV-1a hashing                                           |
-| `test_ConcurrentMap.cpp`      | Striped concurrent map operations under contention                               |
+| `test_ConcurrentMap.cpp`      | Striped concurrent map operations under contention; four writers updating the same keys, released together over 50 rounds, lose no increment, and readers see only values the updates can produce, never decreasing; update() runs its function under the key's exclusive lock (a second update of the key waits for the first) |
 | `test_Logger.cpp`             | spdlog init idempotency, level changes                                           |
 | `test_DeviceField.cu`         | RAII allocation, async H2D/D2H, swap, large allocs                               |
 | `test_Laplacian.cu`           | 7- and 27-point isotropic Laplacian on analytic quadratic / linear / constant fields; the 27-point impulse response: Patra–Karttunen weights, ±1 reach, M0 = 0, M2 = 2/h², isotropic h² error (M4 = 3 M22) |
