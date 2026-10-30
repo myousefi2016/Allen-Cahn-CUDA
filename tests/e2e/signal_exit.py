@@ -6,7 +6,8 @@ unbounded max_steps, wait until it has logged step 100, send the signal, and
 require
   * exit status 128 + signal (143 / 130), so make, scripts and a Kubernetes
     Job see an interrupted run instead of a completed one;
-  * a checkpoint of the step it stopped at, with a valid header (resumable).
+  * a checkpoint of the step it stopped at, with an intact version-2 header
+    (resumable).
 
 Usage: signal_exit.py BINARY WORKDIR
 Exit 0 = pass, 1 = fail, 77 = no GPU (skipped; a failure if AC_REQUIRE_GPU=1).
@@ -21,6 +22,7 @@ import struct
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 
 SKIP = 77
@@ -92,10 +94,15 @@ def run_case(binary: Path, work: Path, sig: signal.Signals) -> list[str]:
             raw = ckpt.read_bytes()[:128]
             magic, version, nx, ny, nz = struct.unpack_from("<8si3i", raw)
             (hdr_step,) = struct.unpack_from("<i", raw, 8 + 4 + 12 + 24 + 16)
-            if magic[:7] != b"ACCHKPT" or version != 1 or (nx, ny, nz) != (48, 48, 48) \
-                    or hdr_step != step:
+            # Version 2 (CheckpointIO::kVersion): header_crc32 at byte 76 is the
+            # CRC-32 of the header with that field zero.
+            (header_crc,) = struct.unpack_from("<I", raw, 76)
+            intact = header_crc == zlib.crc32(raw[:76] + b"\0" * 4 + raw[80:])
+            if magic[:7] != b"ACCHKPT" or version != 2 or not intact \
+                    or (nx, ny, nz) != (48, 48, 48) or hdr_step != step:
                 errors.append(f"{sig.name}: bad checkpoint header {magic!r} v{version} "
-                              f"{nx}x{ny}x{nz} step {hdr_step}")
+                              f"{nx}x{ny}x{nz} step {hdr_step} header CRC "
+                              f"{'intact' if intact else 'mismatch'}")
             else:
                 print(f"{sig.name}: exit {proc.returncode}, checkpoint_{step}.acbin valid")
     if errors:

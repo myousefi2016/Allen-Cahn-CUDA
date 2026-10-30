@@ -18,14 +18,16 @@
 # field ourselves before invoking the binary.
 #
 # A checkpoint is accepted only if its 128-byte CheckpointIO::Header has the
-# ACCHKPT magic, version 1, num_fields 2, the config's Nx/Ny/Nz and spacing
-# (exactly, as the engine compares them; positive and not NaN), the step in
-# its file name, a finite time >= 0 and a finite dt > 0 (as CheckpointIO::read
-# requires; the CRC does not cover the header); the file is exactly
-# 128 + 2*Nx*Ny*Nz*8 bytes; and, when data_crc32 != 0, the CRC-32 of the
-# phi||u payload matches it. Anything else (a truncated or foreign file, a
-# checkpoint from another grid, corrupted data) is skipped with a warning and
-# the next-older checkpoint is tried.
+# ACCHKPT magic, version 1 or 2, for version 2 a header_crc32 that matches the
+# header (its CRC-32 with that field zero), num_fields 2, the config's Nx/Ny/Nz
+# and spacing (exactly, as the engine compares them; positive and not NaN),
+# the step in its file name, a finite time >= 0 and a finite dt > 0 (as
+# CheckpointIO::read requires); the file is exactly 128 + 2*Nx*Ny*Nz*8 bytes;
+# and the CRC-32 of the phi||u payload matches data_crc32 (in version 1 only
+# when data_crc32 != 0, which means none was computed). Anything else (a
+# truncated or foreign file, a checkpoint from another grid, a corrupted
+# header or payload) is skipped with a warning and the next-older checkpoint
+# is tried.
 #
 # A config with a key given twice in one object is an error (exit 2), as in
 # the binary: JSON keeps only the last value of a key, so the resume config
@@ -69,16 +71,17 @@ CHECKPOINT_RE = re.compile(r"checkpoint_(\d+)\.acbin")
 # little-endian byte order of the x86-64 hosts the binary runs on:
 #   char magic[8]; int version; int Nx, Ny, Nz; double dx, dy, dz;
 #   double dt; double time; int step; int num_fields; uint32_t data_crc32;
-#   char reserved[52];
+#   uint32_t header_crc32 (version 2; 0 in version 1); char reserved[48];
 # CheckpointIO::write follows it with phi, then u, each Nx*Ny*Nz doubles.
-HEADER = struct.Struct("<8s i 3i 3d d d i i I 52s")
+HEADER = struct.Struct("<8s i 3i 3d d d i i I I 48s")
 HEADER_BYTES = 128
+HEADER_CRC_OFFSET = 76  # of header_crc32
 assert HEADER.size == HEADER_BYTES
 
 # CheckpointIO::read accepts a file whose first 7 magic bytes are "ACCHKPT"
 # (strncmp(hdr.magic, "ACCHKPT", 7)); the writer always adds a trailing NUL.
 MAGIC_PREFIX = b"ACCHKPT"
-SUPPORTED_VERSION = 1
+SUPPORTED_VERSIONS = (1, 2)  # 2 (CheckpointIO::kVersion) adds header_crc32
 NUM_FIELDS = 2  # phi, u
 REAL_BYTES = 8  # Real is double (src/core/Grid.hpp)
 
@@ -107,11 +110,18 @@ class CheckpointHeader:
     step: int
     num_fields: int
     data_crc32: int
+    header_crc32: int
 
     @classmethod
     def unpack(cls, raw: bytes) -> "CheckpointHeader":
         *fields, _reserved = HEADER.unpack(raw)
         return cls(*fields)
+
+
+def header_crc32(raw: bytes) -> int:
+    """CheckpointIO::header_crc32: the CRC-32 of the 128 header bytes with
+    header_crc32 zero."""
+    return zlib.crc32(raw[:HEADER_CRC_OFFSET] + b"\0\0\0\0" + raw[HEADER_CRC_OFFSET + 4:])
 
 
 class InvalidCheckpoint(Exception):
@@ -208,8 +218,12 @@ def read_valid_header(path: Path, step: int,
 
         if hdr.magic[:len(MAGIC_PREFIX)] != MAGIC_PREFIX:
             raise InvalidCheckpoint(f"bad magic {hdr.magic!r}")
-        if hdr.version != SUPPORTED_VERSION:
+        if hdr.version not in SUPPORTED_VERSIONS:
             raise InvalidCheckpoint(f"unsupported version {hdr.version}")
+        if hdr.version == 2 and hdr.header_crc32 != header_crc32(raw):
+            raise InvalidCheckpoint(
+                f"header CRC32 mismatch (stored {hdr.header_crc32:#010x}, header "
+                f"{header_crc32(raw):#010x}) — corrupted header")
         if hdr.num_fields != NUM_FIELDS:
             raise InvalidCheckpoint(f"num_fields {hdr.num_fields}, expected {NUM_FIELDS}")
         if (hdr.nx, hdr.ny, hdr.nz) != grid:
@@ -227,7 +241,7 @@ def read_valid_header(path: Path, step: int,
             raise InvalidCheckpoint(
                 f"header step {hdr.step} does not match the file name")
         # The run state CheckpointIO::read accepts (the step is the file
-        # name's, >= 0): the CRC covers the fields only.
+        # name's, >= 0); in version 1 no CRC covers the header.
         if not (math.isfinite(hdr.time) and hdr.time >= 0.0):
             raise InvalidCheckpoint(f"time {hdr.time!r} is not a finite value >= 0")
         if not (math.isfinite(hdr.dt) and hdr.dt > 0.0):
@@ -239,7 +253,9 @@ def read_valid_header(path: Path, step: int,
                 f"{size:,} B, expected exactly {expected_bytes:,} B "
                 f"(header + phi + u) — truncated or trailing data")
 
-        if hdr.data_crc32 != 0:  # 0 = written before CRCs were stored
+        # Version 2 always stores the payload's CRC; in version 1, 0 means
+        # none was computed.
+        if hdr.version == 2 or hdr.data_crc32 != 0:
             crc = 0
             remaining = payload_bytes
             while remaining:
@@ -359,7 +375,9 @@ def main(argv: list[str]) -> int:
 
     latest, hdr = found
     step = hdr.step
-    crc_note = "CRC32 verified" if hdr.data_crc32 else "no CRC32 stored"
+    crc_note = ("header and payload CRC32 verified" if hdr.version == 2
+                else "payload CRC32 verified; version 1 has no header CRC" if hdr.data_crc32
+                else "no CRC32 stored (version 1)")
     sys.stderr.write(f"==> Latest checkpoint: {latest.name} "
                      f"(step={step}, time={hdr.time:.4f}, "
                      f"size={expected / 1e6:.1f} MB, {crc_note})\n")

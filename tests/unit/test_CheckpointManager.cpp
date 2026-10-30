@@ -169,6 +169,60 @@ TEST_F(CheckpointManagerTest, RestoreLatestFromDir) {
             }
 }
 
+// restore() without restart_file returns the newest checkpoint of this run's
+// grid that reads back intact: past a newest one that is truncated, has a
+// changed payload byte or a changed header (its time 1e300, a run state in
+// range), and past a newer one of another grid, which retention leaves in the
+// directory. Before, the damaged newest file made restore() throw (or, for the
+// header, restored it), and the other grid's checkpoint was returned.
+TEST_F(CheckpointManagerTest, RestoreFallsBackToTheNewestIntactCheckpointOfThisGrid) {
+    namespace fs = std::filesystem;
+    CheckpointManager mgr(make_params(10), grid_);
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    CheckpointIO::write(test_dir_ / "checkpoint_10.acbin", 10, 0.1, 0.01, grid_, phi, u);
+
+    const auto newest = test_dir_ / "checkpoint_20.acbin";
+    const auto at = [&newest](std::streamoff offset, char flip) {
+        std::fstream f(newest, std::ios::in | std::ios::out | std::ios::binary);
+        char c = 0;
+        f.seekg(offset);
+        f.get(c);
+        f.seekp(offset);
+        f.put(static_cast<char>(c ^ flip));
+    };
+    for (const char* damage : {"truncated", "payload byte", "header time"}) {
+        SCOPED_TRACE(damage);
+        CheckpointIO::write(newest, 20, 0.2, 0.01, grid_, phi, u);
+        if (std::string(damage) == "truncated") {
+            fs::resize_file(newest, fs::file_size(newest) - 8);
+        } else if (std::string(damage) == "payload byte") {
+            at(128 + 40, 0x10);
+        } else {
+            std::fstream f(newest, std::ios::in | std::ios::out | std::ios::binary);
+            const double time = 1e300;
+            f.seekp(56);
+            f.write(reinterpret_cast<const char*>(&time), sizeof time);
+        }
+        const auto data = mgr.restore();
+        EXPECT_EQ(data.step, 10);
+        EXPECT_EQ(data.time, 0.1);
+    }
+    fs::remove(newest);
+
+    const Grid other(Dim3{N + 2, N, N}, Spacing{1.0, 1.0, 1.0});
+    FieldData other_phi(other, "phi"), other_u(other, "u");
+    CheckpointIO::write(test_dir_ / "checkpoint_30.acbin", 30, 0.3, 0.01, other, other_phi,
+                        other_u);
+    const auto data = mgr.restore();
+    EXPECT_EQ(data.step, 10);
+    EXPECT_EQ(data.grid.Nx(), N);
+
+    fs::remove(test_dir_ / "checkpoint_10.acbin");
+    EXPECT_THROW((void)mgr.restore(), std::runtime_error);
+}
+
 TEST_F(CheckpointManagerTest, RestoreEmptyDirThrows) {
     // Create a fresh empty directory
     auto empty_dir = ac::test::unique_temp_dir("test_ckpt_empty");

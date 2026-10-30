@@ -4,7 +4,8 @@
 #
 # Writes synthetic checkpoints in the on-disk format of src/io/CheckpointIO.hpp
 # (packed little-endian 128-byte Header, then phi and u as Nx*Ny*Nz doubles
-# each; data_crc32 = CRC-32 of phi||u, 0 = not stored) into a temp directory,
+# each; data_crc32 = CRC-32 of phi||u, in version 1 0 = not stored; version 2,
+# which the binary writes, adds header_crc32) into a temp directory,
 # runs the helper from the directory holding config/ and checkpoints/, with
 # relative arguments, and asserts that:
 #
@@ -13,7 +14,7 @@
 #   2. truncated files (short payload, short header) are skipped
 #   3. files from another grid are skipped, even when their size matches
 #   4. files whose payload does not match the stored CRC32 are skipped
-#   5. legacy files with data_crc32 == 0 are accepted on header + size
+#   5. version-1 files are accepted, with data_crc32 == 0 on header + size
 #   6. bad magic / version / num_fields / spacing, a header step that
 #      differs from the file name, and trailing bytes are rejected
 #   7. with no valid checkpoint the helper requests a cold start: exit 1,
@@ -25,6 +26,8 @@
 #  10. checkpoints of another spacing, or with NaN spacing, are skipped
 #  11. a config with a key given twice in one object exits 2
 #  12. the checkpoint's size is reported in MB of 10^6 bytes
+#  13. a version-2 header whose CRC does not match it is skipped, also with a
+#      run state in range; version 2 always checks the payload's CRC
 #
 # Run:  python3 tests/test_resume_checkpoint.py   (stdlib only; exit 0 = pass)
 # ============================================================================
@@ -49,7 +52,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import resume_from_latest_checkpoint as resume  # noqa: E402
 
 GRID = (4, 4, 4)
-HEADER_FMT = "<8siiiidddddiiI52s"  # CheckpointIO::Header, 128 bytes
+HEADER_FMT = "<8siiiidddddiiII48s"  # CheckpointIO::Header, 128 bytes
 assert struct.calcsize(HEADER_FMT) == 128
 
 
@@ -64,24 +67,32 @@ def payload(grid: tuple[int, int, int], seed: int = 0) -> bytes:
 def write_checkpoint(ckpt_dir: Path, step: int, *,
                      grid: tuple[int, int, int] = GRID,
                      magic: bytes = b"ACCHKPT\0",
-                     version: int = 1,
+                     version: int = 2,
                      num_fields: int = 2,
                      spacing: float = 0.4,
                      header_step: int | None = None,
                      dt: float = 0.005,
                      time: float | None = None,
                      crc: int | None = None,
+                     header_crc: int | None = None,
                      flip_payload_byte: bool = False,
                      truncate_to: int | None = None,
                      trailing: bytes = b"") -> Path:
-    """Write checkpoint_<step>.acbin; `crc=None` stores the true CRC-32."""
+    """Write checkpoint_<step>.acbin; `crc=None` stores the true CRC-32 of the
+    payload, `header_crc=None` the true header CRC in version 2 (0 in
+    version 1, as CheckpointIO::write of version 1 left the field)."""
     data = payload(grid, seed=step)
     stored_crc = zlib.crc32(data) if crc is None else crc
-    header = struct.pack(HEADER_FMT, magic, version, *grid,
-                         spacing, spacing, spacing, dt,
-                         step * 0.005 if time is None else time,
-                         step if header_step is None else header_step,
-                         num_fields, stored_crc, b"\0" * 52)
+
+    def pack(header_crc32: int) -> bytes:
+        return struct.pack(HEADER_FMT, magic, version, *grid,
+                           spacing, spacing, spacing, dt,
+                           step * 0.005 if time is None else time,
+                           step if header_step is None else header_step,
+                           num_fields, stored_crc, header_crc32, b"\0" * 48)
+    if header_crc is None:
+        header_crc = zlib.crc32(pack(0)) if version == 2 else 0
+    header = pack(header_crc)
     if flip_payload_byte:
         mid = len(data) // 2
         data = data[:mid] + bytes([data[mid] ^ 0x01]) + data[mid + 1:]
@@ -229,15 +240,18 @@ class ResumeHelperTest(unittest.TestCase):
     # 5 ----------------------------------------------------------------------
     def test_accepts_legacy_file_without_crc(self) -> None:
         write_checkpoint(self.ckpt, 100)
-        write_checkpoint(self.ckpt, 200, crc=0)
+        write_checkpoint(self.ckpt, 200, version=1, crc=0)
         res = self.assert_resumes_from(200)
-        self.assertIn("no CRC32 stored", res.stderr)
+        self.assertIn("no CRC32 stored (version 1)", res.stderr)
+        write_checkpoint(self.ckpt, 300, version=1)
+        res = self.assert_resumes_from(300)
+        self.assertIn("payload CRC32 verified; version 1 has no header CRC", res.stderr)
 
     # 6 ----------------------------------------------------------------------
     def test_rejects_bad_headers_and_sizes(self) -> None:
         cases = {
             "bad magic": dict(magic=b"NOTCHKPT"),
-            "unsupported version": dict(version=2),
+            "unsupported version": dict(version=3),
             "num_fields": dict(num_fields=3),
             "non-positive or NaN grid spacing": dict(spacing=0.0),
             "does not match the file name": dict(header_step=999),
@@ -364,7 +378,27 @@ class ResumeHelperTest(unittest.TestCase):
         write_checkpoint(self.ckpt, 100, grid=(64, 64, 64))
         res = self.run_helper()
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertIn("(step=100, time=0.5000, size=4.2 MB, CRC32 verified)", res.stderr)
+        self.assertIn("(step=100, time=0.5000, size=4.2 MB, header and payload CRC32 verified)",
+                      res.stderr)
+
+    # 13 ---------------------------------------------------------------------
+    def test_skips_a_corrupted_header(self) -> None:
+        # A version-2 header carries its own CRC: a header changed after it was
+        # written is skipped even when its run state is in range (time 1e300,
+        # which the run-state checks pass), and the next older checkpoint is
+        # resumed. Version 2 always checks the payload's CRC: a data_crc32 of 0
+        # does not mean "none", as in version 1.
+        write_checkpoint(self.ckpt, 100)
+        path = write_checkpoint(self.ckpt, 200)
+        raw = bytearray(path.read_bytes())
+        struct.pack_into("<d", raw, 8 + 4 + 12 + 24 + 8, 1e300)  # time
+        path.write_bytes(bytes(raw))
+        res = self.assert_resumes_from(100)
+        self.assertIn("skipping checkpoint_200.acbin: header CRC32 mismatch", res.stderr)
+        write_checkpoint(self.ckpt, 300, crc=0)  # header CRC over the 0
+        res = self.assert_resumes_from(100)
+        self.assertIn("skipping checkpoint_300.acbin: CRC32 mismatch (header 0x00000000",
+                      res.stderr)
 
 
 if __name__ == "__main__":

@@ -97,6 +97,7 @@ void CheckpointIO::write(const std::filesystem::path& path, int step, double tim
     std::size_t phi_bytes = phi.size() * sizeof(Real);
     std::size_t u_bytes = u.size() * sizeof(Real);
     hdr.data_crc32 = compute_crc32(u.data(), u_bytes, compute_crc32(phi.data(), phi_bytes));
+    hdr.header_crc32 = header_crc32(hdr);
 
     auto write_all = [&](const void* buf, std::size_t len) {
         auto* p = static_cast<const char*>(buf);
@@ -157,8 +158,14 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) 
     if (std::strncmp(hdr.magic, "ACCHKPT", 7) != 0) {
         throw std::runtime_error("Invalid checkpoint file magic: " + path.string());
     }
-    if (hdr.version != 1) {
+    if (hdr.version != 1 && hdr.version != kVersion) {
         throw std::runtime_error("Unsupported checkpoint version: " + std::to_string(hdr.version));
+    }
+    // Version 2: the CRC covers every header field, so a corrupted step, time or dt is
+    // detected even where it is a run state in range (time 1e300).
+    if (hdr.version == kVersion && hdr.header_crc32 != header_crc32(hdr)) {
+        throw std::runtime_error("Checkpoint header CRC32 mismatch (header corrupted): " +
+                                 path.string());
     }
 
     if (hdr.Nx < 3 || hdr.Ny < 3 || hdr.Nz < 3) {
@@ -172,7 +179,7 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) 
         throw std::runtime_error("Checkpoint has unexpected num_fields: " +
                                  std::to_string(hdr.num_fields));
     }
-    // The CRC covers the fields only: the header's run state is checked here.
+    // In version 1 no CRC covers the header: its run state is checked here, as in version 2.
     if (const std::string why = invalid_run_state(hdr.step, hdr.time, hdr.dt); !why.empty()) {
         throw std::runtime_error("Checkpoint has " + why + ": " + path.string());
     }
@@ -217,8 +224,8 @@ CheckpointIO::RestoreData CheckpointIO::read(const std::filesystem::path& path) 
         throw std::runtime_error("Checkpoint file truncated: " + path.string());
     }
 
-    // Verify CRC32 if present (0 means old checkpoint without CRC)
-    if (hdr.data_crc32 != 0) {
+    // The payload's CRC: always in version 2; in version 1, 0 means none was computed.
+    if (hdr.version == kVersion || hdr.data_crc32 != 0) {
         std::size_t phi_sz = phi.size() * sizeof(Real);
         std::size_t u_sz = u.size() * sizeof(Real);
         uint32_t crc = compute_crc32(u.data(), u_sz, compute_crc32(phi.data(), phi_sz));
@@ -248,7 +255,17 @@ std::optional<CheckpointIO::Header> CheckpointIO::read_header(const std::filesys
     ifs.read(reinterpret_cast<char*>(&hdr), sizeof(Header));
     if (!ifs.good() || std::strncmp(hdr.magic, "ACCHKPT", 7) != 0)
         return std::nullopt;
+    if (hdr.version != 1 && hdr.version != kVersion)
+        return std::nullopt;
+    if (hdr.version == kVersion && hdr.header_crc32 != header_crc32(hdr))
+        return std::nullopt;
     return hdr;
+}
+
+uint32_t CheckpointIO::header_crc32(const Header& header) {
+    Header zeroed = header;
+    zeroed.header_crc32 = 0;
+    return compute_crc32(&zeroed, sizeof(Header));
 }
 
 bool CheckpointIO::is_valid_checkpoint(const std::filesystem::path& path) {

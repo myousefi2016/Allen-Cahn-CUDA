@@ -41,7 +41,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Per-face boundary conditions**: independent Dirichlet / Neumann / Periodic / Robin on each of the 6 faces (`x_lo`, `x_hi`, `y_lo`, `y_hi`, `z_lo`, `z_hi`); periodic identifies the two faces of an axis, so it must be set on both (`docs/DESIGN.md` §5.2).
 - **Adaptive time stepping**: target-tolerance control via parallel reduction, capped at `cfl_safety` times the explicit stability limits (`docs/THEORY.md` §10.1: exact for the thermal update, a necessary condition for the phase field).
 - **Async I/O**: dedicated VTK/raw writer thread with bounded job queue, `condition_variable` backpressure, atomic temp-then-rename writes, and an LRU-cached field-statistics map.
-- **Crash-safe binary checkpointing**: 128-byte fixed header with magic `ACCHKPT`, CRC32 over field data, atomic rename + parent-directory `fsync`, and rolling retention that keeps one consistent trajectory per directory.
+- **Crash-safe binary checkpointing**: 128-byte fixed header with magic `ACCHKPT`, CRC-32 over the header and over the field data, atomic rename + parent-directory `fsync`, and rolling retention that keeps one consistent trajectory per directory.
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe data structures**: striped concurrent map (16 shards), LRU cache (`std::shared_mutex`), spatial hash (FNV-1a 3D bucketing).
@@ -320,11 +320,13 @@ Crash safety:
 - Checkpoints every 48 000 steps (15 time units, 11.5 minutes of compute at 14.4 ms per step on an RTX 4090, the most lost on `SIGKILL` / suspend).
 - `keep_last = 3` (340 MB on disk for 192³).
 - `cuda-resume-dendrite` finds the highest-numbered intact checkpoint
-  (the 128-byte header must match the config's grid and hold a step >= 0, a
-  finite time >= 0 and a finite dt > 0, the file size must be exact and the
-  stored CRC32 must match the data; truncated, foreign-grid and corrupted
-  files are skipped), injects it into the config, and resumes the binary at
-  the next step. If no usable checkpoint exists it cold-starts.
+  (the 128-byte header must match its own CRC-32 and the config's grid and
+  hold a step >= 0, a finite time >= 0 and a finite dt > 0, the file size
+  must be exact and the stored CRC-32 must match the data; truncated,
+  foreign-grid and corrupted files are skipped, as are version-1 files,
+  written before the header CRC, only when a checked field is wrong),
+  injects it into the config, and resumes the binary at the next step. If
+  no usable checkpoint exists it cold-starts.
 
 Exit status of `allen-cahn-cuda`:
 
@@ -379,10 +381,10 @@ make cuda-visualize VIZ_IN=out/run_dendrite_long VIZ_EXTRA_ARGS="--skip-saturate
 The resume mechanism is implemented in `scripts/resume_from_latest_checkpoint.py`,
 which is idempotent and safe to invoke repeatedly. It restarts from the
 newest checkpoint the binary can restore on the configuration's grid (magic
-and version, header `Nx`, `Ny`, `Nz` and spacing equal to the
-configuration's, the step of its file name, exact file size, and the
-payload's CRC-32 when the header records one) and skips any other with a
-warning (`tests/test_resume_checkpoint.py`). Like the binary, it refuses a
+and version, for version 2 the header's CRC-32, header `Nx`, `Ny`, `Nz` and
+spacing equal to the configuration's, the step of its file name, exact file
+size, and the payload's CRC-32, which version 1 may omit) and skips any
+other with a warning (`tests/test_resume_checkpoint.py`). Like the binary, it refuses a
 configuration with a key given twice in one object (exit 2): the resume
 configuration it writes would keep only the last value.
 
@@ -793,8 +795,8 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_SimulationConfig.cpp`   | JSON config parsing (unknown and repeated keys rejected, integer fields only ints in the range of `int`, per-face all-six rule, only the BC type's own parameters), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters, non-empty directories, several device ids only with `multi_gpu`, at least 2 X planes per domain), defaults, derived quantities |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
 | `test_InitialCondition.cu`    | tanh seed profile correctness, centre/corner sentinels                           |
-| `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32, exact file size (trailing or missing bytes rejected, long axes accepted, overflowing headers rejected), a failed write leaves no temporary file, the logged size in MB |
-| `test_CheckpointManager.cpp`  | Frequency, retention (just-written file kept, one trajectory after a restart, checkpoints of other grids and unreadable files left alone, not counted toward `keep_last` and warned about once, removals logged at info), restart-from-latest, missing restart file |
+| `test_CheckpointIO.cpp`       | Binary checkpoint serialize/deserialize round-trip, CRC32, every header bit under the header CRC, version-1 files still read, exact file size (trailing or missing bytes rejected, long axes accepted, overflowing headers rejected), a failed write leaves no temporary file, the logged size in MB |
+| `test_CheckpointManager.cpp`  | Frequency, retention (just-written file kept, one trajectory after a restart, checkpoints of other grids and unreadable files left alone, not counted toward `keep_last` and warned about once, removals logged at info), restart-from-latest (past damaged checkpoints and those of other grids), missing restart file |
 | `test_LRUCache.cpp`           | LRU eviction order, capacity, hit/miss, concurrent access                        |
 | `test_SpatialHash.cpp`        | 3D bucket insert/query, FNV-1a hashing                                           |
 | `test_ConcurrentMap.cpp`      | Striped concurrent map operations under contention                               |

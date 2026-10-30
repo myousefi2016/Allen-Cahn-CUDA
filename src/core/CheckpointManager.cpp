@@ -73,14 +73,36 @@ CheckpointIO::RestoreData CheckpointManager::restore() const {
         return CheckpointIO::read(file);
     }
 
-    // Latest valid checkpoint in the directory.
+    // The newest checkpoint of this run's grid that reads back intact. One of another grid
+    // (retention leaves those in the directory) or a damaged one (header, size or CRC) is
+    // skipped with a warning, and the next older one is tried.
     const auto files = list_checkpoints();
     for (auto it = files.rbegin(); it != files.rend(); ++it) {
-        if (CheckpointIO::is_valid_checkpoint(it->second))
-            return CheckpointIO::read(it->second);
-        spdlog::warn("Skipping invalid checkpoint: {}", it->second.string());
+        const auto& path = it->second;
+        const auto header = CheckpointIO::read_header(path);
+        if (!header) {
+            spdlog::warn("Skipping checkpoint {}: no intact checkpoint header", path.string());
+            continue;
+        }
+        if (!of_this_grid(*header)) {
+            spdlog::warn("Skipping checkpoint {}: of a {}x{}x{} grid, not this run's {}x{}x{}",
+                         path.string(), header->Nx, header->Ny, header->Nz, grid_.Nx(), grid_.Ny(),
+                         grid_.Nz());
+            continue;
+        }
+        try {
+            return CheckpointIO::read(path);
+        } catch (const std::runtime_error& e) {
+            spdlog::warn("Skipping checkpoint {}: {}", path.string(), e.what());
+        }
     }
-    throw std::runtime_error("No checkpoint files found for restart");
+    throw std::runtime_error("No checkpoint of this run's grid in " +
+                             params_.checkpoint_dir.string() + " reads back intact");
+}
+
+bool CheckpointManager::of_this_grid(const CheckpointIO::Header& header) const {
+    return header.Nx == grid_.Nx() && header.Ny == grid_.Ny() && header.Nz == grid_.Nz() &&
+           header.dx == grid_.dx() && header.dy == grid_.dy() && header.dz == grid_.dz();
 }
 
 bool CheckpointManager::restart_requested() const {
@@ -100,9 +122,7 @@ void CheckpointManager::enforce_retention(int newest_step) {
         if (step == newest_step)
             continue;
         const auto header = CheckpointIO::read_header(path);
-        if (!header || header->Nx != grid_.Nx() || header->Ny != grid_.Ny() ||
-            header->Nz != grid_.Nz() || header->dx != grid_.dx() || header->dy != grid_.dy() ||
-            header->dz != grid_.dz()) {
+        if (!header || !of_this_grid(*header)) {
             if (!warned_foreign_) {
                 spdlog::warn("{} also holds checkpoints that are not of this run's {}x{}x{} grid "
                              "(first: {}); retention leaves them alone. Give every run its own "

@@ -22,7 +22,9 @@ public:
     /// Save a checkpoint, enforcing the rolling retention policy.
     void save(int step, double time, double dt, const FieldData& phi, const FieldData& u);
 
-    /// Restore from the latest or specified checkpoint.
+    /// Restore from checkpoint.restart_file if it is set, else from the newest
+    /// checkpoint in checkpoint_dir of this run's grid that reads back intact
+    /// (older ones are tried past a damaged one or one of another grid).
     [[nodiscard]] CheckpointIO::RestoreData restore() const;
 
     /// True when checkpoint.restart_file is configured. The file is not
@@ -41,6 +43,8 @@ private:
     /// of another grid, or without a readable header, cannot belong to this
     /// trajectory and is left alone (with one warning per manager).
     void enforce_retention(int newest_step);
+    /// Whether a checkpoint header has this run's grid (Nx, Ny, Nz, dx, dy, dz).
+    [[nodiscard]] bool of_this_grid(const CheckpointIO::Header& header) const;
     bool warned_foreign_ = false;
 
     CheckpointParams params_;

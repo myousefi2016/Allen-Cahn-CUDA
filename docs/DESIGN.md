@@ -576,23 +576,28 @@ sequenceDiagram
 #pragma pack(push, 1)
 struct Header {
     char     magic[8] = {'A','C','C','H','K','P','T','\0'};
-    int      version  = 1;
+    int      version  = 2;     // CheckpointIO::kVersion
     int      Nx, Ny, Nz;
     double   dx, dy, dz;
     double   dt, time;
     int      step;
     int      num_fields;       // always 2 (phi, u)
-    uint32_t data_crc32;       // 0 = no checksum (legacy)
-    char     reserved[52];
+    uint32_t data_crc32;       // CRC-32 of phi || u (version 1: 0 = none)
+    uint32_t header_crc32;     // version 2: CRC-32 of the header, this field 0
+    char     reserved[48];
 };
 #pragma pack(pop)
 static_assert(sizeof(Header) == 128, ...);
 ```
 
-Layout on disk: `[Header][phi_data][u_data]`. The CRC32 covers the
-concatenated field bytes; the table is generated once in
-`CheckpointIO::compute_crc32` and reused by both writer and reader
-(`CheckpointIO.cpp`).
+Layout on disk: `[Header][phi_data][u_data]`. `data_crc32` covers the
+concatenated field bytes and `header_crc32` the 128 header bytes with
+itself zero (`CheckpointIO::header_crc32`), so every byte of the file is
+under a CRC; the table is generated once in `CheckpointIO::compute_crc32`
+and reused by both writer and reader (`CheckpointIO.cpp`). `write` produces
+version 2. Version 1, written before the header CRC (the field was
+reserved, zero), is still read: its header is checked field by field only,
+and `data_crc32 == 0` there means that no payload CRC was computed.
 
 ### 8.2 Write protocol (crash-safe)
 
@@ -611,12 +616,16 @@ file is as large as the checkpoint, and retention counts only
 
 ### 8.3 Read protocol
 
-`CheckpointIO::read` validates magic, version, `num_fields`, dimensions of at
-least 3, positive grid spacing, the run state (a step >= 0, a finite time
->= 0 and a finite dt > 0; the CRC covers only the fields, and `write`
-refuses the same values), that the file size is exactly the header plus
-two fields of the header's grid (before allocating; a header whose size
-overflows 64 bits is rejected), and the CRC32 if present.
+`CheckpointIO::read` validates magic, version (1 or 2), for version 2 the
+header CRC (so a changed step, time or dt is caught also where it is a run
+state in range), `num_fields`, dimensions of at least 3, positive grid
+spacing, the run state (a step >= 0, a finite time >= 0 and a finite
+dt > 0; `write` refuses the same values), that the file size is exactly
+the header plus two fields of the header's grid (before allocating; a
+header whose size overflows 64 bits is rejected), and the payload CRC
+(always in version 2; in version 1 when it is not 0). `read_header`, which
+retention uses, takes a header only with the magic, a version `read`
+takes and, for version 2, a matching header CRC.
 `SimulationEngine::initialize_from_checkpoint` additionally rejects a
 checkpoint whose grid dimensions or spacing differ from the current
 config, and one holding a non-finite value. It restores step and time; a
@@ -656,7 +665,10 @@ each overlay deploys the Job and its own copy of that PVC into its own
 namespace
 (`allen-cahn-dev`, `allen-cahn-prod`).
 `restore()` without a `restart_file` walks the directory in descending
-step order and returns the first valid checkpoint.
+step order and returns the first checkpoint of this run's grid that reads
+back intact: one of another grid, or a damaged one (header, size or CRC),
+is skipped with a warning
+(`CheckpointManagerTest.RestoreFallsBackToTheNewestIntactCheckpointOfThisGrid`).
 
 ### 8.5 Failure and exit semantics
 
