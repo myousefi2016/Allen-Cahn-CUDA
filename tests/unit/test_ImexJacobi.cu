@@ -2,6 +2,7 @@
 // (I - dt D Lap_h) u = rhs that stop on a certified bound of the max-norm
 // error, and fail with an error when the bound cannot be certified.
 #include "common/Gpu.hpp"
+#include "common/TrackedRounding.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/JacobiStopping.hpp"
 #include "cuda/MultiGPUSolver.cuh"
@@ -94,7 +95,23 @@ void initial_state(FieldData& phi, FieldData& u) {
         u.data()[i] = U(rng);
 }
 
+/// initial_state's random melt around a solid seed of radius 2 (W0 = 1) at the centre of
+/// the box, with the interface's equilibrium profile tanh((R - r) / sqrt 2).
+void seeded_state(const SimulationConfig& cfg, FieldData& phi, FieldData& u) {
+    initial_state(phi, u);
+    const GridParams& g = cfg.grid;
+    for (int x = 0; x < g.Nx; ++x)
+        for (int y = 0; y < g.Ny; ++y)
+            for (int z = 0; z < g.Nz; ++z) {
+                const double rx = (x - 0.5 * g.Nx) * g.dx, ry = (y - 0.5 * g.Ny) * g.dy,
+                             rz = (z - 0.5 * g.Nz) * g.dz;
+                const double r = std::sqrt(rx * rx + ry * ry + rz * rz);
+                phi(x, y, z) = std::tanh((2.0 - r) / std::sqrt(2.0));
+            }
+}
+
 using LD = long double;
+using ac::test::Tracked;
 
 /// The exact discrete system in long double: the ghost fill of
 /// apply_bc_face_kernel (faces Z, Y, X; Y faces skip the X walls, Z faces
@@ -196,19 +213,18 @@ struct Reference {
     LD error_bound; ///< of |u - u*| (u* the exact solution)
 };
 
-/// Solves the system to long-double accuracy by Jacobi sweeps from u_old,
-/// enough of them that q^k (q = s/(1+s), the contraction of a sweep in the
-/// max norm) is below 1e-24, then bounds the error a posteriori like the
-/// solver does (s times the last change, plus rounding of the same form
-/// with the long-double unit roundoff).
-Reference reference_solution(const SimulationConfig& cfg, const FieldData& u_old) {
+/// Solves the system with right-hand side `rhs` (on every cell; the sweep reads its
+/// interior) to long-double accuracy by Jacobi sweeps from rhs with its ghosts filled,
+/// enough of them that q^k (q = s/(1+s), the contraction of a sweep in the max norm) is
+/// below 1e-24, then bounds the error a posteriori like the solver does (s times the last
+/// change, plus rounding of the same form with the long-double unit roundoff).
+Reference reference_solution(const SimulationConfig& cfg, std::vector<LD> rhs) {
     HostSystem sys{{cfg.grid.Nx, cfg.grid.Ny, cfg.grid.Nz},
                    {cfg.grid.dx, cfg.grid.dy, cfg.grid.dz},
                    cfg.boundary.u_faces,
                    cfg.stencil == StencilType::Isotropic27Point,
                    LD(cfg.time.dt) * LD(cfg.physics.D)};
-    std::vector<LD> rhs(u_old.data(), u_old.data() + u_old.size());
-    sys.fill(rhs); // u_old's ghosts as initialize() leaves them (unused by the sweep)
+    sys.fill(rhs); // the first iterate's ghosts (the sweep reads only rhs's interior)
     std::vector<LD> a = rhs, b = rhs;
     const LD s = sys.s(), q = s / (1 + s);
     const int sweeps = static_cast<int>(std::ceil(std::log(1e-24L) / std::log(q))) + 1;
@@ -227,6 +243,11 @@ Reference reference_solution(const SimulationConfig& cfg, const FieldData& u_old
     const LD gamma = 80 * u_ld / (1 - 80 * u_ld);
     const LD bound = (s * change + gamma * (1 + 3 * s) * magnitude) / (1 - gamma * (1 + 2 * s));
     return {a, bound};
+}
+
+/// The system with right-hand side u_old: the IMEX step of a phase field that does not move.
+Reference reference_solution(const SimulationConfig& cfg, const FieldData& u_old) {
+    return reference_solution(cfg, std::vector<LD>(u_old.data(), u_old.data() + u_old.size()));
 }
 
 class ImexJacobiTest : public ::testing::Test {
@@ -374,6 +395,72 @@ TEST_F(ImexJacobiTest, DomainsStopWhereOneGpuStops) {
     for (std::size_t i = 0; i < results[0].size(); ++i)
         mismatches += results[0][i] != results[1][i] ? 1 : 0;
     EXPECT_EQ(mismatches, 0U);
+}
+
+// The latent heat of the step enters the IMEX solve in every cell. Around a solid seed in a
+// random melt the step must solve
+//   (I - dt D Lap_h) u_new = u_old + 0.5 (phi_new - phi_old)
+// with its own phi_new (read back), on one GPU and on three domains, for both stencils and
+// every kind of u face. The GPU forms the right-hand side within rhs_error of the host's
+// long-double one (Tracked), and a change of the right-hand side changes the solution by at
+// most as much in the max norm: (I - dt D Lap_h)^-1 = (1 + s)^-1 sum_k J^k, and
+// ||J||_inf <= q = s / (1 + s) for every accepted BC (docs/THEORY.md 10.2) bounds its norm
+// by (1 + s)^-1 / (1 - q) = 1. The Jacobi solve adds at most kJacobiTol (a bound evaluated
+// in double, to a relative 1e-15) and the reference its own error bound; rounded_up covers
+// the long-double evaluation of these sums and of the differences compared with them. The
+// solution without the latent heat must lie farther from the reference than a solve of
+// that system could, so the comparison cannot pass without the coupling. beta = 0: the
+// explicit phase-field update, inside its limit at dt = 0.005 on both grids (validate()).
+TEST_F(ImexJacobiTest, LatentHeatOfTheStepEntersTheSolveInEveryCell) {
+    for (int domains : {1, 3})
+        for (StencilType stencil : {StencilType::Standard7Point, StencilType::Isotropic27Point}) {
+            SCOPED_TRACE(std::to_string(domains) + " domain(s), " +
+                         (stencil == StencilType::Standard7Point ? "7" : "27") + "-point");
+            const SimulationConfig cfg = imex_config(stencil, 0.005, domains, 0.0);
+            const Grid grid = cfg.make_grid();
+            FieldData phi(grid, "phi"), u(grid, "u");
+            seeded_state(cfg, phi, u);
+            const FieldData phi_old = phi, u_old = u;
+
+            auto solver = make_solver(cfg);
+            solver->initialize(phi, u);
+            solver->step(cfg.time.dt);
+            solver->copy_phi_to_host(phi);
+            solver->copy_u_to_host(u);
+
+            // add_latent_heat_kernel's right-hand side, on every cell (the sweep reads the
+            // interior; the ghosts only enlarge the bound). Appended: a vector of n
+            // value-initialised long doubles has nvcc compile libstdc++'s constexpr fill for
+            // the device too (--expt-relaxed-constexpr), with warning 20208-D.
+            std::vector<LD> rhs;
+            rhs.reserve(u.size());
+            LD rhs_error = 0;
+            for (std::size_t i = 0; i < u.size(); ++i) {
+                const Tracked r =
+                    Tracked{u_old.data()[i]} +
+                    Tracked{0.5} * (Tracked{phi.data()[i]} - Tracked{phi_old.data()[i]});
+                rhs.push_back(r.v);
+                rhs_error = std::max(rhs_error, r.e);
+            }
+            const Reference ref = reference_solution(cfg, std::move(rhs));
+            const Reference without = reference_solution(cfg, u_old); // no latent heat
+            const LD jacobi = ac::test::rounded_up(LD(CudaSolver::kJacobiTol) * (1 + LD(1e-15)));
+            const LD allowed = ac::test::rounded_up(jacobi + ref.error_bound + rhs_error);
+
+            LD err = 0, latent = 0;
+            for (int x = 1; x < cfg.grid.Nx - 1; ++x)
+                for (int y = 1; y < cfg.grid.Ny - 1; ++y)
+                    for (int z = 1; z < cfg.grid.Nz - 1; ++z) {
+                        const std::size_t i =
+                            (static_cast<std::size_t>(x) * cfg.grid.Ny + y) * cfg.grid.Nz + z;
+                        err = std::max(err, std::fabs(u.data()[i] - ref.u[i]));
+                        latent = std::max(latent, std::fabs(ref.u[i] - without.u[i]));
+                    }
+            EXPECT_LE(err, allowed);
+            // A step without the latent heat returns within jacobi + without.error_bound of
+            // without.u: farther than `allowed` from ref.u where the references differ most.
+            EXPECT_GT(latent, ac::test::rounded_up(allowed + jacobi + without.error_bound));
+        }
 }
 
 // ── Host: the stopping rule ────────────────────────────────────────────────

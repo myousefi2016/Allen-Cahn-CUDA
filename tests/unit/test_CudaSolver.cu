@@ -1,5 +1,6 @@
 #include "common/EulerReference.hpp"
 #include "common/Gpu.hpp"
+#include "common/TrackedRounding.hpp"
 #include "cuda/CudaSolver.cuh"
 #include "cuda/CudaUtils.cuh"
 #include "logging/Logger.hpp"
@@ -7,7 +8,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <gtest/gtest.h>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -337,33 +340,140 @@ TEST_F(CudaSolverTest, HeunStepIsTheAverageOfTheStateAndTwoEulerSteps) {
     }
 }
 
-TEST_F(CudaSolverTest, RK4StepIncludesLatentHeat) {
-    int N = 16;
-    auto cfg = make_config(N, TimeScheme::RK4);
-    CudaSolver solver(cfg);
+namespace {
 
-    Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
-    FieldData phi(grid, "phi"), u(grid, "u");
-    make_sphere_ic(phi, u, N);
+using ac::test::Tracked;
 
-    solver.initialize(phi, u);
-    solver.step(0.001);
+/// phi and u of a uniform state, followed on the host.
+struct UniformState {
+    Tracked phi, u;
+};
 
-    FieldData phi_after(grid, "phi_after"), u_after(grid, "u_after");
-    solver.copy_phi_to_host(phi_after);
-    solver.copy_u_to_host(u_after);
+/// The error of one IMEX solve: at most kJacobiTol, which JacobiStoppingRule certifies with
+/// a bound it evaluates in double to a relative 1e-15 (docs/THEORY.md 10.2).
+long double jacobi_error() {
+    return ac::test::rounded_up(CudaSolver::kJacobiTol * (1 + 1e-15L));
+}
 
-    // If latent heat is working, u should change near the interface
-    // where phi is changing. Check that u differs from initial at some point.
-    bool u_changed = false;
-    for (int x = 0; x < N; ++x)
-        for (int y = 0; y < N; ++y)
-            for (int z = 0; z < N; ++z) {
-                if (std::abs(u_after(x, y, z) - u(x, y, z)) > 1e-15) {
-                    u_changed = true;
-                }
+/// allen_cahn_rate (Kernels.cuh) at a cell whose 3x3x3 neighbourhood holds one phi and one
+/// u: every difference of two neighbours is +0, so each anisotropic_flux is
+/// w^2 * 0 + 16 eps W0 w * dFunc(0, 0, 0) = 0 and the divergence is exactly 0, and
+/// compute_An takes its |grad phi| = 0 branch 1 - 3 eps / 5. The rate is then
+///   (0 - dF_dphi(phi, u)) / (tau0 An An),
+///   dF_dphi = -phi (1 - phi^2) + lambda u (1 - phi^2)^2,
+/// in the kernels' order of operations, with tau0 and lambda as KernelParams takes them.
+Tracked uniform_rate(const Tracked& phi, const Tracked& u, const PhysicsParams& physics) {
+    const Tracked one{1};
+    const Tracked an = one - Tracked{3} * Tracked{physics.epsilon} / Tracked{5};
+    const Tracked tau = Tracked{physics.tau0()} * an * an;
+    const Tracked omp2 = one - phi * phi;
+    const Tracked df = -phi * omp2 + Tracked{physics.lambda()} * u * omp2 * omp2;
+    return -df / tau;
+}
+
+/// One step of `scheme` from the uniform state s in a box with zero-flux faces, as
+/// CudaSolver takes it (docs/THEORY.md 8.1-8.4). Every D Lap u term is exactly 0 (the
+/// 7-point Laplacian of a uniform field is ((a + a) - 2a) / h^2 = +0, contracted or not)
+/// and every ghost an exact copy (inner + 0 * h), so the fields stay uniform bit for bit
+/// and the step is the scheme's step of the ODEs dphi/dt = f(phi, u), du/dt = f(phi, u) / 2.
+UniformState uniform_step(TimeScheme scheme, const UniformState& s, double dt,
+                          const PhysicsParams& physics) {
+    const Tracked half{0.5}, step{dt};
+    auto f = [&](const Tracked& phi, const Tracked& u) { return uniform_rate(phi, u, physics); };
+    switch (scheme) {
+    case TimeScheme::Euler: { // thermal_equation_kernel: u + 0.5 (phi_new - phi_old) + 0
+        const Tracked phi = s.phi + step * f(s.phi, s.u);
+        return {phi, s.u + half * (phi - s.phi)};
+    }
+    case TimeScheme::Heun: { // predictor, corrector, average_kernel 0.5 (y_n + y**)
+        const Tracked phi_p = s.phi + step * f(s.phi, s.u);
+        const Tracked u_p = s.u + half * (phi_p - s.phi);
+        const Tracked phi_c = phi_p + step * f(phi_p, u_p);
+        const Tracked u_c = u_p + half * (phi_c - phi_p);
+        return {half * (s.phi + phi_c), half * (s.u + u_c)};
+    }
+    case TimeScheme::RK4: {
+        // thermal_rhs_kernel: k_u = D Lap u + 0.5 k_phi = 0.5 k_phi; the stage states
+        // y_n + c k with c = dt/2, dt/2, dt; then y_n + (dt / 6) (k1 + 2 k2 + 2 k3 + k4).
+        Tracked k_phi[4], k_u[4];
+        UniformState y = s;
+        for (int i = 0; i < 4; ++i) {
+            k_phi[i] = f(y.phi, y.u);
+            k_u[i] = half * k_phi[i];
+            const Tracked c{i == 2 ? dt : 0.5 * dt};
+            y = {s.phi + c * k_phi[i], s.u + c * k_u[i]};
+        }
+        const Tracked two{2}, w = step / Tracked{6};
+        auto combine = [&](const Tracked* k) {
+            return w * (k[0] + two * k[1] + two * k[2] + k[3]);
+        };
+        return {s.phi + combine(k_phi), s.u + combine(k_u)};
+    }
+    case TimeScheme::IMEX: {
+        // phi as Euler; (I - dt D Lap_h) u_new = u + 0.5 (phi_new - phi_old), whose exact
+        // solution for a uniform right-hand side and zero-flux faces is that right-hand
+        // side; the Jacobi solve returns it to within jacobi_error().
+        const Tracked phi = s.phi + step * f(s.phi, s.u);
+        const Tracked rhs = s.u + half * (phi - s.phi);
+        return {phi, {rhs.v, ac::test::rounded_up(rhs.e + jacobi_error())}};
+    }
+    }
+    throw std::logic_error("uniform_step: unknown TimeScheme");
+}
+
+} // namespace
+
+// The latent heat of every time scheme, against the coupled equations themselves. In a box
+// with zero-flux faces a uniform phi, u stays uniform, and the model reduces to the ODEs
+// dphi/dt = f(phi, u) (the Allen-Cahn rate) and du/dt = f(phi, u) / 2 (the latent heat),
+// which conserve the enthalpy u - phi / 2 of the adiabatic box. From the undercooled
+// mixture phi = 0, u = -0.5 the box solidifies and the latent heat warms it. After every
+// step, phi and u in every cell must equal the scheme's step of these ODEs, evaluated on
+// the host in long double, to within the rounding bound of the GPU's double evaluation
+// (Tracked) plus jacobi_error() per IMEX solve; the difference of a GPU value and the
+// host's is exact in long double (Sterbenz: they agree to better than a factor of 2).
+// dt = 0.005 is inside every explicit limit of this grid (validate()). Without the latent
+// heat u would stay at u0: exactly for the explicit schemes (k_u = D * 0), within
+// jacobi_error() per solve for IMEX (each solve's right-hand side is the previous u, its
+// exact solution); every step asserts that the comparison excludes that.
+TEST_F(CudaSolverTest, LatentHeatOfEverySchemeInAUniformMixture) {
+    const int N = 8, steps = 10;
+    const double dt = 0.005, phi0 = 0.0, u0 = -0.5;
+    for (TimeScheme scheme :
+         {TimeScheme::Euler, TimeScheme::Heun, TimeScheme::RK4, TimeScheme::IMEX}) {
+        SCOPED_TRACE(static_cast<int>(scheme));
+        auto cfg = make_config(N, scheme);
+        cfg.time.dt = dt;
+        cfg.boundary.u_bc.type = BCType::Neumann; // zero flux, as phi's
+        cfg.boundary.u_bc.flux = 0.0;
+        ASSERT_NO_THROW(cfg.validate());
+        CudaSolver solver(cfg);
+
+        Grid grid(Dim3{N, N, N}, Spacing{0.4, 0.4, 0.4});
+        FieldData phi(grid, "phi"), u(grid, "u");
+        phi.fill(phi0);
+        u.fill(u0);
+        solver.initialize(phi, u);
+
+        UniformState ref{Tracked{phi0}, Tracked{u0}};
+        for (int n = 1; n <= steps; ++n) {
+            solver.step(dt);
+            ref = uniform_step(scheme, ref, dt, cfg.physics);
+            const long double drift = scheme == TimeScheme::IMEX ? n * jacobi_error() : 0.0L;
+            ASSERT_GT(std::fabs(ref.u.v - u0), ac::test::rounded_up(ref.u.e + drift))
+                << "step " << n;
+            solver.copy_phi_to_host(phi);
+            solver.copy_u_to_host(u);
+            for (std::size_t i = 0; i < phi.size(); ++i) {
+                ASSERT_LE(std::fabs(phi.data()[i] - ref.phi.v), ref.phi.e)
+                    << "phi, step " << n << ", cell " << i;
+                ASSERT_LE(std::fabs(u.data()[i] - ref.u.v), ref.u.e)
+                    << "u, step " << n << ", cell " << i;
             }
-    EXPECT_TRUE(u_changed) << "u field should change due to latent heat coupling in RK4";
+        }
+        std::printf("scheme %d after %d steps: phi %.15Lf (bound %.2Le), u %.15Lf (bound %.2Le)\n",
+                    static_cast<int>(scheme), steps, ref.phi.v, ref.phi.e, ref.u.v, ref.u.e);
+    }
 }
 
 TEST_F(CudaSolverTest, IMEXStepRuns) {
