@@ -1,5 +1,6 @@
 #include "core/KernelRanges.hpp"
 #include "core/SimulationConfig.hpp"
+#include "core/StabilityLimits.hpp"
 #include "logging/Logger.hpp"
 
 #include <algorithm>
@@ -117,15 +118,6 @@ TEST_F(SimulationConfigTest, ValidationFailsSmallGrid) {
 TEST_F(SimulationConfigTest, ValidationFailsNegativeSpacing) {
     SimulationConfig cfg;
     cfg.grid.dx = -1.0;
-    EXPECT_THROW(cfg.validate(), std::invalid_argument);
-}
-
-TEST_F(SimulationConfigTest, ValidationFailsInvalidEpsilon) {
-    SimulationConfig cfg;
-    cfg.grid.Nx = 10;
-    cfg.grid.Ny = 10;
-    cfg.grid.Nz = 10;
-    cfg.physics.epsilon = 0.5; // >= 1/3
     EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
@@ -907,6 +899,149 @@ TEST_F(SimulationConfigTest, RelaxationTimeAndCouplingMustBeFiniteAndPositive) {
     tiny.physics.D = 1e-10;
     ASSERT_EQ(std::fpclassify(tiny.physics.lambda()), FP_SUBNORMAL);
     EXPECT_NO_THROW(tiny.validate());
+}
+
+// physics.epsilon must lie in [0, 1/3) (README, docs/THEORY.md 3): compute_An divides by
+// 1 - 3 eps, which at the double 1/3 = (2^54 - 1) / (3 2^54) is 0 when 3 eps is rounded on
+// its own and 2^-54 when fused, and relaxation_time_range and the liquid-mode analysis
+// assume the range. The test this replaces set epsilon 0.5 without willmore_beta, which the
+// 1/15 rule and the liquid-mode precondition reject as well, and expected only a throw: it
+// passed with this rule deleted (review3 #80). No rule that validate() checks before this
+// one rejects these inputs. Each is given with willmore_beta 0 and 1: with 1 the 1/15 rule
+// does not apply, and with either the message must be this rule's, which none of the later
+// rules' messages contains. The edges are exact: 0 is accepted, the negative subnormal next
+// to 0 and the double 1/3 are rejected, and the double below 1/3 passes this rule (without
+// willmore_beta the 1/15 rule then rejects it).
+TEST_F(SimulationConfigTest, EpsilonMustLieInZeroToOneThird) {
+    const std::string rule = "epsilon must be in [0, 1/3)";
+    auto with = [](double epsilon, double willmore_beta) {
+        SimulationConfig cfg;
+        cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 8;
+        cfg.physics.epsilon = epsilon;
+        cfg.physics.willmore_beta = willmore_beta;
+        return cfg;
+    };
+    for (const double beta : {0.0, 1.0}) {
+        for (const double epsilon :
+             {-std::numeric_limits<double>::denorm_min(), -0.01, 1.0 / 3.0, 0.5}) {
+            SCOPED_TRACE("epsilon " + digits(epsilon) + ", willmore_beta " + digits(beta));
+            expect_invalid(with(epsilon, beta), {rule});
+        }
+    }
+    expect_rejected(R"({"physics": {"epsilon": 0.4, "willmore_beta": 1.0}})", {rule});
+    EXPECT_NO_THROW(with(0.0, 0.0).validate());
+    expect_invalid(with(std::nextafter(1.0 / 3.0, 0.0), 0.0), {"exceeds 1/15"});
+}
+
+// W0, D and d0 must be positive (README, physics.*): no test gave one of them a value this
+// rule rejects, so each rule could be deleted with every test passing (review3 #80). A zero
+// also makes tau0 = W0^3 a1 a2 / (d0 D) + W0^2 beta0 / d0 zero or not finite, which the
+// derived-constant rule after these rejects as well. The second input of each keeps tau0
+// and lambda = W0 a1 / d0 finite and positive: a negative W0 or d0 with a1 negated, which
+// leaves both exactly as they are, and a negative D with beta0 = 2 under IMEX, which has no
+// explicit thermal limit. Every later check passes the negative d0 and the negative D, so
+// only this rule rejects them; the negative W0 also fails the precondition W0 > 0 of the
+// liquid-mode analysis (check_inputs, LiquidModes.cpp), whose message lacks this rule's.
+TEST_F(SimulationConfigTest, InterfaceWidthDiffusivityAndCapillaryLengthMustBePositive) {
+    SimulationConfig base;
+    base.grid.Nx = base.grid.Ny = base.grid.Nz = 8;
+    ASSERT_NO_THROW(base.validate());
+
+    SimulationConfig width = base;
+    width.physics.W0 = 0.0;
+    expect_invalid(width, {"W0 must be positive"});
+    width.physics.W0 = -1.0;
+    width.physics.a1 = -base.physics.a1;
+    ASSERT_EQ(width.physics.tau0(), base.physics.tau0());
+    ASSERT_EQ(width.physics.lambda(), base.physics.lambda());
+    expect_invalid(width, {"W0 must be positive"});
+
+    SimulationConfig diffusivity = base;
+    diffusivity.physics.D = 0.0;
+    expect_invalid(diffusivity, {"D must be positive"});
+    diffusivity.time.scheme = TimeScheme::IMEX;
+    diffusivity.physics.beta0 = 2.0;
+    diffusivity.physics.D = 2.0;
+    EXPECT_NO_THROW(diffusivity.validate());
+    // Only the sign of D differs: tau0 = -a1 a2 + 4 = 3.43, no thermal limit under IMEX,
+    // and time.dt within the phase-field limit.
+    diffusivity.physics.D = -2.0;
+    ASSERT_TRUE(std::isfinite(diffusivity.physics.tau0()) && diffusivity.physics.tau0() > 0.0)
+        << diffusivity.physics.tau0();
+    ASSERT_EQ(thermal_dt_limit(diffusivity), std::numeric_limits<double>::infinity());
+    ASSERT_LE(diffusivity.time.dt, phase_field_dt_limit(diffusivity));
+    expect_invalid(diffusivity, {"D must be positive"});
+
+    SimulationConfig capillary = base;
+    capillary.physics.d0 = 0.0;
+    expect_invalid(capillary, {"d0 must be positive"});
+    capillary.physics.d0 = -base.physics.d0;
+    capillary.physics.a1 = -base.physics.a1;
+    ASSERT_EQ(capillary.physics.tau0(), base.physics.tau0());
+    ASSERT_EQ(capillary.physics.lambda(), base.physics.lambda());
+    expect_invalid(capillary, {"d0 must be positive"});
+}
+
+// time.max_steps >= 1, dt_min > 0, dt_max > 0 and dt_min < dt_max: the engine clamps every
+// adaptive step, and the dt an adaptive run restarts with, by std::clamp(dt, dt_min,
+// dt_max), whose precondition is dt_min <= dt_max (SimulationEngine.cu). No test broke one
+// of these rules, so each could be deleted with every test passing (review3 #80). Each
+// input breaks only its rule, except dt_max <= 0: with dt_min > 0 it is not above dt_min
+// either, so the order rule after it rejects it as well, and the message must be this
+// rule's. The adaptive input keeps dt_min below the stability cap, so no later rule stands
+// in. The edges are exact: one step, and dt_min one ulp below dt_max.
+TEST_F(SimulationConfigTest, StepCountAndStepBoundsAreChecked) {
+    ASSERT_NO_THROW((void)SimulationConfig::from_json_string("{}"));
+    for (const char* steps : {"0", "-1"})
+        expect_rejected(std::string(R"({"time": {"max_steps": )") + steps + "}}",
+                        {"max_steps must be >= 1"});
+    EXPECT_EQ(SimulationConfig::from_json_string(R"({"time": {"max_steps": 1}})").time.max_steps,
+              1);
+    for (const char* dt_min : {"0.0", "-1e-06"})
+        expect_rejected(std::string(R"({"time": {"dt_min": )") + dt_min + "}}",
+                        {"dt_min must be positive"});
+    for (const char* dt_max : {"0.0", "-0.1"})
+        expect_rejected(std::string(R"({"time": {"dt_max": )") + dt_max + "}}",
+                        {"dt_max must be positive"});
+
+    SimulationConfig order;
+    order.grid.Nx = order.grid.Ny = order.grid.Nz = 8;
+    order.time.dt_min = order.time.dt_max;
+    expect_invalid(order, {"dt_min must be < dt_max"});
+    order.time.dt_min = std::nextafter(order.time.dt_max, 0.0);
+    EXPECT_NO_THROW(order.validate());
+    // An adaptive run whose dt_min = 0.005 exceeds dt_max = 0.001, both below the cap.
+    order.time.adaptive = true;
+    order.time.dt = 0.001;
+    order.time.dt_min = 0.005;
+    order.time.dt_max = 0.001;
+    ASSERT_LT(order.time.dt_min, order.time.cfl_safety * std::min(thermal_dt_limit(order),
+                                                                  phase_field_dt_limit(order)));
+    expect_invalid(order, {"dt_min must be < dt_max"});
+}
+
+// output.frequency >= 1: the engine writes a frame where step % output.frequency == 0
+// (SimulationEngine.cu), an integer division by zero at 0. adaptive_tolerance > 0 with
+// adaptive steps: the next dt is the last one times 0.9 adaptive_tolerance / max|dphi|
+// within [0.5, 1.5], so a tolerance <= 0 halves dt at every step down to dt_min. At least
+// one device id: validate() itself divides grid.Nx by the number of ids, and the solver
+// rejects an empty list only when the engine creates it, after the host fields are
+// allocated (CudaSolver::activate_device). No test broke one of these rules (review3 #80).
+// One frame per step and an adaptive run with the default tolerance are accepted.
+TEST_F(SimulationConfigTest, OutputIntervalAdaptiveToleranceAndDeviceListAreChecked) {
+    for (const char* frequency : {"0", "-1"})
+        expect_rejected(std::string(R"({"output": {"frequency": )") + frequency + "}}",
+                        {"output frequency must be >= 1"});
+    EXPECT_EQ(
+        SimulationConfig::from_json_string(R"({"output": {"frequency": 1}})").output.frequency, 1);
+    const std::string adaptive = R"({"time": {"adaptive": true, "dt": 0.001)";
+    ASSERT_NO_THROW((void)SimulationConfig::from_json_string(adaptive + "}}"));
+    for (const char* tolerance : {"0.0", "-0.01"})
+        expect_rejected(adaptive + R"(, "adaptive_tolerance": )" + tolerance + "}}",
+                        {"adaptive_tolerance must be positive when adaptive stepping is enabled"});
+    for (const char* multi : {"false", "true"})
+        expect_rejected(std::string(R"({"gpu": {"device_ids": [], "multi_gpu": )") + multi + "}}",
+                        {"At least one GPU device required"});
 }
 
 // A cold start sets u = -delta: lambda delta must be a finite double, or the
