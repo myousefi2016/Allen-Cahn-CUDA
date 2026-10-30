@@ -3,15 +3,20 @@
 #include "core/SimulationConfig.hpp"
 #include "core/SimulationEngine.hpp"
 #include "core/StabilityLimits.hpp"
+#include "cuda/CudaSolver.cuh"
 #include "io/CheckpointIO.hpp"
 #include "logging/Logger.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <iomanip>
 #include <limits>
+#include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -628,6 +633,100 @@ TEST_F(SimulationEngineTest, RunEndsAtTheLargestMaxSteps) {
     }
 }
 
+namespace {
+
+/// `v` with max_digits10 (17) significant digits, which tell any two doubles apart.
+std::string digits17(Real v) {
+    std::ostringstream text;
+    text << std::setprecision(std::numeric_limits<Real>::max_digits10) << v;
+    return text.str();
+}
+
+/// Whether every cell of a checkpoint holds phi = -1 and u = -0.8. With make_config's walls
+/// (zero-flux phi, Dirichlet u = -0.8) that state is a fixed point of the Euler step at any
+/// dt: every gradient is 0, so every face flux is 0; 1 - phi^2 = 0 zeroes dF/dphi whatever
+/// u is; the 7-point Laplacian of a uniform u is (u + u - 2u) / h^2 = 0; the latent heat
+/// 0.5 (phi_new - phi_old) is 0; and the fills give -1 + 0 h = -1 and -0.8, each exactly
+/// (Kernels.cuh, AllenCahnKernels.cu, ThermalKernels.cu, BoundaryKernels.cu). A checkpoint
+/// of a run restored from that state holds it exactly.
+::testing::AssertionResult at_rest(const CheckpointIO::RestoreData& data) {
+    for (std::size_t i = 0; i < data.phi.size(); ++i) {
+        if (data.phi.data()[i] != -1.0)
+            return ::testing::AssertionFailure()
+                   << "phi = " << digits17(data.phi.data()[i]) << " at linear index " << i;
+    }
+    for (std::size_t i = 0; i < data.u.size(); ++i) {
+        if (data.u.data()[i] != -0.8)
+            return ::testing::AssertionFailure()
+                   << "u = " << digits17(data.u.data()[i]) << " at linear index " << i;
+    }
+    return ::testing::AssertionSuccess();
+}
+
+/// A step's fields and time.
+struct StepState {
+    std::vector<Real> phi, u;
+    double time = 0.0;
+};
+
+/// The values of a raw output file (VTKWriter::write_raw_file: the grid's cells in
+/// FieldData's order, as native doubles); empty if it cannot be read.
+std::vector<Real> read_raw(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in)
+        return {};
+    const auto bytes = static_cast<std::size_t>(static_cast<std::streamoff>(in.tellg()));
+    if (bytes % sizeof(Real) != 0)
+        return {};
+    std::vector<Real> values(bytes / sizeof(Real));
+    in.seekg(0);
+    in.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(bytes));
+    if (!in)
+        return {};
+    return values;
+}
+
+/// The number of cells in which two fields of the same grid differ.
+std::size_t differing_cells(const std::vector<Real>& a, const std::vector<Real>& b) {
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (!(a[i] == b[i]))
+            ++n;
+    return n;
+}
+
+/// Whether the n values at `got` are exactly those of `want`.
+::testing::AssertionResult same_field(const std::string& what, const Real* got, std::size_t n,
+                                      const std::vector<Real>& want) {
+    if (n != want.size())
+        return ::testing::AssertionFailure()
+               << what << ": " << n << " values for a grid of " << want.size() << " cells";
+    std::size_t differ = 0, first = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (got[i] == want[i])
+            continue;
+        if (differ++ == 0)
+            first = i;
+    }
+    if (differ == 0)
+        return ::testing::AssertionSuccess();
+    return ::testing::AssertionFailure()
+           << what << ": " << differ << " of " << n << " cells differ, the first at linear index "
+           << first << ": " << digits17(got[first]) << " instead of " << digits17(want[first]);
+}
+
+::testing::AssertionResult same_field(const std::string& what, const FieldData& got,
+                                      const std::vector<Real>& want) {
+    return same_field(what, got.data(), got.size(), want);
+}
+
+::testing::AssertionResult same_field(const std::string& what, const std::vector<Real>& got,
+                                      const std::vector<Real>& want) {
+    return same_field(what, got.data(), got.size(), want);
+}
+
+} // namespace
+
 // A fixed-dt run continues with its configured dt, whatever dt the checkpoint
 // was written with (a checkpoint of an earlier configuration, or the same run
 // after time.dt was changed): the configured dt is the one validate() checked
@@ -653,6 +752,7 @@ TEST_F(SimulationEngineTest, FixedDtRestartUsesTheConfiguredDt) {
         time += 0.001;
     EXPECT_EQ(next.dt, 0.001);
     EXPECT_EQ(next.time, time);
+    EXPECT_TRUE(at_rest(next));
 }
 
 // An adaptive run continues from the dt it had adapted to: the first step
@@ -675,6 +775,7 @@ TEST_F(SimulationEngineTest, AdaptiveRestartContinuesFromTheCheckpointDt) {
     const auto next = CheckpointIO::read(cfg.checkpoint.checkpoint_dir / "checkpoint_11.acbin");
     EXPECT_EQ(next.dt, 0.0005);
     EXPECT_EQ(next.time, 0.1 + 0.0005);
+    EXPECT_TRUE(at_rest(next));
 }
 
 // Adaptive steps never exceed cfl_safety times the explicit stability limits,
@@ -727,6 +828,7 @@ TEST_F(SimulationEngineTest, AdaptiveDtGrowsToTheCapWhenPhiIsAtRest) {
         const auto data = CheckpointIO::read(cfg.checkpoint.checkpoint_dir /
                                              ("checkpoint_" + std::to_string(step) + ".acbin"));
         EXPECT_EQ(data.dt, expected) << "step " << step;
+        EXPECT_TRUE(at_rest(data)) << "step " << step;
     }
     EXPECT_EQ(expected, cap) << "the run is too short to reach the cap";
 }
@@ -906,6 +1008,140 @@ TEST_F(SimulationEngineTest, AdaptiveRestartIsCappedLikeEveryAdaptedStep) {
         EXPECT_EQ(first.time, 0.1 + c.step11);
         EXPECT_EQ(second.dt, c.step12);
         EXPECT_EQ(second.time, (0.1 + c.step11) + c.step12);
+        EXPECT_TRUE(at_rest(first));
+        EXPECT_TRUE(at_rest(second));
+    }
+}
+
+// Checkpoints, frames and restarts carry the fields of their step: each checkpoint's phi
+// and u payloads and each raw frame's phi and u files hold the state of their step, and a
+// run restarted from a checkpoint, through checkpoint.restart_file and through --resume
+// (Start::ResumeLatest, which the cuda-resume-* targets use), continues the uninterrupted
+// run. Before, no test compared the u of a checkpoint or frame the engine wrote, or any of
+// their payloads with an independent reference (SaturatedRestartComputesNothing reads the
+// phi of a saturated checkpoint, whose restore computes nothing; the restart tests above
+// restore phi = -1, a fixed point whatever u is, and read dt and time): a restore that
+// dropped the checkpoint's u, a checkpoint or frame that stored phi as u, or a u copied to
+// the host only once passed the suite.
+// The reference is a CudaSolver of the same configuration stepped from the engine's start
+// state. The comparison is exact. An Euler step computes every cell in one thread, without
+// atomics or reductions, from the previous step's fields and the cells it computed before
+// (phi's interior, its boundary fill, then u's interior and fill: AllenCahnKernels.cu,
+// ThermalKernels.cu, BoundaryKernels.cu), so the same fields give the same fields, bit for
+// bit. Each boundary cell's fill is a function of the interior alone (a face reads the
+// interior and the cells of the faces filled before it), so filling a filled state changes
+// no value (checked at step 0). Checkpoints and raw frames store the doubles' bytes, and
+// the engine sums time as the loop below does.
+TEST_F(SimulationEngineTest, CheckpointsFramesAndRestartsCarryTheFieldsOfTheirStep) {
+    const int N = 16;
+    const int every = 4; // output and checkpoint frequency
+    const int last = 12; // max_steps
+    auto cfg = make_config(N, last);
+    cfg.initial.seed_radius = 1.6;       // 4 cells; the walls are 3.0 from the centre
+    cfg.time.exit_on_saturation = false; // every run reaches max_steps
+    cfg.output.format = "raw";           // the payloads as written, in FieldData's order
+    cfg.output.async_io = true;          // asynchronous, the default (make_config's is off)
+    cfg.output.frequency = every;
+    cfg.checkpoint.frequency = every;
+    cfg.checkpoint.keep_last = last / every; // retention keeps every checkpoint of a run
+    ASSERT_NO_THROW(cfg.validate());
+
+    // The start state: the initial condition after the solver's boundary fill.
+    auto start_cfg = cfg;
+    start_cfg.time.max_steps = 0;
+    start_cfg.output.output_dir = test_dir_ / "start_out";
+    start_cfg.checkpoint.checkpoint_dir = test_dir_ / "start_ckpt";
+    SimulationEngine start(start_cfg);
+    start.run();
+
+    // The reference at step 0 and at every multiple of `every`.
+    std::map<int, StepState> ref;
+    {
+        cuda::CudaSolver solver(cfg);
+        solver.initialize(start.phi(), start.u());
+        FieldData phi(start.grid(), "phi"), u(start.grid(), "u");
+        double time = 0.0;
+        for (int step = 0; step <= last; ++step) {
+            if (step > 0) {
+                solver.step(cfg.time.dt);
+                time += cfg.time.dt; // time_loop's sum
+            }
+            if (step % every != 0)
+                continue;
+            solver.copy_phi_to_host(phi);
+            solver.copy_u_to_host(u);
+            ref[step] = StepState{std::vector<Real>(phi.data(), phi.data() + phi.size()),
+                                  std::vector<Real>(u.data(), u.data() + u.size()), time};
+        }
+    }
+    ASSERT_TRUE(same_field("start phi filled again", start.phi(), ref.at(0).phi));
+    ASSERT_TRUE(same_field("start u filled again", start.u(), ref.at(0).u));
+    // Each comparison below can fail: phi and u differ in some cell at every step (a payload
+    // holding one in place of the other is wrong), and u changes from one checkpoint step to
+    // the next (a u left from an earlier step is wrong).
+    for (int step = 0; step <= last; step += every) {
+        ASSERT_GT(differing_cells(ref.at(step).phi, ref.at(step).u), 0u) << "step " << step;
+        if (step > 0) { // braced: an unbraced gtest assertion draws -Wdangling-else
+            ASSERT_GT(differing_cells(ref.at(step).u, ref.at(step - every).u), 0u)
+                << "step " << step;
+        }
+    }
+
+    // The frame and, past step 0, the checkpoint of `step` a run wrote to out and ckpt.
+    const auto expect_step = [&](const std::filesystem::path& out,
+                                 const std::filesystem::path& ckpt, int step) {
+        SCOPED_TRACE("step " + std::to_string(step) + " in " + out.string());
+        const StepState& want = ref.at(step);
+        const std::string frame = (out / ("output_" + std::to_string(step))).string();
+        EXPECT_TRUE(same_field("frame phi", read_raw(frame + "_phi.raw"), want.phi));
+        EXPECT_TRUE(same_field("frame u", read_raw(frame + "_u.raw"), want.u));
+        if (step == 0)
+            return; // a run checkpoints no start state
+        const auto file = ckpt / ("checkpoint_" + std::to_string(step) + ".acbin");
+        ASSERT_TRUE(CheckpointIO::is_valid_checkpoint(file)) << file;
+        const auto data = CheckpointIO::read(file);
+        EXPECT_EQ(data.step, step);
+        EXPECT_EQ(data.time, want.time);
+        EXPECT_EQ(data.dt, cfg.time.dt);
+        EXPECT_TRUE(same_field("checkpoint phi", data.phi, want.phi));
+        EXPECT_TRUE(same_field("checkpoint u", data.u, want.u));
+    };
+
+    // The uninterrupted run: frames at steps 0, 4, 8 and 12, checkpoints at 4, 8 and 12.
+    {
+        SimulationEngine engine(cfg);
+        engine.run();
+        EXPECT_TRUE(same_field("final phi", engine.phi(), ref.at(last).phi));
+        EXPECT_TRUE(same_field("final u", engine.u(), ref.at(last).u));
+    }
+    for (int step = 0; step <= last; step += every)
+        expect_step(cfg.output.output_dir, cfg.checkpoint.checkpoint_dir, step);
+
+    // Runs restarted from its checkpoint of step 4: frames and checkpoints at 8 and 12.
+    const auto from =
+        cfg.checkpoint.checkpoint_dir / ("checkpoint_" + std::to_string(every) + ".acbin");
+    for (const auto how :
+         {SimulationEngine::Start::AsConfigured, SimulationEngine::Start::ResumeLatest}) {
+        const bool resume = how == SimulationEngine::Start::ResumeLatest;
+        SCOPED_TRACE(resume ? "--resume" : "checkpoint.restart_file");
+        auto restart = cfg;
+        restart.output.output_dir = test_dir_ / (resume ? "resume_out" : "restart_out");
+        restart.checkpoint.checkpoint_dir = test_dir_ / (resume ? "resume_ckpt" : "restart_ckpt");
+        if (resume) { // the newest checkpoint of this grid in checkpoint_dir
+            std::filesystem::create_directories(restart.checkpoint.checkpoint_dir);
+            std::filesystem::copy_file(from, restart.checkpoint.checkpoint_dir / from.filename());
+        } else {
+            restart.checkpoint.restart_file = from;
+        }
+        SimulationEngine engine(restart);
+        engine.run(how);
+        // A run from step 0 reaches the same states, but writes the frame of step 0.
+        EXPECT_FALSE(std::filesystem::exists(restart.output.output_dir / "output_0_phi.raw"))
+            << "the run did not restart";
+        EXPECT_TRUE(same_field("final phi", engine.phi(), ref.at(last).phi));
+        EXPECT_TRUE(same_field("final u", engine.u(), ref.at(last).u));
+        for (int step = 2 * every; step <= last; step += every)
+            expect_step(restart.output.output_dir, restart.checkpoint.checkpoint_dir, step);
     }
 }
 
