@@ -11,6 +11,8 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <string>
+#include <tuple>
 #include <vector>
 
 using namespace ac;
@@ -441,6 +443,50 @@ TEST_F(BoundaryConditionsTest, PerFaceMixedBC) {
         for (int y = 0; y < N; ++y)
             EXPECT_DOUBLE_EQ(field_host[x * N * N + y * N + 0], -1.0)
                 << "Z-lo at x=" << x << " y=" << y;
+}
+
+// Faces with more rows than a 16 x 16 launch could reach (gridDim.y <= 65535 blocks of 16
+// rows: 1048560): Nz = 1048561 (the X and Y faces) and Ny = 1048561 (the Z faces). Every
+// boundary cell takes its owning face's Dirichlet value (X faces own their planes, Y faces
+// the rest of theirs, Z faces what is left; BoundaryKernels.cu), the interior keeps its
+// value.
+TEST_F(BoundaryConditionsTest, FacesWithMoreRowsThanALaunchRowLimit) {
+    for (const auto& [nx, ny, nz] : {std::tuple{3, 3, 1048561}, std::tuple{3, 1048561, 3}}) {
+        SCOPED_TRACE(std::to_string(nx) + " x " + std::to_string(ny) + " x " + std::to_string(nz));
+        KernelParams p{};
+        p.Nx = nx;
+        p.Ny = ny;
+        p.Nz = nz;
+        p.dx = p.dy = p.dz = 1.0;
+        const std::size_t total = static_cast<std::size_t>(nx) * ny * nz;
+        std::vector<double> host(total, 1.0);
+        DeviceField<double> d_field(total);
+        d_field.copy_from_host(host.data());
+        PerFaceBoundary faces;
+        for (int f = 0; f < 6; ++f)
+            faces.faces[f] = {BCType::Dirichlet, -1.0 - f, 0.0, 1.0, 0.0, 0.0};
+        launch_boundary_conditions_per_face(d_field.data(), p, faces);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        d_field.copy_to_host(host.data());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        long wrong = 0;
+        for (int x = 0; x < nx; ++x)
+            for (int y = 0; y < ny; ++y)
+                for (int z = 0; z < nz; ++z) {
+                    const double expected = x == 0        ? -1.0
+                                            : x == nx - 1 ? -2.0
+                                            : y == 0      ? -3.0
+                                            : y == ny - 1 ? -4.0
+                                            : z == 0      ? -5.0
+                                            : z == nz - 1 ? -6.0
+                                                          : 1.0;
+                    const double got = host[(static_cast<std::size_t>(x) * ny + y) * nz + z];
+                    if (got != expected && ++wrong <= 5)
+                        ADD_FAILURE() << "(" << x << ", " << y << ", " << z << "): " << got
+                                      << ", expected " << expected;
+                }
+        EXPECT_EQ(wrong, 0);
+    }
 }
 
 TEST_F(BoundaryConditionsTest, InteriorUnchanged) {

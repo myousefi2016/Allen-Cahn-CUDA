@@ -12,10 +12,6 @@ __global__ void __launch_bounds__(256)
                          int bc_type, // 0=Dirichlet, 1=Neumann, 2=Periodic, 3=Robin
                          double bc_value, double bc_flux, double bc_alpha, double bc_beta,
                          double bc_gamma) {
-    // This kernel is launched as a 2D grid covering two of the three axes.
-    int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    int j = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
-
     // Determine which axes i,j correspond to and the fixed coordinate
     int dim1_max, dim2_max;
     if (face_axis == 0) {
@@ -31,8 +27,14 @@ __global__ void __launch_bounds__(256)
         dim2_max = Ny;
     } // XY face
 
-    if (i >= dim1_max || j >= dim2_max)
+    // One thread per cell of the face, a 1D launch (a face can have more rows than
+    // gridDim.y allows, 65535); j varies fastest, contiguous in memory on X and Y faces.
+    // dim1_max * dim2_max <= Nx * Ny * Nz / 3 fits int (validate).
+    const int cell = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (cell >= dim1_max * dim2_max)
         return;
+    const int i = cell / dim2_max;
+    const int j = cell % dim2_max;
 
     // Ownership convention (matches Z,Y,X application order in
     // launch_boundary_conditions): X faces own all of their plane;
@@ -172,16 +174,15 @@ static void launch_bc_face(double* field, const KernelParams& params, int axis, 
         dim2 = params.Ny;
     }
 
-    dim3 block(16, 16);
-    dim3 grid((static_cast<unsigned>(dim1) + block.x - 1) / block.x,
-              (static_cast<unsigned>(dim2) + block.y - 1) / block.y);
+    const LaunchConfig cfg =
+        LaunchConfig::for_1d(static_cast<std::size_t>(dim1) * static_cast<std::size_t>(dim2), 256);
 
     // A Robin face's coefficients scaled by a power of two (the same ghost
     // bits, no overflow of beta * u_inner / ds; scaled_robin).
     RobinCoefficients robin{bc.alpha, bc.beta, bc.gamma};
     if (bc.type == BCType::Robin)
         robin = scaled_robin(bc, axis == 0 ? params.dx : axis == 1 ? params.dy : params.dz);
-    apply_bc_face_kernel<<<grid, block, 0, stream>>>(
+    apply_bc_face_kernel<<<cfg.grid, cfg.block, 0, stream>>>(
         field, params.Nx, params.Ny, params.Nz, params.dx, params.dy, params.dz, axis, side,
         static_cast<int>(bc.type), bc.value, bc.flux, robin.alpha, robin.beta, robin.gamma);
     CUDA_CHECK(cudaGetLastError());
