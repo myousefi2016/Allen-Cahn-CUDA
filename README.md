@@ -826,7 +826,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   nvidia/cuda:12.6.0-devel-ubuntu24.04 bash -c '
     apt-get update && apt-get install -y --no-install-recommends \
       cmake ninja-build gcc-13 g++-13 git pkg-config \
-      libvtk9-dev ca-certificates python3 python3-yaml &&
+      libvtk9-dev ca-certificates python3 python3-yaml cmark-gfm &&
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 &&
     update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 &&
     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
