@@ -13,8 +13,10 @@ table extension), and this test fails for
     are counted as cmark-gfm's row_from_string counts them (extensions/table.c, the scanners
     of extensions/ext_scanners.re), and the count is checked against the cells cmark-gfm
     kept, which are the line's up to the header's number;
-  * every paragraph line that is a delimiter row once its leading spaces, tabs and '>' are
-    removed: no table was made of it.
+  * every line of a paragraph's text, or of a setext heading's (a paragraph's text with a
+    line of '=' or '-' under it), that is a delimiter row once its leading spaces, tabs and
+    '>' are removed: no table was made of it. A table whose delimiter row has another number
+    of cells than its header, directly followed by such a line, is a setext heading.
 A row's line keeps its cells after its leading spaces, tabs and block-quote markers, and its
 first cell never starts with '>' (that line would open a block quote). It reads README.md,
 docs/*.md, ci/**/*.md and .github/**/*.md; README.md and the three documents of docs/ must be
@@ -43,6 +45,8 @@ DELIMITER_ROW = re.compile(rf"\|?{MARKER}(?:\|{MARKER})*\|?[ \t\v\f]*")
 # cmark's line endings (blocks.c S_parser_feed); str.splitlines would also split at \v, \f, ...
 LINE_END = re.compile(rb"\r\n|\r|\n")
 XML_INVALID = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# The opening of an ATX heading (CommonMark 4.2) at the heading's first column.
+ATX = re.compile(rb"#{1,6}(?:[ \t]|$)")
 
 
 def cell_end(s, i):
@@ -111,26 +115,49 @@ def sourcepos(node):
     return tuple(int(g) for g in m.groups())
 
 
-def check(cmark, path, rel, errors):
-    """Returns the numbers of tables and rows of the file."""
-    # cmark-gfm skips a UTF-8 byte order mark and reads a NUL as U+FFFD (blocks.c); source
-    # columns count bytes.
-    data = path.read_bytes()
-    if data.startswith(b"\xef\xbb\xbf"):
-        data = data[3:]
-    lines = LINE_END.split(data.replace(b"\0", "\ufffd".encode()))
-    out = subprocess.run([cmark, "--to", "xml", "--sourcepos", "-e", "table", str(path)],
+def parse(cmark, data):
+    """cmark-gfm's XML of the Markdown bytes `data`: (root element, None) or (None, its error)."""
+    out = subprocess.run([cmark, "--to", "xml", "--sourcepos", "-e", "table"], input=data,
                          capture_output=True, timeout=60)
     if out.returncode != 0:
-        errors.append(f"cmark-gfm exited {out.returncode} on {rel}: {out.stderr.decode().strip()}")
-        return 0, 0
+        return None, f"exited {out.returncode}: {out.stderr.decode().strip()}"
     # cmark-gfm's XML carries the text's control characters (U+000B, U+000C, ...), which XML
     # 1.0 does not allow; only the elements and their source positions are read here.
-    root = ET.fromstring(XML_INVALID.sub("\ufffd".encode(), out.stdout))
+    return ET.fromstring(XML_INVALID.sub("\ufffd".encode(), out.stdout)), None
+
+
+def setext_underline(cmark, lines, first, column):
+    """The line number of the underline of the setext heading that starts at (first, column),
+    or None. cmark-gfm's end position of a setext heading can lie past its underline (on the
+    next line or block), so the underline is the line from which a parse of the file's first
+    lines has this heading: block structure depends on no later line."""
+    for m in range(first + 1, len(lines) + 1):
+        root, _ = parse(cmark, b"\n".join(lines[:m]) + b"\n")
+        if root is not None and any(sourcepos(h)[:2] == (first, column)
+                                    for h in root.iter(NS + "heading")):
+            return m
+    return None
+
+
+def check(cmark, path, rel, errors):
+    """Returns the numbers of tables and rows of the file."""
+    # cmark-gfm gets the file as it is. It skips one UTF-8 byte order mark at the start by
+    # moving past it, so the columns of line 1 count its 3 bytes, and it reads a NUL as
+    # U+FFFD, whose 3 bytes the columns count (blocks.c; columns count bytes). The lines here
+    # are read alike, NUL as U+FFFD and the byte order mark kept, so a column points at the
+    # same byte; a table row, read whole, is never line 1 (its header and delimiter row come
+    # first).
+    data = path.read_bytes()
+    lines = LINE_END.split(data.replace(b"\0", "\ufffd".encode()))
+    root, failure = parse(cmark, data)
+    if root is None:
+        errors.append(f"cmark-gfm {failure} on {rel}")
+        return 0, 0
 
     tables = rows = 0
-    # Paragraph lines to check: (line number, column of its text or None after the first line).
-    paragraph_lines = []
+    # Lines of text to check: (line number, column of its text or None after the first line,
+    # "paragraph" or "setext heading").
+    text_lines = []
     for table in root.iter(NS + "table"):
         tables += 1
         start, column, end, _ = sourcepos(table)
@@ -159,7 +186,8 @@ def check(cmark, path, rel, errors):
         # the table keeps that paragraph's first line and column.
         header_line = (sourcepos(table_rows[0])[0] - 1 if table_rows else end) - 1
         if start < header_line:
-            paragraph_lines += [(n, column if n == start else None) for n in range(start, header_line)]
+            text_lines += [(n, column if n == start else None, "paragraph")
+                           for n in range(start, header_line)]
             table.set("split", "1")
 
     # A paragraph without a source position is the text above a table header (above).
@@ -173,21 +201,38 @@ def check(cmark, path, rel, errors):
     for paragraph in root.iter(NS + "paragraph"):
         if paragraph.get("sourcepos") is not None:
             first, column, last, _ = sourcepos(paragraph)
-            paragraph_lines += [(n, column if n == first else None) for n in range(first, last + 1)]
+            text_lines += [(n, column if n == first else None, "paragraph")
+                           for n in range(first, last + 1)]
+    # A setext heading's text is the lines above its underline; an ATX heading is one line that
+    # opens with 1-6 '#' at its column.
+    for heading in root.iter(NS + "heading"):
+        first, column, _, _ = sourcepos(heading)
+        if ATX.match(lines[first - 1], column - 1):
+            continue
+        underline = setext_underline(cmark, lines, first, column)
+        if underline is None:
+            errors.append(f"{rel}:{first}: cmark-gfm gave a heading here that no parse of the "
+                          f"file's first lines has (unknown to this test)")
+            continue
+        text_lines += [(n, column if n == first else None, "setext heading")
+                       for n in range(first, underline)]
 
-    # A paragraph's first line starts at its column, the others after their leading spaces,
-    # tabs and block-quote markers.
-    text = {n: (lines[n - 1][c - 1:] if c else lines[n - 1]).decode("utf-8").lstrip(" \t>")
-            for n, c in paragraph_lines}
+    # A text's first line starts at its column, the others after their leading spaces, tabs
+    # and block-quote markers.
+    text = {}
+    for n, c, kind in text_lines:
+        line = lines[n - 1][c - 1:] if c else lines[n - 1]
+        text[n] = (line.decode("utf-8").lstrip(" \t>"), kind)
     for n in sorted(text):
-        if not DELIMITER_ROW.fullmatch(text[n]):
+        line, kind = text[n]
+        if not DELIMITER_ROW.fullmatch(line):
             continue
         detail = "; no line above it"
         if n - 1 in text:
-            above, delimiter = row_cells(text[n - 1] + "\n"), row_cells(text[n] + "\n")
+            above, delimiter = row_cells(text[n - 1][0] + "\n"), row_cells(line + "\n")
             detail = (f"; the line above has {cells(above) if above else 'no cells'}, this row "
                       f"{delimiter}")
-        errors.append(f"{rel}:{n}: a delimiter row in a paragraph: GFM made no table of it{detail}")
+        errors.append(f"{rel}:{n}: a delimiter row in a {kind}: GFM made no table of it{detail}")
     return tables, rows
 
 
