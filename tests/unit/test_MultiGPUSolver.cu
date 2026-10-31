@@ -728,8 +728,8 @@ class MultiGPUEngineSaturation : public MultiGPUEngineTest,
 
 // The saturation guard, every step, through the multi-GPU solver. The seed (radius 1.5,
 // centred in 16^3 cells) puts phi = -0.65 on the cells next to every wall; next to the
-// zero-flux wall phi rises above the threshold -0.5 first (at step 28 of 200, the other
-// walls' cells at -0.73; exp/round26/mgpu_engine/probe.txt), and only one domain reads
+// zero-flux wall phi rises above the threshold -0.5 first (at step 27 of 200, the other
+// walls' cells at -0.73; exp/round27/probes/mgpu_probe.txt), and only one domain reads
 // those cells: x_lo's the first, x_hi's the last, y_hi's (where the seed's arm meets it,
 // x = 7..8) the middle one. The single- and the multi-GPU run stop at the same step, with
 // the same fields.

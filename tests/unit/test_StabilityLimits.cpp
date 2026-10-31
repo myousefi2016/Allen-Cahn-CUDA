@@ -82,8 +82,8 @@ TEST(StabilityLimits, ClosedForms) {
 // full checkerboard binds (2 tau0 A^2 / (3 W0^2 H 4/h^2 + 2), at eps = 0 the
 // uniform liquid's too); with it the binding mode is a wave between the
 // checkerboards: at eps 0.07, beta 0.0149 (default.json) the gradient along
-// <101> with theta = (0.652, 0, -0.652) pi, limit 2 tau0 / 41.19 = 0.027467,
-// 13 % below what the checkerboards gave (0.031570).
+// <101> with theta = (0.652, 0, -0.652) pi, limit 2 tau0 / 41.19 = 0.026895,
+// 13 % below what the checkerboards gave (0.030912).
 TEST(StabilityLimits, PhaseFieldLimitClosedForms) {
     auto cfg = config(TimeScheme::Euler, StencilType::Standard7Point); // h = 0.4
     const double tau0 = cfg.physics.tau0(), rho7 = 75.0;
@@ -104,7 +104,7 @@ TEST(StabilityLimits, PhaseFieldLimitClosedForms) {
     cfg.physics.epsilon = 0.07;
     cfg.physics.willmore_beta = 0.0149;
     EXPECT_NEAR(phase_field_dt_limit(cfg) / (2 * tau0 / 41.189758899), 1.0, tol);
-    EXPECT_NEAR(phase_field_dt_limit(cfg), 0.027467, 1e-6);
+    EXPECT_NEAR(phase_field_dt_limit(cfg), 0.026895, 1e-6);
     // A large beta no longer damps every mode: the uniform shift alone has
     // Lam - beta L = 2 - 4 beta > 0 for beta < 1/2 (2 tau_cb / (2 - 4 beta)),
     // and the gradient modes bind below it (eps 0.07, beta 0.25: 2 tau0 / 2.0683).

@@ -121,7 +121,7 @@ inline constexpr double kWillmoreCgTolerance = 1e-10;
 /// from a bound: the preconditioner is built so that two iterations suffice
 /// in exact arithmetic, rounding in its single-precision application can add
 /// iterations, and no a priori bound of that rounding is available; the
-/// measured solves took two or three (docs/THEORY.md section 4.4). Any count
+/// measured solves took at most three (docs/THEORY.md section 4.4). Any count
 /// up to the cap is accepted; it is returned in
 /// WillmoreSolveStats::iterations, which the engine does not log.
 inline constexpr int kWillmoreCgMaxIterations = 1000;

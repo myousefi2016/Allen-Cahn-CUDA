@@ -50,8 +50,14 @@ struct PhysicsParams {
     Real beta0 = 0.0;    ///< Kinetic coefficient
     Real D = 2.0;        ///< Thermal diffusivity
     Real d0 = 0.5;       ///< Capillary length
+    /// Thin-interface constants of this model (coupling (1 - phi^2)^2, latent heat
+    /// dphi/dt / 2): a1 = I/J = 5 sqrt(2)/8 and a2 = (K + J F)/(2 I) = 47/75, with
+    /// which lambda() gives the capillary length d0 and tau0() the kinetic
+    /// coefficient beta0. With willmore_beta > 0 only along orientations with
+    /// A(n) = 1: elsewhere the regularisation changes the flat profile they are
+    /// integrals of (docs/THEORY.md 4.3, 5.2).
     Real a1 = 1.25 / std::sqrt(2.0);
-    Real a2 = 0.64;
+    Real a2 = 47.0 / 75.0;
     /// Willmore regularisation strength beta >= 0 (dimensionless): adds
     /// (beta/2) * int omega^2, omega = W0^2 lap(phi) + phi - phi^3, to the free
     /// energy. omega uses the isotropic Laplacian, so on the planar equilibrium

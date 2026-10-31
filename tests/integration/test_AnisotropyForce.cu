@@ -210,14 +210,14 @@ GrowthExtent grow_seed(AnisotropyForceTest& t, double eps, int N, double h, doub
 /// cannot show this (in the Karma-Rappel model tau(n) = tau0 A(n)^2 makes the
 /// instantaneous relaxation *faster* where A is smaller), so the test measures
 /// the interface extent after the Mullins-Sekerka growth regime has set in
-/// (t = 15 tau units), before any wall contact.
+/// (t = 15, 27 tau0), before any wall contact.
 ///
 /// The eps = 0 run is the control for the grid's own anisotropy: with the
 /// compact face-flux operator it is within 2% of isotropic at h = 0.8 W0
 /// (GridAnisotropyVanishesUnderRefinement shows it is discretization error).
 /// The <100>/<111> ratio must increase strictly with eps and cubic symmetry
 /// must hold across all 6 axes and 8 diagonals. Measured on RTX 4090 (CUDA
-/// 13.2): ratios 0.9875, 1.0467, 1.1478 for eps = 0, 0.02, 0.05.
+/// 13.2): ratios 0.9878, 1.0470, 1.1488 for eps = 0, 0.02, 0.05.
 TEST_F(AnisotropyForceTest, GrowthExtentFavoursAxesUnderAnisotropy) {
     const double eps_values[] = {0.0, 0.02, 0.05};
     double ratio[3];

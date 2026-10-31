@@ -45,7 +45,7 @@ LD gamma_long(LD k) {
 /// The liquid (phi = -1, Dirichlet -1) with u = 0 on the faces, at the physics
 /// of the other integration tests. validate() accepts dt = 0.005 for every
 /// scheme and stencil: the thermal limits are 0.0133 (Euler and Heun, 7-point)
-/// and above; the phase-field limit is 0.0106.
+/// and above; the phase-field limit is 0.0104.
 SimulationConfig mode_config(TimeScheme scheme, StencilType stencil) {
     SimulationConfig cfg;
     cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = kN;

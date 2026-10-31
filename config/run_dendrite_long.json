@@ -18,7 +18,7 @@
         "dy": 0.4,
         "dz": 0.4
     },
-    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.0003125 is the largest of the candidates 0.02, 0.01, 0.005, ... (each half the previous) whose time error does not exceed the spatial error of h = 0.4 in the max norm and in the mean, both measured with this configuration's physics in a box of side 50.4 up to t = 15 (docs/THEORY.md section 4.3). The explicit thermal update is stable for dt <= 0.026087 (27-point stencil, h = 0.4, D = 2; docs/THEORY.md section 10.1). max_steps = 960000 (t = 300) is an upper bound: exit_on_saturation stops the run cleanly, with a final checkpoint and VTK frame, once phi > saturation_threshold next to a wall (measured: step 113600, t = 35.5, when the six <100> tips reach the walls). A step takes 14.4 ms on an RTX 4090 (median of 200 steps), so the 113600 steps to saturation are 27 minutes of compute at that rate.",
+    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.0003125 is the largest of the candidates 0.02, 0.01, 0.005, ... (each half the previous) whose time error does not exceed the spatial error of h = 0.4 in the max norm and in the mean, both measured with this configuration's physics in a box of side 50.4 up to t = 15 (docs/THEORY.md section 4.3). The explicit thermal update is stable for dt <= 0.026087 (27-point stencil, h = 0.4, D = 2; docs/THEORY.md section 10.1). max_steps = 960000 (t = 300) is an upper bound: exit_on_saturation stops the run cleanly, with a final checkpoint and VTK frame, once phi > saturation_threshold next to a wall (measured: step 112000, t = 35.0, when the six <100> tips reach the walls). A step takes 14.9 ms on an RTX 4090 (median of 200 steps), so the 112000 steps to saturation are 28 minutes of compute at that rate.",
     "time": {
         "dt": 0.0003125,
         "dt_min": 1e-6,
@@ -32,14 +32,14 @@
         "saturation_check_freq": 1600
     },
     "stencil": "27pt",
-    "_comment_output": "VTK every 8000 steps (2.5 time units): 16 frames up to saturation, up to 88 MB each, 1.06 GB in total.",
+    "_comment_output": "VTK every 8000 steps (2.5 time units): 15 frames up to saturation, up to 88 MB each, 0.98 GB in total.",
     "output": {
         "frequency": 8000,
         "output_dir": "./out/run_dendrite_long",
         "format": "vts",
         "async_io": true
     },
-    "_comment_checkpoint": "Checkpoint every 48000 steps (15 time units, 11.5 minutes of compute at 14.4 ms per step on an RTX 4090), keep_last = 3 (340 MB). The resume target picks the latest intact checkpoint.",
+    "_comment_checkpoint": "Checkpoint every 48000 steps (15 time units, 11.9 minutes of compute at 14.9 ms per step on an RTX 4090), keep_last = 3 (340 MB). The resume target picks the latest intact checkpoint.",
     "checkpoint": {
         "frequency": 48000,
         "checkpoint_dir": "./checkpoints/run_dendrite_long",

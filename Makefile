@@ -74,11 +74,11 @@ VIZ_PHI_CMAP       ?= coolwarm
 VIZ_U_CMAP         ?= plasma
 VIZ_EXTRA_ARGS     ?=
 
-# Long-run dendrite simulation (resumable; 27 minutes of compute on an RTX 4090)
+# Long-run dendrite simulation (resumable; 28 minutes of compute on an RTX 4090)
 LONG_CONFIG        ?= config/run_dendrite_long.json
 LONG_LOG           ?= run_long.log
 
-# Large-box dendrite simulation (384^3; 179 minutes of compute on an RTX 4090)
+# Large-box dendrite simulation (384^3; 182 minutes of compute on an RTX 4090)
 LARGE_CONFIG       ?= config/run_dendrite_large.json
 LARGE_LOG          ?= run_large.log
 
@@ -308,12 +308,12 @@ cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in 
 	$(MAKE) cuda-run CONFIG=config/run_vtk.json
 
 cuda-run-dendrite: CONFIG=config/run_dendrite.json
-cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, beta=0.25, euler, dt=0.000625, t/tau0=31) -> VTS
+cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, beta=0.25, euler, dt=0.000625, t/tau0=32) -> VTS
 
 # ── Long resumable dendrite run (with crash-safe checkpointing) ──────────
 # A 192^3 run at eps = 0.15 until the saturation guard stops it (measured:
-# step 113600, t = 35.5; at 14.4 ms per step on an RTX 4090 that is 27
-# minutes of compute). Checkpoints every 48000 steps (11.5 minutes of
+# step 112000, t = 35.0; at 14.9 ms per step on an RTX 4090 that is 28
+# minutes of compute). Checkpoints every 48000 steps (11.9 minutes of
 # compute), keep_last=3, so an interrupt loses at most that much.
 #
 # Backgrounding (mandatory for runs longer than your terminal session):
@@ -330,7 +330,7 @@ cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, be
 # The recipe is one command line without $(MAKE), so `make -n` only prints it.
 cuda-run-dendrite-long: cuda-build ## (docker) Long 192^3 dendrite run (eps=0.15) until saturation, with checkpoints
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
-	@echo "==> LONG dendrite run on 192^3 until saturation (RTX 4090: 27 min of compute, 1.06 GB VTK output)."
+	@echo "==> LONG dendrite run on 192^3 until saturation (RTX 4090: 28 min of compute, 0.98 GB VTK output)."
 	@echo "    Background it so it survives terminal disconnect:"
 	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-long'"
 	@echo "       # OR"
@@ -348,15 +348,15 @@ cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from its newest
 
 # ── Large-box dendrite run (384^3, until saturation) ──────────────────────
 # Tanh initial condition, eps = 0.10 with willmore_beta. Measured on an RTX
-# 4090: 5.70 GiB of GPU memory and 118 ms per step. The saturation guard
-# stops it at step 91200 (t = 114): 179 minutes of compute at that rate.
+# 4090: 5.70 GiB of GPU memory and 122 ms per step. The saturation guard
+# stops it at step 89600 (t = 112): 182 minutes of compute at that rate.
 # Backgrounding:
 #   tmux new -s dendrite 'make cuda-run-dendrite-large'
 #   nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &
 # Resume after interrupt:  make cuda-resume-dendrite-large
-cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run until saturation (179 min on an RTX 4090)
+cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run until saturation (182 min on an RTX 4090)
 	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
-	@echo "==> LARGE dendrite run on 384^3 until saturation (RTX 4090: 179 min of compute, 22 GB VTK output)."
+	@echo "==> LARGE dendrite run on 384^3 until saturation (RTX 4090: 182 min of compute, 21 GB VTK output)."
 	@echo "    Background it:"
 	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-large'"
 	@echo "       nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &"

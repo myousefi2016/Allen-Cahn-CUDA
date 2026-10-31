@@ -52,7 +52,7 @@ PerFaceBoundary u_faces() {
 /// right-hand side, whose solve returns zero), so an IMEX step is exactly the
 /// backward-Euler heat solve (I - dt D Lap_h) u_new = u_old. The Willmore
 /// term (beta = 0.25, as shipped at eps = 0.12) raises the explicit
-/// phase-field limit to 0.7147 on the anisotropic grid and 0.7161 on the
+/// phase-field limit to 0.6998 on the anisotropic grid and 0.7011 on the
 /// cubic one (docs/THEORY.md 10.1), above the dt of these tests; at
 /// beta = 0.6 no mode of the liquid grows at any dt (limit +infinity).
 SimulationConfig imex_config(StencilType stencil, double dt, int domains = 1, double beta = 0.25) {
@@ -318,7 +318,7 @@ TEST_F(ImexJacobiTest, ErrorIsWithinTheToleranceAtLargeDt) {
 // A NaN in the temperature is not a converged solve: the sweeps carry it,
 // and the step must fail instead of returning the iterate. Without the
 // Willmore term (beta = 0, at dt 0.005 below the explicit phase-field limit
-// 0.0093 of this grid), so that the Jacobi rule, not the Willmore solve,
+// 0.0091 of this grid), so that the Jacobi rule, not the Willmore solve,
 // meets the NaN first.
 TEST_F(ImexJacobiTest, NonFiniteTemperatureThrows) {
     for (int domains : {1, 3}) {

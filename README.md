@@ -36,7 +36,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **O(1) field swap**: pointer swap (`std::swap` of `DeviceField` handles) replaces O(N) data-copy kernels at the end of each step.
 - **Multi-GPU support**: X-axis domain decomposition with `cudaMemcpyPeerAsync` halo exchange (one-plane halos, the reach of every stencil), bit-identical to a single-GPU run.
 - **Anisotropic solidification**: cubic anisotropy A(n) with 4-fold crystal symmetry, including the corrected isotropic spherical-average fallback `1 − 3ε/5` when the gradient vanishes.
-- **Strong anisotropy (ε > 1/15)**: the Allen–Cahn equation is ill-posed there (its solutions do not converge under grid refinement), so `physics.willmore_beta > 0` is required. It adds the Willmore regularisation, integrated linearly implicitly by the Euler and IMEX schemes: every step solves a symmetric positive-definite system by conjugate gradients with a single-precision Chebyshev polynomial preconditioner whose degree guarantees two outer iterations in exact arithmetic; at the shipped configurations' h = 0.4 every measured step took two (`docs/THEORY.md` §4.3–4.4).
+- **Strong anisotropy (ε > 1/15)**: the Allen–Cahn equation is ill-posed there (its solutions do not converge under grid refinement), so `physics.willmore_beta > 0` is required. It adds the Willmore regularisation, integrated linearly implicitly by the Euler and IMEX schemes: every step solves a symmetric positive-definite system by conjugate gradients with a single-precision Chebyshev polynomial preconditioner whose degree guarantees two outer iterations in exact arithmetic; at the shipped configurations' h = 0.4 every step of their measured dt ladders took two (`docs/THEORY.md` §4.3–4.4).
 - **Two Laplacian stencils**: standard 7-point and isotropic 27-point (Patra–Karttunen weights `14·face + 3·edge + 1·corner − 128·center`, divisor `30·h²`).
 - **Per-face boundary conditions**: independent Dirichlet / Neumann / Periodic / Robin on each of the 6 faces (`x_lo`, `x_hi`, `y_lo`, `y_hi`, `z_lo`, `z_hi`); periodic identifies the two faces of an axis, so it must be set on both (`docs/DESIGN.md` §5.2).
 - **Adaptive time stepping**: target-tolerance control via parallel reduction, capped at `cfl_safety` times the explicit stability limits (`docs/THEORY.md` §10.1: exact for the thermal update, a necessary condition for the phase field).
@@ -45,7 +45,7 @@ Built with C++23, CUDA 12+, VTK 9, and CMake 3.28+. Designed for production envi
 - **Fail-loud runs**: a NaN/Inf field stops the run with an error before anything is written (never a corrupted checkpoint), a missing `restart_file` is an error rather than a silent cold start, and `SIGINT`/`SIGTERM` exit with 130/143 after writing a resumable checkpoint.
 - **Saturation guard**: an O(N²) reduction over the cells next to the walls stops the run cleanly (final checkpoint + output, exit 0) once the solid reaches a wall, where the simulation stops modelling growth into an unbounded melt.
 - **Thread-safe LRU cache** (`std::shared_mutex`) for the VTK writer's field statistics. `src/core/` also holds a striped concurrent map (16 shards) and a spatial hash (FNV-1a 3D bucketing); the program uses neither, and only their unit tests include them.
-- **Comprehensive test suite**: 29 unit-test files, 8 integration-test files and twelve end-to-end tests (four of the binary, six of the Makefile's targets and docker-compose.yml, two of the documentation); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
+- **Comprehensive test suite**: 30 unit-test files, 8 integration-test files and twelve end-to-end tests (four of the binary, six of the Makefile's targets and docker-compose.yml, two of the documentation); mathematical correctness checked against analytic solutions (Laplacian on quadratic fields, anisotropy along axes/diagonals, etc.).
 - **Docker infrastructure**: multi-stage `dev` / `test` / `prod` images plus a one-shot `cuda-dev` image for the `make cuda-*` workflow.
 - **Kubernetes orchestration**: batch-Job manifests with non-root pod security context, RBAC (ServiceAccount + Role + RoleBinding), NetworkPolicy (deny-ingress + DNS-only egress), CUDA-driver init container, and Kustomize overlays for `dev` and `prod` namespaces.
 - **CI/CD**: GitHub Actions: the full suite in Debug and Release on a self-hosted GPU runner, the CPU tests without a GPU, a clang-format gate and an advisory clang-tidy run, the visualizer's smoke test, the `dev` / `test` / `prod` / `cuda-dev` Docker builds (the `test` image runs its suite), and K8s manifest validation via `kubeconform` (offline).
@@ -294,7 +294,7 @@ make cuda-test-integration       # integration tests only
 make cuda-run-small              # 128^3 quick benchmark      -> ./out/benchmark_small (raw)
 make cuda-run-vtk                # 128^3 dendrite             -> ./out/run_vtk (.vts for ParaView)
 make cuda-run-dendrite           # 160^3 dendrite (Euler + Willmore beta=0.25, 27pt, eps=0.12) -> ./out/run_dendrite (.vts)
-make cuda-run-dendrite-large     # 384^3 dendrite until saturation (179 min of compute on an RTX 4090)
+make cuda-run-dendrite-large     # 384^3 dendrite until saturation (182 min of compute on an RTX 4090)
 make cuda-run-dendrite-long      # 192^3 long run until saturation, crash-safe checkpointing
 make cuda-resume-dendrite        # resume the long run from latest intact checkpoint
 make cuda-resume-dendrite-large  # resume the large run
@@ -316,16 +316,16 @@ make cuda-image-rebuild          # force-rebuild the dev image (after apt-pkg ch
 
 `cuda-run-dendrite-long` grows a 192³ crystal at ε = 0.15 (β = 0.401, Euler,
 dt = 0.0003125) until the saturation guard stops it. Measured on an RTX 4090:
-the guard fires at step 113 600 (t = 35.5, 63 τ₀), when the six ⟨100⟩ tips
-reach the walls, with 16 frames (1.06 GB), and a step takes 14.4 ms (median
-of 200 steps), so the run needs 113 600 × 14.4 ms = 27 minutes of compute.
+the guard fires at step 112 000 (t = 35.0, 63 τ₀), when the six ⟨100⟩ tips
+reach the walls, with 15 frames (0.98 GB), and a step takes 14.9 ms (median
+of 200 steps), so the run needs 112 000 × 14.9 ms = 28 minutes of compute.
 The crystal is a convex octahedron with rounded ⟨100⟩
 corners at t = 17.5 and has grown six ⟨100⟩ tips with concave faces between
 them by the end. `cuda-run-dendrite` (160³, ε = 0.12) ends at t = 17.5
-(31 τ₀).
+(32 τ₀).
 
 Crash safety:
-- Checkpoints every 48 000 steps (15 time units, 11.5 minutes of compute at 14.4 ms per step on an RTX 4090, the most lost on `SIGKILL` / suspend). The background writer saves a checkpoint only after every frame before it is on disk (written, synced and renamed into place), so a resume, which continues after the checkpoint's step, misses no frame.
+- Checkpoints every 48 000 steps (15 time units, 11.9 minutes of compute at 14.9 ms per step on an RTX 4090, the most lost on `SIGKILL` / suspend). The background writer saves a checkpoint only after every frame before it is on disk (written, synced and renamed into place), so a resume, which continues after the checkpoint's step, misses no frame.
 - `keep_last = 3` (340 MB on disk for 192³).
 - `cuda-resume-dendrite` runs the binary with `--resume
   config/run_dendrite_long.json`: it restores the newest checkpoint in the
@@ -473,9 +473,9 @@ them entirely.
 ```bash
 make cuda-image                # one-time, ~3 min
 make cuda-dendrite-demo        # build + 160^3 dendrite run + production viz
-                               # 6.4 and 8.7 min in two runs on an RTX 4090:
-                               # build ~40 s, 28 000 steps 229 s, rendering
-                               # 36 frames and the video 2-4 min
+                               # 6.5 and 6.6 min in two runs on an RTX 4090:
+                               # build 43-44 s, 28 000 steps 228 s, rendering
+                               # 36 frames and the video 1.9-2.1 min
 ```
 
 Output:
@@ -632,7 +632,7 @@ limits of `time.dt` for its scheme and stencil:
 ```
 valid: config/run_dendrite.json
 thermal dt limit (scheme euler, stencil 27pt): 0.026086956521739132
-phase-field dt limit (scheme euler, any stencil): 0.29130524887671538
+phase-field dt limit (scheme euler, any stencil): 0.2852363895251171
 ```
 
 The values are printed to 17 significant digits, as in the rejection
@@ -813,7 +813,7 @@ AC_REQUIRE_GPU=1 ctest --test-dir build --output-on-failure --no-tests=error
 
 | Suite             | Files | ctest tests |
 |-------------------|-------|-------------|
-| Unit tests        | 29    | 380         |
+| Unit tests        | 30    | 382         |
 | Integration tests | 8     | 18          |
 | End-to-end tests  | 12    | 12          |
 
@@ -836,7 +836,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
   '
 ```
 
-### Unit tests (`tests/unit/`, 29 files)
+### Unit tests (`tests/unit/`, 30 files)
 
 | File                          | What it covers                                                                  |
 |-------------------------------|----------------------------------------------------------------------------------|
@@ -844,6 +844,7 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `test_GridValidation.cu`      | Configuration-time grid validation                                               |
 | `test_StabilityLimits.cpp`    | Explicit stability limits: closed forms (RK4's interval is the root of its polynomial, the phase-field limit over the uniform liquid's modes and the liquid-gradient modes), a too small `willmore_beta` rejected with the growing mode and its certified bound, `validate()` rejects a fixed dt one ulp above each limit, with both numbers told apart, and adaptive settings above the cap; the `--validate-config` report (each limit to 17 digits, `none` for +∞, the adaptive cap only with `time.adaptive`) |
 | `test_LiquidModes.cpp`        | The certified liquid-mode search against binary128 references: every interval operation (at every binade edge, past overflow, inverse roots at 200000 points) and the sine and cosine enclosures contain the exact values; the Hessian's closed form is the derivative of the kernel's flux; the coefficients' enclosures contain their values and, by the mean value theorem, difference quotients of their first and second derivatives; each of the three box bounds is an upper bound on boxes of every size and at the stationary checkerboards, and the theta bounds for every coefficient in their intervals; a box is dropped only without a stationary point; the search domain and the symmetries it relies on; the reported growth maximum lies in [attained, bound] (independent search, 20000 sampled modes, permuted spacings) and a damping witness's bound holds (also just below the smallest regularising beta); the branch and bound alone, without the seed search, finds and certifies the same extrema; a search out of budget reports the range its extremum lies in |
+| `test_ThinInterface.cpp`      | The thin-interface constants against the model's own equations (`docs/THEORY.md` §5.2): the critical nucleus of radius R is in equilibrium at u = −2d₀/R up to c(W₀/R)², second order from R = 10 to 80 W₀, so `a₁ = 5√2/8` makes `d₀` the capillary length; the kinetic coefficient of the planar travelling wave (dΔ/dV at rest, on 1D grids from h = W₀/10 to W₀/80) tends to β₀ at second order for the shipped physics, with β₀ > 0 and at another scale, so with `a₂ = 47/75` `β₀` is the kinetic coefficient |
 | `test_SimulationConfig.cpp`   | JSON config parsing (unknown and repeated keys rejected, integer fields only ints in the range of `int`, per-face all-six rule, only the BC type's own parameters), validation (Willmore rules, periodic pairs, Robin signs and range, the power-of-two scaling of Robin coefficients, finite BC parameters, phase-field boundary data in [−1, 1], every real parameter finite, τ₀ and λ finite and positive, τ₀A(n)² a positive double, λδ on a cold start, the single-precision Willmore preconditioner's range at exact edges, non-empty directories, several device ids only with `multi_gpu`, at least 2 X planes per domain; epsilon in [0, 1/3) at its exact edges, W0, D and d0 > 0, max_steps >= 1, dt_min and dt_max positive and ordered, output frequency >= 1, adaptive tolerance > 0, at least one device, each with its own message), defaults, derived quantities |
 | `test_KernelRanges.cpp`       | The quotient bounds of `compute_An` against binary128, `d_L`, and the relaxation-time range against every A of eight evaluation patterns over 200000 gradients |
 | `test_FieldData.cpp`          | Host field allocation, accessors, copies, layout invariants                      |
@@ -931,7 +932,7 @@ Allen-Cahn-CUDA/
 │   ├── main.cpp               # Entry point + signal handler
 │   └── CMakeLists.txt
 ├── tests/
-│   ├── unit/                  # 29 unit-test files
+│   ├── unit/                  # 30 unit-test files
 │   ├── integration/           # 8 integration-test files
 │   ├── e2e/                   # signal_exit.py, cli_arguments.py, k8s_job_resume.py, validate_shipped_configs.py,
 │   │                          # makefile_dev_user.py, makefile_k8s_logs.py, makefile_resume_call.py, makefile_run_signals.py, makefile_run_status.py, makefile_viz_out.py,

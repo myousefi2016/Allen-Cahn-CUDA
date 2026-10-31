@@ -254,7 +254,7 @@ TEST_F(WillmoreTest, RequiresEulerOrImex) {
 TEST(WillmoreConfig, StrongAnisotropyRequiresRegularisation) {
     SimulationConfig cfg;
     cfg.grid.Nx = cfg.grid.Ny = cfg.grid.Nz = 10;
-    // Below the explicit phase-field limit at eps = 1/15 (0.0096, THEORY 10.1),
+    // Below the explicit phase-field limit at eps = 1/15 (0.0094, THEORY 10.1),
     // so only the regularisation rule decides.
     cfg.time.dt = 0.005;
     cfg.physics.epsilon = 1.0 / 15.0;
@@ -271,7 +271,7 @@ TEST(WillmoreConfig, StrongAnisotropyRequiresRegularisation) {
 // grid, a strongly anisotropic regularised seed advanced to t = 0.4 has
 // successive max-norm differences shrinking by ~2 per halving of dt. The
 // order approaches 1 from below as dt shrinks: measured on an RTX 4090 from
-// dt = 0.02 it is 0.68, 0.82, 0.91, 0.95, 0.97, so the test uses the
+// dt = 0.02 it is 0.68, 0.82, 0.90, 0.95, 0.97, so the test uses the
 // asymptotic range dt = 0.0025 ... 0.0003125.
 TEST_F(WillmoreTest, FirstOrderConvergenceInTime) {
     const int N = 24;

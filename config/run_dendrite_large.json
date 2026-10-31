@@ -18,7 +18,7 @@
         "dy": 0.4,
         "dz": 0.4
     },
-    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.00125 is the largest of the candidates 0.02, 0.01, 0.005, ... (each half the previous) whose time error does not exceed the spatial error of h = 0.4 in the max norm and in the mean, both measured with this configuration's physics in a box of side 50.4 up to t = 15 (docs/THEORY.md section 4.3). The explicit thermal update is stable for dt <= 0.026087 (27-point stencil, h = 0.4, D = 2; docs/THEORY.md section 10.1). max_steps = 160000 (t = 200) is an upper bound: the saturation guard stops the run cleanly when the crystal reaches the walls (measured: step 91200, t = 114; six <100> arms with concave faces between them by then). A step takes 118 ms on an RTX 4090 (median of 200 steps), so the 91200 steps to saturation are 179 minutes of compute at that rate.",
+    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.00125 is the largest of the candidates 0.02, 0.01, 0.005, ... (each half the previous) whose time error does not exceed the spatial error of h = 0.4 in the max norm and in the mean, both measured with this configuration's physics in a box of side 50.4 up to t = 15 (docs/THEORY.md section 4.3). The explicit thermal update is stable for dt <= 0.026087 (27-point stencil, h = 0.4, D = 2; docs/THEORY.md section 10.1). max_steps = 160000 (t = 200) is an upper bound: the saturation guard stops the run cleanly when the crystal reaches the walls (measured: step 89600, t = 112; six <100> arms with concave faces between them by then). A step takes 122 ms on an RTX 4090 (median of 200 steps), so the 89600 steps to saturation are 182 minutes of compute at that rate.",
     "time": {
         "dt": 0.00125,
         "dt_min": 1e-6,
@@ -32,14 +32,14 @@
         "saturation_check_freq": 800
     },
     "stencil": "27pt",
-    "_comment_output": "VTK every 2000 steps (2.5 time units): 47 frames up to saturation, up to 630 MB each, 21.5 GB in total.",
+    "_comment_output": "VTK every 2000 steps (2.5 time units): 46 frames up to saturation, up to 630 MB each, 21.0 GB in total.",
     "output": {
         "frequency": 2000,
         "output_dir": "./out/run_dendrite_large",
         "format": "vts",
         "async_io": true
     },
-    "_comment_checkpoint": "Checkpoint every 8000 steps (10 time units, 15.7 minutes of compute at 118 ms per step on an RTX 4090). 906 MB per checkpoint, keep_last = 3: 2.7 GB.",
+    "_comment_checkpoint": "Checkpoint every 8000 steps (10 time units, 16.3 minutes of compute at 122 ms per step on an RTX 4090). 906 MB per checkpoint, keep_last = 3: 2.7 GB.",
     "checkpoint": {
         "frequency": 8000,
         "checkpoint_dir": "./checkpoints/run_dendrite_large",

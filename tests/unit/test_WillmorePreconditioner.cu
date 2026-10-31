@@ -467,11 +467,11 @@ TEST_F(WillmorePreconditionerTest, SpectrumBoundsContainEveryEigenvalue) {
 // residual, a relative (b/a) u_32 for the D-scaled operator. k (b/a) u_32 is
 // that first-order size of the accumulated difference. It leaves out the
 // number of roundings per step, so it is a tolerance, not a proven bound: the
-// measured differences (printed, 6.2e-8 to 9.0e-8 on an RTX 4090) lie more
+// measured differences (printed, 6.1e-8 to 8.0e-8 on an RTX 4090) lie more
 // than 100 times below it, and an error in the operator (a wrong ghost rule,
 // stencil or step size) shows as O(1). An error in the polynomial does not:
 // with explicit residuals any nearby polynomial also approximates A^-1 r to
-// about its own error bound 1/T_k(sigma) (4.2e-6 to 8.2e-6 here), within this
+// about its own error bound 1/T_k(sigma) (4.5e-6 to 6.3e-6 here), within this
 // tolerance, so one step fewer or another step's coefficients pass;
 // EveryChebyshevStepIsThePlansStep tests the polynomial step by step. The
 // solve uses a dt other than the configuration's, as adaptive stepping does.

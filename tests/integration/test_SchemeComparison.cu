@@ -180,7 +180,7 @@ TEST_F(SchemeComparisonTest, HeunIntermediateAccuracy) {
 // three times its stability limit 2 (docs/THEORY.md 10.1): validate()
 // rejects the Euler configuration, and run anyway Euler overflows, while
 // IMEX is accepted and stays finite. d0 = 0.1 keeps the phase-field update,
-// explicit in both schemes, inside its own limit (0.0531 here, at a <111>
+// explicit in both schemes, inside its own limit (0.0520 here, at a <111>
 // gradient of the liquid; docs/THEORY.md 10.1).
 TEST_F(SchemeComparisonTest, IMEXStableBeyondTheExplicitThermalLimit) {
     const int N = 16, steps = 500;

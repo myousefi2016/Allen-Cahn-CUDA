@@ -71,14 +71,20 @@ Allen–Cahn RHS for that stage. Heun's two stages are Euler steps and use
 Members of `PhysicsParams` in `src/core/SimulationConfig.hpp`:
 
 ```cpp
-Real a1 = 1.25 / std::sqrt(2.0);   // ≈ 0.8839
-Real a2 = 0.64;
+Real a1 = 1.25 / std::sqrt(2.0);   // 5 sqrt(2)/8 ≈ 0.88388
+Real a2 = 47.0 / 75.0;             // ≈ 0.62667
 Real lambda() const { return W0 * a1 / d0; }
 Real tau0()   const { return (W0*W0*W0 * a1 * a2) / (d0 * D)
                           + (W0*W0 * beta0) / d0; }
 ```
 
-The `beta0` term is the kinetic-coefficient contribution (defaults to 0).
+`a1` and `a2` are the thin-interface constants of this model
+(`docs/THEORY.md` §5.2): with them `d0` is the capillary length and `beta0`
+the kinetic coefficient of the sharp-interface limit (defaults to 0). The
+first term of `tau0` makes the interface kinetics vanish, the `beta0` term
+adds `beta0`. With `willmore_beta > 0` this holds only along orientations
+with A(n) = 1: elsewhere the regularisation changes the flat interface
+profile the constants are integrals of (`docs/THEORY.md` §4.3).
 
 ---
 
@@ -258,7 +264,7 @@ exchanges:
 | Constant | Value | Where |
 |---|---|---|
 | `kWillmoreCgTolerance` | 1e-10 (relative residual) | `WillmoreSolve.cuh` |
-| `kWillmoreCgMaxIterations` | 1000 outer iterations, then throw (a backstop, not derived from a bound; measured solves take 2 or 3, `docs/THEORY.md` §4.4) | `WillmoreSolve.cuh` |
+| `kWillmoreCgMaxIterations` | 1000 outer iterations, then throw (a backstop, not derived from a bound; measured solves take at most 3, `docs/THEORY.md` §4.4) | `WillmoreSolve.cuh` |
 | Chebyshev degree | lowest that guarantees 2 outer iterations in exact arithmetic (11 for run_dendrite: β = 0.25, dt = 0.000625) | `chebyshev_plan` |
 
 The single-precision kernels (`WillmoreKernels.cu`) cover the interior with a

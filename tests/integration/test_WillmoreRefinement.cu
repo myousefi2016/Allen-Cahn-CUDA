@@ -116,11 +116,11 @@ protected:
 // length 0.528 W0) the ladder converges by the criterion of section 4.3: a
 // ratio above 2 in both norms, i.e. each halving of h removes more than half
 // of the difference. The unregularised max-norm ratio is not asserted: on the
-// common nodes it depends on where the grid-scale structure falls (0.889
-// here, 2.61 in the larger box of section 4.3).
+// common nodes it depends on where the grid-scale structure falls (0.783
+// here, 2.25 in the larger box of section 4.3).
 // Both differences are taken on the interior nodes of the h = 0.8 grid.
-// Measured on an RTX 4090: unregularised 0.889 (max norm) and 0.406 (mean),
-// regularised 3.56 and 3.90.
+// Measured on an RTX 4090: unregularised 0.783 (max norm) and 0.633 (mean),
+// regularised 3.49 and 3.87.
 TEST_F(WillmoreRefinementTest, RegularisedConvergesUnregularisedDoesNot) {
     for (double beta : {0.0, 0.25}) {
         std::vector<std::vector<double>> phi;

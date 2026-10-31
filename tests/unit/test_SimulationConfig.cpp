@@ -963,7 +963,7 @@ TEST_F(SimulationConfigTest, InterfaceWidthDiffusivityAndCapillaryLengthMustBePo
     diffusivity.physics.beta0 = 2.0;
     diffusivity.physics.D = 2.0;
     EXPECT_NO_THROW(diffusivity.validate());
-    // Only the sign of D differs: tau0 = -a1 a2 + 4 = 3.43, no thermal limit under IMEX,
+    // Only the sign of D differs: tau0 = -a1 a2 + 4 = 3.45, no thermal limit under IMEX,
     // and time.dt within the phase-field limit.
     diffusivity.physics.D = -2.0;
     ASSERT_TRUE(std::isfinite(diffusivity.physics.tau0()) && diffusivity.physics.tau0() > 0.0)
@@ -1157,7 +1157,7 @@ TEST_F(SimulationConfigTest, WillmoreDiagonalFitsSinglePrecision) {
 // willmore_beta d_L: their float sum must be finite at the largest relaxation
 // time and the smallest step (time.dt, and time.dt_min with adaptive steps).
 // Record 332 (dt = 5e-324, tau/dt beyond the double range) and record 4 (D =
-// 1e-300, tau0 = 5.6e299) were accepted. The edge is exact in tau0 at eps = 0,
+// 1e-300, tau0 = 1.1e300) were accepted. The edge is exact in tau0 at eps = 0,
 // where A = 1 and tau = tau0.
 TEST_F(SimulationConfigTest, WillmorePreconditionerDiagonalAtTheSmallestStep) {
     auto cfg = unit_constants();

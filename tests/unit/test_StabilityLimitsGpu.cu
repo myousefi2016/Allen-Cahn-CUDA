@@ -197,8 +197,9 @@ TEST_F(StabilityLimitsGpuTest, GradientInTheLiquidLowersThePhaseFieldLimit) {
 // factor per step, its projection over 20 steps, is below 1 at 0.99 and
 // above 1 at 1.01 times its frozen limit 2 tau0 A^2 / (Lam - beta L), and
 // phase_field_dt_limit is at most that limit and within 1e-4 of it (the
-// continuous optimum is theta = 0.6518 pi). At 0.99 times the limit the
-// checkerboards gave (0.031570) the wave grows.
+// continuous optimum is theta = 0.6518 pi). At 0.99 times the limit of the
+// gradient's (pi, 0, pi) checkerboard, the limit validate() took when only the
+// checkerboards counted (44280eb), the wave grows.
 TEST_F(StabilityLimitsGpuTest, WaveAcrossAGradientBindsWithTheWillmoreTerm) {
     auto cfg = config(TimeScheme::IMEX, StencilType::Standard7Point);
     cfg.grid.Nx = cfg.grid.Nz = 48;
@@ -206,24 +207,26 @@ TEST_F(StabilityLimitsGpuTest, WaveAcrossAGradientBindsWithTheWillmoreTerm) {
     cfg.physics.epsilon = 0.07;
     cfg.physics.willmore_beta = 0.0149;
     const double pi = 3.14159265358979323846, theta = 2 * pi * 15 / 46, h = 0.4;
-    // the mode's frozen-coefficient limit, from the definitions
+    // a mode's frozen-coefficient limit, from the definitions
     const double n[3] = {1 / std::sqrt(2.0), 0.0, 1 / std::sqrt(2.0)};
     double H[3][3];
     gradient_energy_hessian(n, cfg.physics.epsilon, H);
-    const double th[3] = {theta, 0.0, -theta};
-    double sigma = 0, mu = 0;
-    for (int d = 0; d < 3; ++d) {
-        const double c = 2 * (1 - std::cos(th[d])) / (h * h);
-        mu += c;
-        sigma += H[d][d] * c;
-        for (int e = 0; e < 3; ++e)
-            if (e != d)
-                sigma += H[d][e] * std::sin(th[d]) * std::sin(th[e]) / (h * h);
-    }
     const double A = 1 - cfg.physics.epsilon; // A(<101>) = 1 - 3 eps + 4 eps / 2
     const double tau = cfg.physics.tau0() * A * A;
-    const double lam = sigma + 2, L = (mu + 2) * (mu + 2);
-    const double limit = 2 * tau / (lam - cfg.physics.willmore_beta * L);
+    auto frozen_limit = [&](const double(&th)[3]) {
+        double sigma = 0, mu = 0;
+        for (int d = 0; d < 3; ++d) {
+            const double c = 2 * (1 - std::cos(th[d])) / (h * h);
+            mu += c;
+            sigma += H[d][d] * c;
+            for (int e = 0; e < 3; ++e)
+                if (e != d)
+                    sigma += H[d][e] * std::sin(th[d]) * std::sin(th[e]) / (h * h);
+        }
+        const double lam = sigma + 2, L = (mu + 2) * (mu + 2);
+        return 2 * tau / (lam - cfg.physics.willmore_beta * L);
+    };
+    const double limit = frozen_limit({theta, 0.0, -theta});
     EXPECT_LE(phase_field_dt_limit(cfg), limit);
     EXPECT_NEAR(phase_field_dt_limit(cfg) / limit, 1.0, 1e-4);
 
@@ -258,9 +261,9 @@ TEST_F(StabilityLimitsGpuTest, WaveAcrossAGradientBindsWithTheWillmoreTerm) {
         return std::pow(std::fabs(proj / norm / eta), 1.0 / 20);
     };
     const double below = factor(0.99 * limit), above = factor(1.01 * limit);
-    // validate() accepted every dt up to 0.031569931282615871 when only the
+    // validate() accepted every dt up to this checkerboard's limit when only the
     // checkerboards counted: the wave grows well below it.
-    const double old_limit = 0.031569931282615871, at_old = factor(0.99 * old_limit);
+    const double old_limit = frozen_limit({pi, 0.0, pi}), at_old = factor(0.99 * old_limit);
     std::printf("<101> gradient, wave theta = 2 pi 15/46: limit %.9f (phase_field_dt_limit "
                 "%.9f), |g| %.9f at 0.99x, %.9f at 1.01x, %.9f at 0.99x the checkerboard limit\n",
                 limit, phase_field_dt_limit(cfg), below, above, at_old);
