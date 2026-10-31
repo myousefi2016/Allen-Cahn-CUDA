@@ -177,6 +177,16 @@ add_test(NAME e2e.MakefileDevUser
 )
 set_tests_properties(e2e.MakefileDevUser PROPERTIES TIMEOUT 60)
 
+# `make docker-test` and `make docker-run` build the test and prod images (which carry
+# the tree they are built from) before running them: `make -n` prints only plain lines,
+# with one docker compose run of the service and --build, and runs no docker (GNU make on
+# PATH; no docker).
+add_test(NAME e2e.MakefileComposeBuild
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_compose_build.py
+            ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(e2e.MakefileComposeBuild PROPERTIES TIMEOUT 60)
+
 # `make cuda-visualize` renders a run into viz/<name of the run> however VIZ_IN
 # is spelled (trailing or repeated slashes, '.'). Runs `make -n` (GNU make on
 # PATH; no binary, docker or GPU).

@@ -8,8 +8,12 @@
 #
 # Examples:
 #   make docker-shell        (dev, built with your user IDs; see the dev service)
-#   docker compose --profile test run test
-#   docker compose --profile prod run prod /app/config/default.json
+#   make docker-test         docker compose --profile test run --rm --build test
+#   mkdir -p output && HOST_UID=$(id -u) HOST_GID=$(id -g) \
+#     docker compose --profile prod run --rm --build prod /app/config/default.json
+# Each builds its image first: compose otherwise runs an existing one, and the test and
+# prod images carry the tree they were built from (Docker Compose 2.13 or later for
+# `run --build`).
 #
 # The prod image runs from /output (the volume), so results land in
 # ./output/<the config's output_dir and checkpoint_dir>, e.g. ./output/out/default
@@ -27,8 +31,9 @@ services:
       # HOST_UID and HOST_GID are unset), and the bind-mounted checkout is
       # writable when they are the host user's: `make docker-shell` and `make
       # docker-compose-up` set them to the caller's and pass --build, since
-      # compose otherwise reuses an existing allencahn-cuda:dev. By hand:
-      #   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile dev up --build dev
+      # compose otherwise reuses an existing allencahn-cuda:dev. By hand (a shell, as
+      # make docker-shell):
+      #   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile dev run --rm --build dev
       args:
         USER_UID: "${HOST_UID:-1000}"
         USER_GID: "${HOST_GID:-1000}"

@@ -487,20 +487,20 @@ docker-build-prod: ## Build production Docker image
 
 docker-build-all: docker-build-dev docker-build-test docker-build-prod ## Build all Docker images
 
-docker-test: ## Run tests inside Docker container
+docker-test: ## Run the test suite in the test image, rebuilt from this checkout
 	@echo "==> Running tests in Docker..."
-	docker compose --profile test run --rm test
+	docker compose --profile test run --rm --build test
 
-docker-run: ## Run production simulation in Docker container (results in ./output)
+docker-run: ## Run the production simulation in the prod image, rebuilt from this checkout (results in ./output)
 	@echo "==> Running simulation in Docker..."
 	@mkdir -p output
-	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile prod run --rm prod
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile prod run --rm --build prod
 
 docker-shell: ## Open interactive shell in dev container (image rebuilt for your user IDs)
 	@echo "==> Launching dev shell..."
 	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev run --rm --build dev /bin/bash
 
-docker-compose-up: ## Start all services via docker-compose (dev image rebuilt for your user IDs)
+docker-compose-up: ## Start the dev service in the background (image rebuilt for your user IDs)
 	@echo "==> Starting services..."
 	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev up -d --build
 

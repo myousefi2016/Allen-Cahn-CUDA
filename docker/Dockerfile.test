@@ -6,7 +6,7 @@
 # the e2e tests that run a simulation are reported as Skipped.
 #
 # Usage:
-#   docker compose --profile test run test
+#   make docker-test   (docker compose --profile test run --rm --build test)
 #   docker run --gpus all allencahn-cuda:test
 # ============================================================================
 

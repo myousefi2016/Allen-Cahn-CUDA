@@ -5,7 +5,8 @@
 # Stage 2 (runtime): Minimal runtime image with only the binary and configs
 #
 # Usage:
-#   docker compose --profile prod up prod
+#   make docker-run    (./output created and the prod service run as you, its image
+#                      rebuilt: docker compose --profile prod run --rm --build prod)
 #   mkdir -p output && docker run --gpus all --user "$(id -u):$(id -g)" \
 #       -v "$PWD/output:/output" allencahn-cuda:prod /app/config/default.json
 #   -> results in ./output/out/default, checkpoints in ./output/checkpoints/default

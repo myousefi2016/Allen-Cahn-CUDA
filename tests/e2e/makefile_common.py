@@ -1,7 +1,8 @@
-"""What the Makefile tests share: make's data base and values, shell words, stubs.
+"""What the Makefile tests share: make's data base and values, shell words, stubs, the
+plain recipe lines a test can read exactly, and docker compose's options.
 
-Imported by makefile_run_signals.py and makefile_resume_call.py (from their
-own directory, the first entry of sys.path when they run as scripts).
+Imported by the makefile_*.py tests (from their own directory, the first entry of
+sys.path when they run as scripts).
 """
 
 import os
@@ -26,6 +27,49 @@ with open(os.environ["AC_TEST_STUB_LOG"], "a") as log:
 
 # Inherited make state (a parent make's flags and jobserver, as under `make test`).
 MAKE_STATE = ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKELEVEL", "MAKEFILES")
+
+# A plain word: no quoting, expansion, globbing or operator character of the POSIX shell,
+# and '#' (which starts a comment at the start of a word) only after its first character, so
+# the shell passes it to the command as it is (plain_command).
+PLAIN_WORD = re.compile(r"[A-Za-z0-9_./:=@%+,-][A-Za-z0-9_./:=@%+,#-]*")
+# The leading words of a simple command that the shell takes as assignments.
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# `echo "TEXT"` with a TEXT the shell passes unchanged (none of " $ ` \).
+ECHO_LITERAL = re.compile(r'echo "[^"$`\\]*"')
+
+# The options of docker compose and of its run and up commands (their --help, Compose
+# v5.6.1): those that take a value (the next word, unless written --opt=value or, for a
+# short option, attached), and the flags (booleans: --flag or --flag=BOOL).
+COMPOSE_OPTIONS = {
+    "value": {"--ansi", "--env-file", "-f", "--file", "--parallel", "--profile", "--progress",
+              "--project-directory", "-p", "--project-name"},
+    "flag": {"--all-resources", "--compatibility", "--dry-run"},
+}
+COMPOSE_COMMAND_OPTIONS = {
+    "run": {
+        "value": {"--cap-add", "--cap-drop", "--entrypoint", "-e", "--env", "--env-from-file",
+                  "-l", "--label", "--name", "-p", "--publish", "--pull", "-u", "--user",
+                  "-v", "--volume", "-w", "--workdir"},
+        "flag": {"--build", "-d", "--detach", "--dry-run", "-i", "--interactive", "--no-deps",
+                 "-T", "--no-tty", "-q", "--quiet", "--quiet-build", "--quiet-pull",
+                 "--remove-orphans", "--rm", "-P", "--service-ports", "--use-aliases"},
+    },
+    "up": {
+        "value": {"--attach", "--exit-code-from", "--no-attach", "--pull", "--scale", "-t",
+                  "--timeout", "--wait-timeout"},
+        "flag": {"--abort-on-container-exit", "--abort-on-container-failure",
+                 "--always-recreate-deps", "--attach-dependencies", "--build", "-d",
+                 "--detach", "--dry-run", "--force-recreate", "--menu", "--no-build",
+                 "--no-color", "--no-deps", "--no-log-prefix", "--no-recreate", "--no-start",
+                 "--quiet-build", "--quiet-pull", "--remove-orphans", "-V",
+                 "--renew-anon-volumes", "--timestamps", "--wait", "-w", "--watch", "-y",
+                 "--yes"},
+    },
+}
+# The values Go's strconv.ParseBool takes, as compose reads --flag=BOOL.
+BOOL_VALUES = {"1": True, "t": True, "T": True, "TRUE": True, "true": True, "True": True,
+               "0": False, "f": False, "F": False, "FALSE": False, "false": False,
+               "False": False}
 
 
 def words(line: str) -> list[str]:
@@ -127,3 +171,84 @@ def scrubbed_env(scrub: tuple, bindir: Path, log: Path) -> dict:
     env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
     env["AC_TEST_STUB_LOG"] = str(log)
     return env
+
+
+def plain_command(line: str):
+    """(assignments, words) of a logical recipe line that is one simple command of plain
+    words (PLAIN_WORD): the leading NAME=VALUE words as a dict, then the command and its
+    arguments. None for any other line: one with an operator, a quote, an expansion, a
+    glob or a comment cannot be read without the shell."""
+    w = line.split()
+    if not w or not all(PLAIN_WORD.fullmatch(x) for x in w):
+        return None
+    assignments = {}
+    while w and ASSIGNMENT.match(w[0]):
+        name, value = w.pop(0).split("=", 1)
+        assignments[name] = value
+    return (assignments, w) if w else None
+
+
+def options(w: list[str], table: dict, repeated: frozenset = frozenset()) -> tuple[dict, int]:
+    """The options at the start of w as {name: value}, a flag's value its boolean (the last
+    occurrence counts), a value option's its value (the last, or the list of all for the
+    names in `repeated`), and the index of the first word after them. A cluster -Te gives -T
+    and -e. Raises ValueError for an option table does not know or a flag's value that is
+    not a boolean."""
+    found, i = {}, 0
+
+    def value_of(name, value):
+        if name in repeated:
+            found.setdefault(name, []).append(value)
+        else:
+            found[name] = value
+    while i < len(w) and w[i].startswith("-") and w[i] != "-":
+        word = w[i]
+        i += 1
+        if word == "--":
+            break
+        if word.startswith("--"):
+            name, eq, value = word.partition("=")
+            if name in table["flag"]:
+                if eq and value not in BOOL_VALUES:
+                    raise ValueError(f"{name}={value} (not a boolean)")
+                found[name] = BOOL_VALUES[value] if eq else True
+            elif name in table["value"]:
+                if not eq:
+                    if i >= len(w):
+                        raise ValueError(f"{name} without its value")
+                    value = w[i]
+                    i += 1
+                value_of(name, value)
+            else:
+                raise ValueError(name)
+            continue
+        for k, letter in enumerate(word[1:]):
+            name = "-" + letter
+            if name in table["flag"]:
+                found[name] = True
+            elif name in table["value"]:
+                if k < len(word) - 2:
+                    value_of(name, word[k + 2:])  # the value attached
+                else:
+                    if i >= len(w):
+                        raise ValueError(f"{name} without its value")
+                    value_of(name, w[i])
+                    i += 1
+                break
+            else:
+                raise ValueError(name)
+    return found, i
+
+
+def compose_call(words: list[str]):
+    """(command, its options, its operands) of `docker compose [OPTIONS] COMMAND ...` with
+    COMMAND one COMPOSE_COMMAND_OPTIONS lists, else None (also for docker with options of
+    its own before compose). Raises ValueError for an option the tables do not know."""
+    if words[:2] != ["docker", "compose"]:
+        return None
+    _, i = options(words[2:], COMPOSE_OPTIONS)
+    rest = words[2 + i:]
+    if not rest or rest[0] not in COMPOSE_COMMAND_OPTIONS:
+        return None
+    found, j = options(rest[1:], COMPOSE_COMMAND_OPTIONS[rest[0]])
+    return rest[0], found, rest[1 + j:]
