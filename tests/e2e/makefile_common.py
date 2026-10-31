@@ -66,6 +66,17 @@ COMPOSE_COMMAND_OPTIONS = {
                  "--yes"},
     },
 }
+# The options of `docker build` (docker build --help, docker 29.1.3, whose build is buildx's).
+DOCKER_BUILD_OPTIONS = {
+    "value": {"--add-host", "--allow", "--annotation", "--attest", "--build-arg",
+              "--build-context", "--builder", "--cache-from", "--cache-to", "--call",
+              "--cgroup-parent", "-f", "--file", "--iidfile", "--label", "--metadata-file",
+              "--network", "--no-cache-filter", "-o", "--output", "--platform", "--policy",
+              "--progress", "--provenance", "--resource", "--sbom", "--secret", "--shm-size",
+              "--ssh", "-t", "--tag", "--target", "--ulimit"},
+    "flag": {"--check", "-D", "--debug", "--load", "--no-cache", "--pull", "--push", "-q",
+             "--quiet"},
+}
 # The values Go's strconv.ParseBool takes, as compose reads --flag=BOOL.
 BOOL_VALUES = {"1": True, "t": True, "T": True, "TRUE": True, "true": True, "True": True,
                "0": False, "f": False, "F": False, "FALSE": False, "false": False,

@@ -171,11 +171,13 @@ set_tests_properties(e2e.MakefileRunStatus PROPERTIES TIMEOUT 60)
 # The dev image is built for the host user: docker-compose.yml's dev service passes
 # USER_UID and USER_GID from HOST_UID and HOST_GID, mounts its build directory and ccache
 # (each once, targets compared as compose cleans them) from named volumes, and names every
-# named volume it mounts per project and per those IDs; `make -n docker-shell` and
-# `make -n docker-compose-up` each print one line with docker, which sets HOST_UID and
-# HOST_GID to the caller's IDs and passes --build, `make -n docker-build-dev` one with
-# those IDs as --build-arg, and `make -n` of these runs no docker (a recording stub). Runs
-# `make -n` and reads docker-compose.yml with PyYAML (GNU make on PATH; no docker).
+# named volume it mounts per project and per those IDs. `make -n` of docker-shell,
+# docker-compose-up and docker-build-dev prints only plain lines (no shell operators,
+# quoting or substitutions; none runs under -n), each with one docker command: compose run
+# of the dev service and compose up (without --no-start or --no-build) with HOST_UID and
+# HOST_GID set to the caller's IDs and --build true, and docker build with those IDs as
+# --build-arg; `make -n` runs no docker (a recording stub). Reads docker-compose.yml with
+# PyYAML (GNU make on PATH; no docker).
 add_test(NAME e2e.MakefileDevUser
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_dev_user.py
             ${PROJECT_SOURCE_DIR}
