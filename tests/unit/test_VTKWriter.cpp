@@ -174,13 +174,15 @@ TEST_F(VTKWriterTest, StatisticsCaching) {
     EXPECT_NEAR(phi_stats->max_val, 1.0, 1e-12);
 }
 
-#ifdef AC_HAS_VTK
 // A .vts round trip through VTK's own reader on a non-cubic grid with
 // anisotropic spacing: VTK's structured index (i, j, k) of every point, derived
 // from its id as i + Nx*(j + Ny*k), must match its coordinates (i*dx, j*dy,
 // k*dz) and carry FieldData value (x=i, y=j, z=k). With z-fastest output this
 // fails on the first point off the origin.
 TEST_F(VTKWriterTest, VtsTopologyMatchesGeometryAndData) {
+#ifndef AC_HAS_VTK
+    GTEST_SKIP() << "this build has no VTK (AC_HAS_VTK undefined): vts output falls back to raw";
+#else
     const int Nx = 3, Ny = 4, Nz = 5;
     const double dx = 0.5, dy = 0.25, dz = 2.0;
     Grid grid(Dim3{Nx, Ny, Nz}, Spacing{dx, dy, dz});
@@ -235,8 +237,8 @@ TEST_F(VTKWriterTest, VtsTopologyMatchesGeometryAndData) {
         ASSERT_DOUBLE_EQ(phi_arr->GetTuple1(id), phi(i, j, k)) << "id=" << id;
         ASSERT_DOUBLE_EQ(u_arr->GetTuple1(id), u(i, j, k)) << "id=" << id;
     }
-}
 #endif
+}
 
 namespace {
 
@@ -301,11 +303,13 @@ TEST_F(VTKWriterTest, WriteFailureIsReportedByFlushAndNextWrite) {
     }
 }
 
-#ifdef AC_HAS_VTK
 // A VTK write that fails part-way (here: the temporary file is /dev/full, so
 // every write returns ENOSPC) must not be renamed into place as if complete.
 // Before, Write()'s result was ignored and the broken file was published.
 TEST_F(VTKWriterTest, FailedVtkWriteIsNotPublished) {
+#ifndef AC_HAS_VTK
+    GTEST_SKIP() << "this build has no VTK (AC_HAS_VTK undefined): vts output falls back to raw";
+#else
     ASSERT_TRUE(fs::exists("/dev/full")) << "the test needs /dev/full";
     Grid grid(Dim3{8, 8, 8}, Spacing{1.0, 1.0, 1.0});
     OutputParams params;
@@ -320,11 +324,15 @@ TEST_F(VTKWriterTest, FailedVtkWriteIsNotPublished) {
     EXPECT_THROW(writer.flush(), std::runtime_error);
     EXPECT_FALSE(fs::exists(fs::symlink_status(test_dir_ / "output_0.vts")))
         << "a failed write was published as output_0.vts";
+#endif
 }
 
 // A VTS file that cannot be renamed into place (a directory holds its name)
 // is removed: before, output_0.vts.tmp stayed on disk and nothing removed it.
 TEST_F(VTKWriterTest, VtsThatCannotBePublishedLeavesNoTemporaryFile) {
+#ifndef AC_HAS_VTK
+    GTEST_SKIP() << "this build has no VTK (AC_HAS_VTK undefined): vts output falls back to raw";
+#else
     Grid grid(Dim3{8, 8, 8}, Spacing{1.0, 1.0, 1.0});
     OutputParams params;
     params.output_dir = test_dir_;
@@ -338,8 +346,8 @@ TEST_F(VTKWriterTest, VtsThatCannotBePublishedLeavesNoTemporaryFile) {
     EXPECT_THROW(writer.flush(), std::runtime_error);
     EXPECT_FALSE(fs::exists(fs::symlink_status(test_dir_ / "output_0.vts.tmp")));
     EXPECT_TRUE(fs::is_directory(test_dir_ / "output_0.vts" / "keep"));
-}
 #endif
+}
 
 // A raw field smaller than the stream's buffer (8 KiB in libstdc++; 8^3 cells
 // are 4096 bytes) reaches its file only when close() flushes it. Here the
