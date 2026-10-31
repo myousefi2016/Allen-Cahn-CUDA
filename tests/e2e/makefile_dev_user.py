@@ -13,7 +13,14 @@ Checked:
     HOST_UID and HOST_GID set to the caller's IDs (as `make docker-run` does) and with
     --build: compose builds a service's image only when it is missing, so without it
     an allencahn-cuda:dev built before for other IDs (1000 by default) is reused;
-  * `make -n docker-build-dev` passes --build-arg USER_UID and USER_GID with them.
+  * `make -n docker-build-dev` passes --build-arg USER_UID and USER_GID with them;
+  * the dev service mounts its build directory (/workspace/build) and ccache
+    (/workspace/.ccache) from named volumes, and every named volume it mounts (in the short
+    or the long syntax) has a name with ${COMPOSE_PROJECT_NAME}, ${HOST_UID:-1000} and
+    ${HOST_GID:-1000} in it: Docker seeds an empty named volume from the image, owned by
+    `developer`, but a volume that holds files keeps their owner, so one a dev image built
+    for other IDs filled (1000:1000 by default) is not writable for this one. An anonymous
+    volume would be no better: `docker compose up` keeps it when it recreates the container.
 `make -n` prints these recipe lines without running them; a recording docker stub
 first on PATH would show a run.
 
@@ -24,6 +31,7 @@ Usage: makefile_dev_user.py REPO_ROOT   (exit 0 = pass)
 
 import json
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -51,12 +59,45 @@ def main() -> int:
     uid, gid = str(os.getuid()), str(os.getgid())
     errors = []
 
-    dev = yaml.safe_load((root / "docker-compose.yml").read_text())["services"]["dev"]
+    compose = yaml.safe_load((root / "docker-compose.yml").read_text())
+    dev = compose["services"]["dev"]
     args = (dev.get("build") or {}).get("args") or {}
     expected = {"USER_UID": "${HOST_UID:-1000}", "USER_GID": "${HOST_GID:-1000}"}
     if {k: args.get(k) for k in expected} != expected:
         errors.append(f"docker-compose.yml's dev service passes build args {args}, "
                       f"expected {expected}")
+    named = compose.get("volumes") or {}
+    # Its mounts as (named volume or None, target): SOURCE:TARGET[:MODE] or TARGET (short
+    # syntax), or a mapping with type, source and target (long syntax); a source that is a
+    # top-level volume is a named volume, a bind's or an anonymous volume's is not. Targets
+    # are compared as compose resolves them, cleaned (`/workspace/build/` is
+    # /workspace/build, and the later of two mounts there replaces the earlier).
+    mounts = []
+    for v in dev.get("volumes") or []:
+        if isinstance(v, str):
+            parts = v.split(":")
+            source, target = (parts[0], parts[1]) if len(parts) > 1 else (None, parts[0])
+        else:
+            source = v.get("source") if v.get("type") == "volume" else None
+            target = v.get("target")
+        mounts.append((source if source in named else None,
+                       posixpath.normpath(target) if target else target))
+    for target in ("/workspace/build", "/workspace/.ccache"):
+        sources = [s for s, t in mounts if t == target]
+        if len(sources) != 1 or sources[0] is None:
+            how = ("not at all" if not sources else "more than once" if len(sources) > 1
+                   else "from no named volume (a bind, an anonymous volume or a tmpfs)")
+            errors.append(f"docker-compose.yml's dev service mounts {target} {how}; expected "
+                          f"a named volume per project and per HOST_UID and HOST_GID")
+    mounted = [s for s, _ in mounts if s is not None]
+    for volume in mounted:
+        name = (named[volume] or {}).get("name", "")
+        missing = [v for v in ("${COMPOSE_PROJECT_NAME}", "${HOST_UID:-1000}", "${HOST_GID:-1000}")
+                   if v not in name]
+        if missing:
+            errors.append(f"docker-compose.yml's volume {volume} is named {name!r}, without "
+                          f"{', '.join(missing)}: a dev image built for other IDs mounts the "
+                          f"volume another container user filled")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)

@@ -72,7 +72,8 @@ RUN cmake --version | head -1
 # end up with exactly USER_UID:USER_GID.
 # build/ and .ccache/ are named-volume mount points in docker-compose.yml;
 # Docker seeds an empty named volume from the image directory, so they are
-# created here owned by developer.
+# created here owned by developer. A volume that holds files keeps their owner,
+# so docker-compose.yml names these volumes per HOST_UID and HOST_GID.
 ARG USER_UID=1000
 ARG USER_GID=1000
 

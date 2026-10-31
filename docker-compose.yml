@@ -45,9 +45,9 @@ services:
     tty: true
     volumes:
       - .:/workspace
-      # Named volume for build artifacts to survive container restarts
+      # Named volumes, per HOST_UID and HOST_GID (volumes: below): build artifacts survive
+      # container restarts, and ccache persists across sessions
       - dev-build-cache:/workspace/build
-      # Persist ccache across sessions
       - dev-ccache:/workspace/.ccache
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -109,5 +109,11 @@ services:
               capabilities: [gpu]
 
 volumes:
+  # The dev service's build directory and ccache, a pair per project and per HOST_UID and
+  # HOST_GID. Docker seeds an empty named volume from the image, owned by `developer`, but a
+  # volume that holds files keeps their owner: one filled by a dev image built for other IDs
+  # (1000:1000 when HOST_UID and HOST_GID are unset) is not writable for this one.
   dev-build-cache:
+    name: "${COMPOSE_PROJECT_NAME}_dev-build-cache-${HOST_UID:-1000}-${HOST_GID:-1000}"
   dev-ccache:
+    name: "${COMPOSE_PROJECT_NAME}_dev-ccache-${HOST_UID:-1000}-${HOST_GID:-1000}"
