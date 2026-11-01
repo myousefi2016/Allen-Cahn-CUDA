@@ -801,12 +801,13 @@ The suite has three `ctest` groups, selectable with `-R "^unit[.]"`,
 `-R "^integration[.]"` and `-R "^e2e[.]"`: the `unit_tests` and
 `integration_tests` executables and the end-to-end tests (Python 3), which
 drive the built binary, check the Makefile's resume, visualization,
-simulation, `k8s-logs`, dev-image and `docker-test`/`docker-run` targets
-with `make -n` (and docker-compose.yml) and its `cuda-status-dendrite`
-target (GNU make), and check this section's inventory against the build and
-the documentation's tables (as GitHub renders them). The table below gives
-the files and ctest tests of each group. It is verified on an NVIDIA RTX
-4090 (compute 8.9) with CUDA 13.2.
+simulation and `k8s-logs` targets with `make -n`, its dev-image and
+`docker-test`/`docker-run` targets with make and a recording shell that runs
+nothing (and docker-compose.yml) and its `cuda-status-dendrite` target (GNU
+make), and check this section's inventory against the build and the
+documentation's tables (as GitHub renders them). The table below gives the
+files and ctest tests of each group. It is verified on an NVIDIA RTX 4090
+(compute 8.9) with CUDA 13.2.
 
 Without a usable GPU the CUDA tests are reported as *Skipped*. Set
 `AC_REQUIRE_GPU=1` on a GPU machine to turn that into a failure, so a job
@@ -896,8 +897,8 @@ docker run --rm --gpus all -v $PWD:/work -w /work \
 | `signal_exit.py`  | The binary exits 143/130 on `SIGTERM`/`SIGINT` and leaves a valid checkpoint of the step it stopped at; a `SIGTERM` once it has logged its last step leaves the run complete (exit 0) |
 | `cli_arguments.py` | Only the documented command lines are accepted: an argument after them (`config.json --validate-config`, `config.json extra`, `--help extra`, `--resume` without a file or with two) is an error that starts nothing, without a GPU |
 | `k8s_job_resume.py` | A retry of the shipped Kubernetes Job, run with `job.yaml`'s container arguments on a small copy of the base payload, continues from the interrupted pod's checkpoint and keeps it |
-| `makefile_dev_user.py` | The dev image is built for the host user: `docker-compose.yml`'s dev service passes `USER_UID` and `USER_GID` from `HOST_UID` and `HOST_GID`, `make docker-shell` and `make docker-compose-up` set those and pass `--build` (compose reuses an existing image otherwise), `make docker-build-dev` passes the build arguments, and the dev service mounts its build directory and ccache from named volumes, every named volume it mounts named per project and per `HOST_UID` and `HOST_GID`; the targets read from `make -n`, whose lines must be `echo "TEXT"` or plain commands, `--build` read as compose reads it, and docker-compose.yml with PyYAML, without docker |
-| `makefile_compose_build.py` | `make docker-test` and `make docker-run` build the test and prod images before running them (`docker compose run --build`): both carry the tree they are built from, and compose otherwise runs an existing image, built from another tree; read from `make -n`, whose lines must be `echo "TEXT"` or plain commands (no shell operators, quoting, expansions or substitutions), with one `docker compose run` of the service passing `--build` (also `--build=BOOL`, read as compose reads it); no docker |
+| `makefile_dev_user.py` | The dev image is built for the host user: `docker-compose.yml`, all compose reads in the checkout, builds the dev service from `docker/Dockerfile.dev` here with `USER_UID` and `USER_GID` from `HOST_UID` and `HOST_GID`, `make docker-shell` and `make docker-compose-up` set those and pass `--build` (compose reuses an existing image otherwise), `make docker-build-dev` builds the dev service's image with the build arguments, and the dev service mounts its build directory and ccache from named volumes, every named volume it mounts named per project and per `HOST_UID` and `HOST_GID`; make runs the targets with a recording shell, their lines must be `echo "TEXT"` or plain commands in make's own environment, with only options the test reads (`--build` as compose reads it), and docker-compose.yml is read with PyYAML, without docker |
+| `makefile_compose_build.py` | `make docker-test` and `make docker-run` build the test and prod images from this checkout before running them (`docker compose run --build`): both carry the tree they are built from, and compose otherwise runs an existing image, built from another tree; make runs the targets with a recording shell, their lines must be `echo "TEXT"` or plain commands (no shell operators, quoting, expansions or substitutions) in make's own environment, with one `docker compose run` of the service passing `--build` (also `--build=BOOL`, read as compose reads it) and only options the test reads, and `docker-compose.yml`, all compose reads, builds the service from `docker/Dockerfile.test` or `docker/Dockerfile.prod` here (PyYAML); no docker |
 | `makefile_k8s_logs.py` | `make k8s-logs` selects the simulation Job's pods: its `-l` selector's labels are those of the Job's pod template (`k8s/base/job.yaml`; kustomize's `labels` do not reach pods), in the dev and prod overlays' namespaces; checked with `make -n` and PyYAML, without a cluster |
 | `makefile_run_status.py` | `make cuda-status-dendrite` on a temporary configuration: "(no <dir>/ yet)" and "(none yet)", the checkpoints in step order, the one a resume restarts from (past one cut short) with its header's step and time, the frames and the last log line, and `max_steps` as an upper bound with no percentage |
 | `makefile_resume_call.py` | `make cuda-resume-dendrite` and `make cuda-resume-dendrite-large` run the binary with `--resume` and the run's config (`config/run_dendrite_long.json`, `config/run_dendrite_large.json`), and a dry run runs nothing: no recipe line of these targets or their prerequisites is one make runs under `-n` (from make's data base), and `make -n` calls neither docker nor python3 (recording stubs) and leaves `config/` as it was; without docker |

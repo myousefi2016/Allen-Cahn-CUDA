@@ -7,51 +7,58 @@ USER_UID and USER_GID (default 1000). Without them the container user was always
 for any other host user.
 
 Checked:
-  * docker-compose.yml's dev service passes USER_UID and USER_GID from HOST_UID and
-    HOST_GID (1000 when unset);
-  * `make -n docker-shell` and `make -n docker-compose-up` each print one docker command,
-    `docker compose ... run ... dev` and `docker compose ... up`, with HOST_UID and
-    HOST_GID assigned the caller's IDs on its line (as `make docker-run` does) and --build
-    true (--build or --build=BOOL, the last one counting): compose builds a service's image
-    only when it is missing, so without it an allencahn-cuda:dev built before for other
-    IDs (1000 by default) is reused; `up` without --no-start and --no-build;
-  * `make -n docker-build-dev` prints one docker command, `docker build`, passing
-    --build-arg USER_UID and USER_GID with them;
+  * docker-compose.yml is all compose reads in the checkout (no compose.yaml, compose.yml,
+    override file or .env beside it, no include; makefile_common.compose_file_errors), and its
+    dev service builds docker/Dockerfile.dev from this checkout passing USER_UID and USER_GID
+    from HOST_UID and HOST_GID (1000 when unset): build is exactly {context: ., dockerfile:
+    docker/Dockerfile.dev, args: {USER_UID: ${HOST_UID:-1000}, USER_GID: ${HOST_GID:-1000}}},
+    and its other keys are ones this test reads or that change neither the image nor the
+    container's user (image, container_name, profiles, stdin_open, tty, volumes, environment,
+    deploy; not user, for one, which would run it as another);
   * the dev service mounts its build directory (/workspace/build) and ccache
     (/workspace/.ccache) from named volumes, and every named volume it mounts (in the short
     or the long syntax) has a name with ${COMPOSE_PROJECT_NAME}, ${HOST_UID:-1000} and
     ${HOST_GID:-1000} in it: Docker seeds an empty named volume from the image, owned by
     `developer`, but a volume that holds files keeps their owner, so one a dev image built
     for other IDs filled (1000:1000 by default) is not writable for this one. An anonymous
-    volume would be no better: `docker compose up` keeps it when it recreates the container.
-Every line `make -n` prints for these targets must be one this test reads exactly:
-`echo "TEXT"` (no " $ ` or \\ in TEXT) or a simple command of plain words
-(makefile_common.plain_command) run by echo, mkdir or docker. A line of any other form (a
-fallback after `||`, a branch, a subshell, a substitution, `sh -c`, `env`) fails, since the
-shell's paths through it are not read here; so does a line of a target or its prerequisites
-that runs under `make -n` ($(MAKE), '+'). The options are read with the tables of docker
-compose's and docker build's options (their --help: Compose v5.6.1, docker 29.1.3 with
-buildx); an option they do not know fails the test. `make -n`, with a recording docker stub
-first on PATH, must run no docker.
+    volume would be no better: `docker compose up` keeps it when it recreates the container;
+  * make runs docker-shell, docker-compose-up and docker-build-dev with a recording shell as
+    their SHELL (makefile_common.read_recipes): every line make hands the shell must be
+    `echo "TEXT"` (no " $ ` or \\ in TEXT) or a simple command of plain words
+    (makefile_common.plain_command) run by echo, mkdir or docker, in the environment make was
+    given (nothing the Makefile exports reaches docker), make's SHELL and .SHELLFLAGS /bin/sh
+    and -c, and no docker runs. A line of any other form (a fallback after `||`, a branch, a
+    subshell, a substitution, `sh -c`, `env`, $(MAKE)) fails: the shell's paths through it are
+    not read here. Each target has exactly one docker line:
+    - docker-shell's `docker compose [--profile P] run [--rm] [--build[=BOOL]] dev ...` and
+      docker-compose-up's `docker compose [--profile P] up [-d] [--build[=BOOL]] [SERVICE...]`,
+      which must start dev (named, or of a --profile given), each assigning on its line exactly
+      HOST_UID and HOST_GID, the caller's IDs (as `make docker-run` does), with --build true
+      (the last one counting, as compose reads --build=BOOL): compose builds a service's image
+      only when it is missing, so without it an allencahn-cuda:dev built before for other IDs
+      (1000 by default) is reused;
+    - docker-build-dev's `docker build [-f FILE] [--build-arg NAME=VALUE]... [-t TAG]... PATH`,
+      assigning nothing, with the dev service's dockerfile, its context as PATH, its image among
+      the tags and --build-arg USER_UID and USER_GID the caller's IDs (the last of each counting;
+      a --build-arg USER_UID without a value takes it from docker's environment).
+    The options are read as compose and docker build read them (makefile_common.compose_call,
+    docker_build_call: up's and docker build's also after their operands), and any other option
+    fails, such as --dry-run (nothing is built), -f (another compose file), -u (another user),
+    -v, --no-start, --target or --output; so does docker with options of its own.
 
 Needs GNU make, python3 and PyYAML; no docker.
 
 Usage: makefile_dev_user.py REPO_ROOT   (exit 0 = pass)
 """
 
-import json
 import os
 import posixpath
 import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True  # importing makefile_common writes nothing to the checkout
-from makefile_common import (DOCKER_BUILD_OPTIONS, ECHO_LITERAL, compose_call, data_base,
-                             logical_lines, options, plain_command, runs_under_dry_run,
-                             scrubbed_env, stub_bin)
+from makefile_common import compose_call, compose_file_errors, docker_build_call, read_recipes
 
 try:
     import yaml  # python3-yaml
@@ -60,6 +67,12 @@ except ImportError:
     sys.exit(1)
 
 SCRUB = ("HOST_UID", "HOST_GID", "IMAGE_NAME", "DOCKER_REGISTRY", "DOCKER_BUILD_ARGS")
+# The dev service's keys this test reads, and those that change neither its image nor its
+# container's user.
+DEV_KEYS = {"build", "image", "container_name", "profiles", "stdin_open", "tty", "volumes",
+            "environment", "deploy"}
+DEV_BUILD = {"context": ".", "dockerfile": "docker/Dockerfile.dev",
+             "args": {"USER_UID": "${HOST_UID:-1000}", "USER_GID": "${HOST_GID:-1000}"}}
 
 
 def main() -> int:
@@ -69,15 +82,15 @@ def main() -> int:
         print("FAIL: GNU make is not on PATH")
         return 1
     uid, gid = str(os.getuid()), str(os.getgid())
-    errors = []
+    ids = {"HOST_UID": uid, "HOST_GID": gid}
 
     compose = yaml.safe_load((root / "docker-compose.yml").read_text())
-    dev = compose["services"]["dev"]
-    args = (dev.get("build") or {}).get("args") or {}
-    expected = {"USER_UID": "${HOST_UID:-1000}", "USER_GID": "${HOST_GID:-1000}"}
-    if {k: args.get(k) for k in expected} != expected:
-        errors.append(f"docker-compose.yml's dev service passes build args {args}, "
-                      f"expected {expected}")
+    errors = compose_file_errors(root, compose, {"dev": DEV_KEYS})
+    services = compose.get("services") or {}
+    dev = services.get("dev") or {}
+    if dev.get("build") != DEV_BUILD:
+        errors.append(f"docker-compose.yml's dev service builds {dev.get('build')!r}, expected "
+                      f"{DEV_BUILD}")
     named = compose.get("volumes") or {}
     # Its mounts as (named volume or None, target): SOURCE:TARGET[:MODE] or TARGET (short
     # syntax), or a mapping with type, source and target (long syntax); a source that is a
@@ -111,95 +124,79 @@ def main() -> int:
                           f"{', '.join(missing)}: a dev image built for other IDs mounts the "
                           f"volume another container user filled")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
-        log = tmp / "calls.log"
-        env = scrubbed_env(SCRUB, stub_bin(tmp, ["docker"]), log)
-        prereqs, recipes = data_base(make, root, env)
-        for target in ("docker-shell", "docker-compose-up", "docker-build-dev"):
-            todo, seen = [target], []
-            while todo:
-                t = todo.pop()
-                if t not in seen:
-                    seen.append(t)
-                    todo += prereqs.get(t, [])
-            dry = [(t, l) for t in seen for l in logical_lines(recipes.get(t, []))
-                   if runs_under_dry_run(l)]
-            if dry:
-                errors.append(f"make {target}: {dry[0][0]}'s line {dry[0][1]!r} runs under "
-                              f"make -n ($(MAKE) or '+'), which this test does not run")
-                continue
-            out = subprocess.run([make, "-n", "--no-print-directory", "-C", str(root), target],
-                                 env=env, capture_output=True, text=True, timeout=60)
-            if out.returncode != 0:
-                errors.append(f"make -n {target} exited {out.returncode}: {out.stderr.strip()}")
-                continue
-            docker, unread = [], False
-            for line in logical_lines(out.stdout.splitlines()):
-                if ECHO_LITERAL.fullmatch(line.strip()):
-                    continue
-                command = plain_command(line)
-                if command is None or command[1][0] not in ("echo", "mkdir", "docker"):
-                    unread = True
-                    errors.append(f"make -n {target}: {line.strip()!r} is not a line this test "
-                                  f"reads (echo \"TEXT\", or echo, mkdir or docker with plain "
-                                  f"words)")
-                elif command[1][0] == "docker":
-                    docker.append(command)
-            if unread:
-                continue
-            if len(docker) != 1:
-                errors.append(f"make -n {target}: {len(docker)} docker commands, expected one")
-                continue
-            assignments, w = docker[0]
-            text = " ".join(w)
-            if target == "docker-build-dev":
-                if w[:2] != ["docker", "build"]:
-                    errors.append(f"make -n {target}: {text} is not docker build (without "
-                                  f"options of docker itself before build)")
-                    continue
-                try:
-                    given = {}
-                    found, i = options(w[2:], DOCKER_BUILD_OPTIONS, repeated=frozenset({"--build-arg"}))
-                    for arg in found.get("--build-arg", []):
-                        if "=" in arg:
-                            given[arg.split("=", 1)[0]] = arg.split("=", 1)[1]
-                except ValueError as e:
-                    errors.append(f"make -n {target}: {text}: {e}: not in the tables of docker "
-                                  f"build's options (makefile_common.py)")
-                    continue
-                if given.get("USER_UID") != uid or given.get("USER_GID") != gid:
-                    errors.append(f"make -n {target}: build args {given}, expected USER_UID={uid} "
-                                  f"USER_GID={gid}")
-                continue
-            sub = "run" if target == "docker-shell" else "up"
+    commands, recipe_errors = read_recipes(
+        make, root, ["docker-shell", "docker-compose-up", "docker-build-dev"], SCRUB)
+    errors += recipe_errors
+    for target, docker in commands.items():
+        if len(docker) != 1:
+            errors.append(f"make {target}: {len(docker)} docker commands, expected one")
+            continue
+        assignments, w = docker[0]
+        text = " ".join(w)
+        if target == "docker-build-dev":
+            if assignments:
+                errors.append(f"make {target}: {text} runs with {', '.join(sorted(assignments))} "
+                              f"assigned: docker's environment, which this test does not read")
             try:
-                call = compose_call(w)
+                call = docker_build_call(w)
             except ValueError as e:
-                errors.append(f"make -n {target}: {text}: {e}: not in the tables of docker "
-                              f"compose's options (makefile_common.py)")
+                errors.append(f"make {target}: {text}: option {e}")
                 continue
-            if call is None or call[0] != sub:
-                errors.append(f"make -n {target}: {text} is not docker compose {sub} (without "
-                              f"options of docker itself before compose)")
+            if call is None:
+                errors.append(f"make {target}: {text} is not docker build (without options of "
+                              f"docker itself before build)")
                 continue
-            _, found, operands = call
-            if sub == "run" and operands[:1] != ["dev"]:
-                errors.append(f"make -n {target}: {text} runs {operands[:1]}, expected the dev "
+            found, operands = call
+            build = dev.get("build") or {}
+            if operands != [build.get("context")] or found.get("--file") != build.get("dockerfile"):
+                errors.append(f"make {target}: {text} builds {found.get('--file')} in "
+                              f"{operands}, expected the dev service's {build.get('dockerfile')} "
+                              f"in [{build.get('context')!r}]")
+            if dev.get("image") not in found.get("--tag", []):
+                errors.append(f"make {target}: {text} tags {found.get('--tag', [])}, not the dev "
+                              f"service's image {dev.get('image')}")
+            given, from_env = {}, []
+            for arg in found.get("--build-arg", []):
+                name, eq, value = arg.partition("=")
+                if eq:
+                    given[name] = value
+                elif name in ("USER_UID", "USER_GID"):
+                    from_env.append(name)
+            if from_env:
+                errors.append(f"make {target}: {text}: --build-arg {' and '.join(from_env)} "
+                              f"without a value, which docker build takes from its environment")
+            if given.get("USER_UID") != uid or given.get("USER_GID") != gid:
+                errors.append(f"make {target}: build args {given}, expected USER_UID={uid} "
+                              f"USER_GID={gid}")
+            continue
+        sub = "run" if target == "docker-shell" else "up"
+        try:
+            call = compose_call(w)
+        except ValueError as e:
+            errors.append(f"make {target}: {text}: option {e}")
+            continue
+        if call is None or call[0] != sub:
+            errors.append(f"make {target}: {text} is not docker compose {sub} (without options "
+                          f"of docker itself before compose)")
+            continue
+        _, top, found, operands = call
+        if sub == "run" and operands[:1] != ["dev"]:
+            errors.append(f"make {target}: {text} runs {operands[:1]}, expected the dev service")
+        if sub == "up":
+            # up starts the services named, else those of the profiles given and those of none.
+            profiles = set(top.get("--profile", []))
+            started = operands or [s for s, d in services.items()
+                                   if not (d or {}).get("profiles")
+                                   or profiles & set(d["profiles"])]
+            if "dev" not in started:
+                errors.append(f"make {target}: {text} starts {sorted(started)}, not the dev "
                               f"service")
-            ids = {k: assignments.get(k) for k in ("HOST_UID", "HOST_GID")}
-            if ids != {"HOST_UID": uid, "HOST_GID": gid}:
-                errors.append(f"make -n {target}: docker compose runs with {ids}, expected "
-                              f"HOST_UID={uid} HOST_GID={gid}")
-            if found.get("--build") is not True:
-                errors.append(f"make -n {target}: docker compose {sub} without --build "
-                              f"({text}): an existing image built for other IDs is reused")
-            if sub == "up" and (found.get("--no-start") or found.get("--no-build")):
-                errors.append(f"make -n {target}: {text}: --no-start or --no-build, so the dev "
-                              f"service is not started from an image built for these IDs")
-        if log.exists() and log.read_text().strip():
-            errors.append("make -n ran docker: " + "; ".join(
-                " ".join(json.loads(l)) for l in log.read_text().splitlines()))
+        if assignments != ids:
+            errors.append(f"make {target}: docker compose runs with {assignments} assigned, "
+                          f"expected exactly HOST_UID={uid} HOST_GID={gid}")
+        if found.get("--build") is not True:
+            errors.append(f"make {target}: docker compose {sub} without --build ({text}): an "
+                          f"existing image built for other IDs is reused")
 
     for e in errors:
         print(f"FAIL {e}")

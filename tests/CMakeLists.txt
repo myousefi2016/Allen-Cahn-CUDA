@@ -168,16 +168,18 @@ add_test(NAME e2e.MakefileRunStatus
 )
 set_tests_properties(e2e.MakefileRunStatus PROPERTIES TIMEOUT 60)
 
-# The dev image is built for the host user: docker-compose.yml's dev service passes
-# USER_UID and USER_GID from HOST_UID and HOST_GID, mounts its build directory and ccache
-# (each once, targets compared as compose cleans them) from named volumes, and names every
-# named volume it mounts per project and per those IDs. `make -n` of docker-shell,
-# docker-compose-up and docker-build-dev prints only plain lines (no shell operators,
-# quoting or substitutions; none runs under -n), each with one docker command: compose run
-# of the dev service and compose up (without --no-start or --no-build) with HOST_UID and
-# HOST_GID set to the caller's IDs and --build true, and docker build with those IDs as
-# --build-arg; `make -n` runs no docker (a recording stub). Reads docker-compose.yml with
-# PyYAML (GNU make on PATH; no docker).
+# The dev image is built for the host user: docker-compose.yml, all compose reads in the
+# checkout, builds the dev service from docker/Dockerfile.dev here, passing USER_UID and
+# USER_GID from HOST_UID and HOST_GID, mounts its build directory and ccache (each once,
+# targets compared as compose cleans them) from named volumes, and names every named volume
+# it mounts per project and per those IDs. make runs docker-shell, docker-compose-up and
+# docker-build-dev with a recording shell that runs nothing: their lines are plain (no shell
+# operators, quoting, substitutions or $(shell)), in make's own environment, each target with
+# one docker command: compose run of the dev service and compose up starting it, with
+# HOST_UID and HOST_GID set to the caller's IDs and --build true, and docker build of the dev
+# service's image with those IDs as --build-arg; no option the test does not read, and no
+# docker runs (a recording stub). Reads docker-compose.yml with PyYAML (GNU make on PATH; no
+# docker).
 add_test(NAME e2e.MakefileDevUser
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_dev_user.py
             ${PROJECT_SOURCE_DIR}
@@ -185,9 +187,11 @@ add_test(NAME e2e.MakefileDevUser
 set_tests_properties(e2e.MakefileDevUser PROPERTIES TIMEOUT 60)
 
 # `make docker-test` and `make docker-run` build the test and prod images (which carry
-# the tree they are built from) before running them: `make -n` prints only plain lines,
-# with one docker compose run of the service and --build, and runs no docker (GNU make on
-# PATH; no docker).
+# the tree they are built from) before running them: make runs them with a recording shell
+# that runs nothing, their lines are plain and in make's own environment, with one docker
+# compose run of the service, --build and no option the test does not read, and no docker
+# runs; docker-compose.yml, all compose reads in the checkout, builds the service from this
+# checkout (PyYAML; GNU make on PATH; no docker).
 add_test(NAME e2e.MakefileComposeBuild
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/makefile_compose_build.py
             ${PROJECT_SOURCE_DIR}
