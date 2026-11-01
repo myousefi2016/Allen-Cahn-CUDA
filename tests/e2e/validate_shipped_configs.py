@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""Every configuration the repository ships must pass the binary's validator.
+
+Runs `allen-cahn-cuda --validate-config FILE` (no GPU needed) on:
+  * config/*.json
+  * the simulation.json embedded in k8s/base/configmap.yaml and every JSON
+    payload patched into it by k8s/overlays/*/kustomization.yaml
+  * the config/run_vtk.json that `make cuda-run-vtk` writes (printf in Makefile)
+  * every ```json example in README.md and docs/*.md
+and, as controls, requires these copies of shipped configurations to be
+REJECTED, each with its own message: five rejected by the parser (a
+misspelled key, a section given twice, of which JSON keeps only the last, a
+boundary parameter of another type, which the fill would ignore, and two
+integer fields that are not an int: 64.5 cells; 4294967297 steps, which the
+old parser wrapped to 1), and fourteen that parse but break a rule of
+SimulationConfig::validate() (epsilon > 1/15 without willmore_beta,
+willmore_beta with a fully explicit scheme, a negative willmore_beta, a
+periodic face opposite a non-periodic one, a Robin face whose alpha and beta
+have opposite signs, a saturation_check_freq of 0, an empty output_dir, two
+device ids without multi_gpu, of which the run would use the first only, a
+multi-GPU split that leaves a domain one X plane, an infinite relaxation
+time tau0 (subnormal d0), a cold-start temperature whose coupling overflows,
+a phase-field Robin face outside phi's range [-1, 1], a willmore_beta d_L
+beyond single precision, and a relaxation time A(n)^2 tau0 that overflows).
+So neither a validator that accepts anything nor a loader that parses without
+validating can pass.
+
+For every valid file the binary must print the explicit stability limits
+for the file's scheme and stencil (the thermal and the phase-field dt limit,
+and with time.adaptive the cap cfl_safety times the smaller one), "none"
+where a limit is +infinity. Each printed value must be the one validate()
+applies: as time.dt it is accepted and the next double above it is rejected
+(the thermal limit of default.json, the phase-field limit of
+benchmark_small.json, the cap of an adaptive copy of default.json), and the
+IMEX thermal limit of benchmark_small.json, and the phase-field limit and
+the adaptive IMEX cap of a copy of run_dendrite.json with willmore_beta 0.6
+(no mode of the liquid grows at any dt) print as "none".
+
+The configurations run from the repository root (config/*.json and the
+Makefile's run_vtk.json) must also use their own output_dir and
+checkpoint_dir: checkpoint retention treats a directory as one trajectory and
+would delete another run's checkpoints, and outputs of equal steps would
+overwrite each other.
+
+Usage: validate_shipped_configs.py BINARY REPO_ROOT   (exit 0 = all valid)
+"""
+
+import json
+import math
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+try:
+    import yaml  # python3-yaml
+except ImportError:
+    print("FAIL: PyYAML (python3-yaml) is required to read the k8s manifests")
+    sys.exit(1)
+
+
+LIMIT_LINE = re.compile(r"^(thermal dt limit|phase-field dt limit|adaptive dt cap) "
+                        r"\(([^)]*)\): (none|[0-9][0-9.e+-]*)$", re.M)
+
+
+def printed_limits(stdout: str):
+    """{line name: (what it applies to, value text)} of the limit lines."""
+    return {m[1]: (m[2], m[3]) for m in LIMIT_LINE.finditer(stdout)}
+
+
+def expected_limits(cfg):
+    """{line name: what it applies to} that a valid cfg must print (the
+    defaults are scheme euler, stencil 7pt and a fixed dt)."""
+    time = cfg.get("time", {})
+    scheme = time.get("scheme", "euler")
+    stencil = cfg.get("stencil", "7pt")
+    stencil = {"standard": "7pt", "isotropic": "27pt"}.get(stencil, stencil)
+    lines = {"thermal dt limit": f"scheme {scheme}, stencil {stencil}",
+             "phase-field dt limit": f"scheme {scheme}, any stencil"}
+    if time.get("adaptive", False):
+        lines["adaptive dt cap"] = "cfl_safety times the smaller limit"
+    return lines
+
+
+def k8s_payloads(root: Path):
+    base = yaml.safe_load((root / "k8s/base/configmap.yaml").read_text())
+    yield "k8s/base/configmap.yaml", base["data"]["simulation.json"]
+    for kust in sorted((root / "k8s/overlays").glob("*/kustomization.yaml")):
+        doc = yaml.safe_load(kust.read_text())
+        for i, patch in enumerate(doc.get("patches", []) or []):
+            ops = yaml.safe_load(patch.get("patch", "") or "") or []
+            for op in ops if isinstance(ops, list) else []:
+                if isinstance(op, dict) and op.get("path") == "/data/simulation.json":
+                    yield f"{kust.relative_to(root)} patch {i}", op["value"]
+
+
+def makefile_run_vtk(root: Path):
+    text = (root / "Makefile").read_text()
+    m = re.search(r"@printf '%s\\n' \\\n(.*?)> config/run_vtk\.json", text, re.S)
+    if not m:
+        raise SystemExit("FAIL: could not find the run_vtk.json printf in the Makefile")
+    return "\n".join(re.findall(r"'([^']*)'", m.group(1)))
+
+
+def doc_examples(root: Path):
+    for doc in [root / "README.md", *sorted((root / "docs").glob("*.md"))]:
+        text = doc.read_text()
+        for m in re.finditer(r"```json\n(.*?)```", text, re.S):
+            line = text[: m.start()].count("\n") + 1
+            yield f"{doc.relative_to(root)}:{line}", m.group(1)
+
+
+def main() -> int:
+    binary, root = Path(sys.argv[1]), Path(sys.argv[2])
+    cases = [(str(p.relative_to(root)), p.read_text()) for p in sorted((root / "config").glob("*.json"))
+             if not p.name.endswith("_resume.json") and p.name != "run_vtk.json"]
+    cases += list(k8s_payloads(root))
+    cases.append(("Makefile cuda-run-vtk", makefile_run_vtk(root)))
+    cases += list(doc_examples(root))
+    if len(cases) < 8:
+        print(f"FAIL: only {len(cases)} configurations found; the extraction is broken")
+        return 1
+
+    failures = 0
+    owners = {}
+    local = [(n, t) for n, t in cases if n.startswith("config/") or n == "Makefile cuda-run-vtk"]
+    for name, text in local:
+        cfg = json.loads(text)
+        dirs = {"output_dir": cfg.get("output", {}).get("output_dir", "./out"),
+                "checkpoint_dir": cfg.get("checkpoint", {}).get("checkpoint_dir", "./checkpoints")}
+        for key, value in dirs.items():
+            path = str(Path(value))
+            if (key, path) in owners:
+                print(f"FAIL {name}: {key} {value} is also used by {owners[(key, path)]}")
+                failures += 1
+            owners[(key, path)] = name
+    print(f"{'ok  ' if failures == 0 else 'FAIL'} own output_dir and checkpoint_dir for "
+          f"{len(local)} runs from the repository root")
+    with tempfile.TemporaryDirectory() as tmp:
+        def validate(name, text):
+            path = Path(tmp) / "config.json"
+            path.write_text(text)
+            return subprocess.run([str(binary), "--validate-config", str(path)],
+                                  capture_output=True, text=True, timeout=60)
+
+        for name, text in cases:
+            out = validate(name, text)
+            ok = out.returncode == 0
+            if ok:
+                printed = {k: v[0] for k, v in printed_limits(out.stdout).items()}
+                ok = printed == expected_limits(json.loads(text))
+            failures += not ok
+            print(f"{'ok  ' if ok else 'FAIL'} {name}")
+            if not ok:
+                print("     " + (out.stdout + out.stderr).strip().replace("\n", "\n     "))
+
+        def mutated(name, change):
+            cfg = json.loads((root / "config" / name).read_text())
+            change(cfg)
+            return json.dumps(cfg)
+
+        def with_time(name, **time):
+            return mutated(name, lambda cfg: cfg["time"].update(time))
+
+        def limit(text, line):
+            out = validate("limit", text)
+            found = printed_limits(out.stdout) if out.returncode == 0 else {}
+            return found.get(line, (None, None))[1]
+
+        # Each printed limit is the validator's: accepted as time.dt, the next
+        # double above it rejected.
+        boundaries = [
+            ("default.json", {}, "thermal dt limit",
+             "exceeds the stability limit {} of the explicit thermal update"),
+            ("benchmark_small.json", {}, "phase-field dt limit",
+             "exceeds the stability limit {} of the explicit phase-field update"),
+            ("default.json", {"adaptive": True}, "adaptive dt cap",
+             "time.dt (the first adaptive step) = "),
+        ]
+        for name, time, line, needle in boundaries:
+            what = f"{line} of {name}" + (" (adaptive)" if time else "")
+            value = limit(with_time(name, **time), line)
+            if value is None or value == "none":
+                print(f"FAIL {what}: printed {value!r}, not a number")
+                failures += 1
+                continue
+            at = validate("limit", with_time(name, **time, dt=float(value)))
+            above = validate("limit", with_time(name, **time,
+                                                dt=math.nextafter(float(value), math.inf)))
+            message = above.stdout + above.stderr
+            if at.returncode != 0:
+                print(f"FAIL {what}: time.dt = the printed {value} rejected")
+                failures += 1
+            elif above.returncode == 0 or needle.format(value) not in message:
+                print(f"FAIL {what}: time.dt one double above {value} not rejected with "
+                      f"\"{needle.format(value)}\"")
+                print("     " + message.strip().replace("\n", "\n     "))
+                failures += 1
+            else:
+                print(f"ok   {what}: {value} is the largest accepted time.dt")
+
+        # +infinity prints as "none".
+        def damped(name, **time):
+            def change(cfg):
+                cfg["physics"]["willmore_beta"] = 0.6
+                cfg["time"].update(time)
+            return mutated(name, change)
+
+        nones = [
+            ("benchmark_small.json", with_time("benchmark_small.json"), "thermal dt limit"),
+            ("run_dendrite.json with willmore_beta 0.6", damped("run_dendrite.json"),
+             "phase-field dt limit"),
+            ("run_dendrite.json with willmore_beta 0.6, imex, adaptive",
+             damped("run_dendrite.json", scheme="imex", adaptive=True), "adaptive dt cap"),
+        ]
+        for what_cfg, text, line in nones:
+            what = f"{line} of {what_cfg}"
+            value = limit(text, line)
+            ok = value == "none"
+            failures += not ok
+            print(f"{'ok  ' if ok else 'FAIL'} {what}: {value}")
+
+        def misspell(cfg):
+            cfg["physics"]["epsilom"] = cfg["physics"].pop("epsilon")
+
+        def no_beta(cfg):
+            del cfg["physics"]["willmore_beta"]
+
+        def heun(cfg):
+            cfg["time"]["scheme"] = "heun"
+
+        def negative_beta(cfg):
+            cfg["physics"]["epsilon"] = 0.05
+            cfg["physics"]["willmore_beta"] = -0.5
+
+        def one_sided_periodic(cfg):
+            faces = {f: {"type": "neumann", "flux": 0.0}
+                     for f in ("x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi")}
+            faces["x_lo"] = {"type": "periodic"}
+            cfg["boundary"]["phi"] = faces
+
+        def robin_opposite_signs(cfg):
+            cfg["boundary"]["u"] = {"type": "robin", "alpha": -1.1, "beta": 0.4, "gamma": 0.0}
+
+        def fractional_cells(cfg):
+            cfg["grid"]["Nx"] = 64.5
+
+        def steps_beyond_int(cfg):
+            cfg["time"]["max_steps"] = 4294967297
+
+        def no_saturation_interval(cfg):
+            cfg["time"]["saturation_check_freq"] = 0
+
+        def flux_on_dirichlet(cfg):
+            cfg["boundary"]["phi"]["flux"] = 0.0
+
+        def empty_output_dir(cfg):
+            cfg["output"]["output_dir"] = ""
+
+        def two_devices(cfg):
+            cfg["gpu"]["device_ids"] = [0, 1]
+
+        def thin_split(cfg):
+            cfg["grid"]["Nx"] = 3
+            cfg["gpu"].update(device_ids=[0, 0], multi_gpu=True)
+
+        def physics(**values):
+            return lambda cfg: cfg["physics"].update(values)
+
+        def phi_robin_out_of_range(cfg):
+            cfg["boundary"]["phi"] = {"type": "robin", "alpha": 0.0149, "beta": 0.05, "gamma": 10}
+
+        def twice(name, section):
+            """config/name's text with `section` given twice, first as {}."""
+            text = (root / "config" / name).read_text()
+            key = f'"{section}": {{'
+            if text.count(key) != 1:
+                raise SystemExit(f"FAIL: {key} is not in config/{name} exactly once")
+            return text.replace(key, f'"{section}": {{}},\n    ' + key, 1)
+
+        controls = [
+            ("misspelled key 'epsilom'", mutated("default.json", misspell), "epsilom"),
+            ("eps > 1/15 without willmore_beta", mutated("run_dendrite.json", no_beta),
+             "exceeds 1/15"),
+            ("willmore_beta with scheme heun", mutated("run_dendrite.json", heun),
+             "requires time.scheme"),
+            ("negative willmore_beta", mutated("default.json", negative_beta),
+             "willmore_beta must be >= 0"),
+            ("periodic x_lo opposite a non-periodic x_hi",
+             mutated("run_dendrite.json", one_sided_periodic), "periodic BC must be set on both faces"),
+            ("Robin u with alpha < 0 < beta", mutated("default.json", robin_opposite_signs),
+             "must not have opposite signs"),
+            ("grid.Nx 64.5", mutated("default.json", fractional_cells),
+             "grid.Nx must be an integer"),
+            ("time.max_steps 4294967297", mutated("default.json", steps_beyond_int),
+             "time.max_steps must be an integer"),
+            ("saturation_check_freq 0", mutated("default.json", no_saturation_interval),
+             "saturation_check_freq must be >= 1"),
+            ("the time section twice", twice("default.json", "time"),
+             'key "time" appears twice in "<root>"'),
+            ("a flux on a dirichlet phi", mutated("default.json", flux_on_dirichlet),
+             'is not a parameter of a dirichlet boundary'),
+            ("an empty output_dir", mutated("default.json", empty_output_dir),
+             "output.output_dir must not be empty"),
+            ("device_ids [0, 1] without multi_gpu", mutated("default.json", two_devices),
+             "gpu.multi_gpu is false"),
+            ("Nx 3 over two domains", mutated("default.json", thin_split),
+             "is too small for 2 domains"),
+            ("d0 5e-324 (tau0 infinite)", mutated("default.json", physics(d0=5e-324)),
+             "the relaxation time tau0 = W0^3 a1 a2 / (d0 D) + W0^2 beta0 / d0 is inf"),
+            ("delta 1.7976931348623157e308", mutated("default.json", physics(delta=1.7976931348623157e308)),
+             "lambda delta is not a finite double"),
+            ("phi Robin face with gamma/alpha 671", mutated("default.json", phi_robin_out_of_range),
+             "the range of the phase field"),
+            ("willmore_beta 1e150", mutated("default.json", physics(willmore_beta=1e150)),
+             "beyond single precision"),
+            ("a2 1.7976931348623157e308 (tau0 A(n)^2 overflows)",
+             mutated("default.json", physics(a1=1.0, d0=1.0, D=1.0, a2=1.7976931348623157e308)),
+             "the relaxation time tau0 A(n)^2 overflows"),
+        ]
+        for what, text, needle in controls:
+            out = validate("control", text)
+            message = out.stdout + out.stderr
+            if out.returncode == 0:
+                print(f"FAIL control: {what}: accepted")
+                failures += 1
+            elif needle not in message:
+                print(f"FAIL control: {what}: rejected without \"{needle}\"")
+                print("     " + message.strip().replace("\n", "\n     "))
+                failures += 1
+            else:
+                print(f"ok   control: {what}: rejected")
+
+    print(f"{len(cases)} shipped configurations, {failures} failure(s)")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

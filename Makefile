@@ -1,0 +1,603 @@
+# ============================================================================
+# Allen-Cahn-CUDA — Project Makefile
+# ----------------------------------------------------------------------------
+# Orchestrates build, test, Docker, and Kubernetes workflows.
+#
+# Usage:
+#   make help          Show all targets
+#   make build         CMake configure + build (Release)
+#   make test          Run all tests
+#   make docker-build-prod   Build production Docker image
+#   make k8s-deploy-dev      Deploy to dev Kubernetes environment
+# ============================================================================
+
+# ── Configurable Variables ──────────────────────────────────────────────────
+
+# Build
+BUILD_DIR          ?= build
+CMAKE_GENERATOR    ?= Ninja
+CMAKE_PRESET       ?= release
+CMAKE_PRESET_DEBUG ?= debug
+PARALLEL_JOBS      ?= $(shell nproc 2>/dev/null || echo 4)
+
+# Docker
+DOCKER_REGISTRY    ?= ghcr.io/allen-cahn-cuda
+IMAGE_NAME         ?= allencahn-cuda
+IMAGE_TAG          ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo latest)
+DOCKER_BUILD_ARGS  ?=
+
+# Kubernetes
+K8S_NAMESPACE_DEV  ?= allen-cahn-dev
+K8S_NAMESPACE_PROD ?= allen-cahn-prod
+# The labels of the simulation Job's pod template (k8s/base/job.yaml), which its pods
+# carry. kustomize's `labels` (managed-by, version, environment) set no includeTemplates,
+# so they reach only the resources' metadata, never a pod.
+K8S_POD_SELECTOR   ?= app.kubernetes.io/name=allen-cahn-cuda,app.kubernetes.io/component=simulation
+KUSTOMIZE          ?= kubectl kustomize
+KUBECTL            ?= kubectl
+
+# Linting / Formatting
+CLANG_TIDY         ?= clang-tidy
+CLANG_FORMAT       ?= clang-format
+COMPILE_COMMANDS   ?= $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG)/compile_commands.json
+
+# Native CUDA docker runner (any host with docker + nvidia-container-toolkit)
+CUDA_BUILD_DIR     ?= build
+CUDA_ARCH          ?= 75
+NATIVE_BIN         ?= $(CUDA_BUILD_DIR)/src/allen-cahn-cuda
+CONFIG             ?= config/benchmark_small.json
+# Parents of the directories of the repository's config/<name>.json and the
+# generated config/run_vtk.json (out/<name>, checkpoints/<name>): created
+# before a run, chowned to the calling user by cuda-build, which every run
+# depends on (the run, as that user, could not write into what a root container
+# left there), removed by cuda-clean. The binary writes
+# where the configuration's output.output_dir and checkpoint.checkpoint_dir
+# say; every run needs its own checkpoint_dir.
+OUT_DIR            ?= out
+CHECKPOINT_DIR     ?= checkpoints
+
+# Visualization (scripts/visualize_dendrite.py)
+VIZ_SCRIPT         ?= scripts/visualize_dendrite.py
+VIZ_IN             ?= $(OUT_DIR)/run_dendrite
+VIZ_ROOT           ?= viz
+# viz/<last path component of VIZ_IN>. abspath drops trailing and repeated
+# slashes and '.' components first, so out/run_vtk/ and out/run_vtk/. also
+# give viz/run_vtk (notdir alone gives viz/ and viz/.).
+VIZ_OUT            ?= $(VIZ_ROOT)/$(notdir $(abspath $(VIZ_IN)))
+VIZ_LAYOUT         ?= panels
+VIZ_FPS            ?= 12
+VIZ_WINDOW_W       ?= 1920
+VIZ_WINDOW_H       ?= 1080
+VIZ_SMOOTH_ITERS   ?= 8
+VIZ_PASS_BAND      ?= 0.05
+VIZ_PHI_CMAP       ?= coolwarm
+VIZ_U_CMAP         ?= plasma
+VIZ_EXTRA_ARGS     ?=
+
+# Long-run dendrite simulation (resumable; 28 minutes of compute on an RTX 4090)
+LONG_CONFIG        ?= config/run_dendrite_long.json
+LONG_LOG           ?= run_long.log
+
+# Large-box dendrite simulation (384^3; 182 minutes of compute on an RTX 4090)
+LARGE_CONFIG       ?= config/run_dendrite_large.json
+LARGE_LOG          ?= run_large.log
+
+# Prebuilt CUDA dev image — built once by `make cuda-image`, reused by every
+# cuda-* target. This bakes cmake, ninja, gcc-13, VTK into the image so
+# individual build / test / run invocations don't pay the ~60s apt-install cost.
+CUDA_DEV_IMAGE        ?= allen-cahn-cuda-dev:local
+CUDA_DEV_DOCKERFILE   ?= docker/Dockerfile.cuda-dev
+
+# Host UID/GID — used to chown build artefacts back to the caller so that
+# subsequent `rm -rf build` from the host (non-root) shell succeeds, and to run
+# the simulation as the caller (CUDA_DOCKER_RUN_SIM).
+HOST_UID           := $(shell id -u)
+HOST_GID           := $(shell id -g)
+
+# Prefix command for every cuda-* target: mount PWD into /work, GPU passthrough
+CUDA_DOCKER_RUN    = docker run --rm --gpus all -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
+CUDA_DOCKER_RUN_IT = docker run --rm -it --gpus all -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
+# No-GPU variant used by cuda-clean (no CUDA runtime required, just filesystem ops)
+CUDA_DOCKER_RUN_FS = docker run --rm -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
+# Simulation runs: the binary is the container's main process (the image's entrypoint
+# execs its command), so SIGINT / SIGTERM (Ctrl-C, `docker stop`) reach its handlers,
+# which write a checkpoint of the current step and exit 130 / 143; it runs as the host
+# user, so the files it writes need no chown. (Wrapped in `bash -c '...; chown'`, bash was
+# PID 1 and passed neither signal on: Ctrl-C left the run going, `docker stop` killed it
+# after its grace period, without a checkpoint either way.)
+CUDA_DOCKER_RUN_SIM = docker run --rm --gpus all --user $(HOST_UID):$(HOST_GID) \
+  -v $$PWD:/work -w /work $(CUDA_DEV_IMAGE)
+
+# Chown build artefacts back to the host user at the end of every docker job that runs
+# as root (build, tests, visualization).
+CUDA_CHOWN = chown -R $(HOST_UID):$(HOST_GID) \
+  $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_ROOT) $(VIZ_OUT) 2>/dev/null || true
+
+# Force serial execution — the cuda-* targets share $(CUDA_BUILD_DIR) and
+# would race on cmake/FetchContent if the user has MAKEFLAGS=-jN in their env.
+.NOTPARALLEL:
+
+# ── Phony Targets ───────────────────────────────────────────────────────────
+
+.PHONY: help \
+        build build-debug clean \
+        test test-unit test-integration test-e2e test-coverage \
+        run run-small run-default run-vtk \
+        cuda-image cuda-image-rebuild \
+        cuda-configure cuda-build cuda-test cuda-test-unit cuda-test-integration cuda-test-e2e \
+        cuda-run cuda-run-small cuda-run-default cuda-run-vtk cuda-run-dendrite \
+        cuda-run-dendrite-long cuda-run-dendrite-large \
+        cuda-resume-dendrite cuda-resume-dendrite-large \
+        cuda-watch-dendrite cuda-status-dendrite \
+        cuda-visualize cuda-visualize-single cuda-visualize-self-test \
+        cuda-shell cuda-clean cuda-all cuda-dendrite-demo \
+        docker-build-dev docker-build-test docker-build-prod docker-build-all \
+        docker-test docker-run docker-shell \
+        docker-compose-up docker-compose-down \
+        k8s-deploy-dev k8s-deploy-prod \
+        k8s-undeploy-dev k8s-undeploy-prod \
+        k8s-status k8s-logs \
+        lint format
+
+.DEFAULT_GOAL := help
+
+# ============================================================================
+# Build Targets
+# ============================================================================
+
+build: ## CMake configure + build (Release)
+	@echo "==> Configuring (preset: $(CMAKE_PRESET))..."
+	cmake --preset $(CMAKE_PRESET) -G $(CMAKE_GENERATOR)
+	@echo "==> Building..."
+	cmake --build $(BUILD_DIR)/$(CMAKE_PRESET) --parallel $(PARALLEL_JOBS)
+
+build-debug: ## CMake configure + build (Debug, tests enabled)
+	@echo "==> Configuring (preset: $(CMAKE_PRESET_DEBUG))..."
+	cmake --preset $(CMAKE_PRESET_DEBUG) -G $(CMAKE_GENERATOR)
+	@echo "==> Building..."
+	cmake --build $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --parallel $(PARALLEL_JOBS)
+
+clean: ## Remove all build artifacts
+	@echo "==> Cleaning build directory..."
+	rm -rf $(BUILD_DIR)
+	@echo "==> Clean complete."
+
+# ============================================================================
+# Test Targets
+# ============================================================================
+
+test: build-debug ## Run all tests
+	@echo "==> Running all tests..."
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS)
+
+test-unit: build-debug ## Run unit tests only
+	@echo "==> Running unit tests..."
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS) \
+		-R "^unit[.]"
+
+test-integration: build-debug ## Run integration tests only
+	@echo "==> Running integration tests..."
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS) \
+		-R "^integration[.]"
+
+test-e2e: build-debug ## Run the end-to-end tests (the real binary, the Makefile) only
+	@echo "==> Running end-to-end tests..."
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error \
+		-R "^e2e[.]"
+
+test-coverage: ## Build with coverage instrumentation and generate report
+	@echo "==> Configuring with coverage flags..."
+	cmake --preset $(CMAKE_PRESET_DEBUG) -G $(CMAKE_GENERATOR) \
+		-DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
+		-DCMAKE_CUDA_FLAGS="-Xcompiler=--coverage,-fprofile-arcs,-ftest-coverage" \
+		-DCMAKE_EXE_LINKER_FLAGS="--coverage"
+	@echo "==> Building..."
+	cmake --build $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --parallel $(PARALLEL_JOBS)
+	@echo "==> Running tests..."
+	ctest --test-dir $(BUILD_DIR)/$(CMAKE_PRESET_DEBUG) --output-on-failure --no-tests=error --parallel $(PARALLEL_JOBS)
+	@echo "==> Generating coverage report..."
+	@if command -v gcovr >/dev/null 2>&1; then \
+		gcovr --root . --filter src/ --print-summary --html-details $(BUILD_DIR)/coverage/index.html; \
+		echo "==> Coverage report: $(BUILD_DIR)/coverage/index.html"; \
+	elif command -v lcov >/dev/null 2>&1; then \
+		lcov --capture --directory $(BUILD_DIR) --output-file $(BUILD_DIR)/coverage.info --ignore-errors mismatch; \
+		lcov --remove $(BUILD_DIR)/coverage.info '/usr/*' '*/tests/*' '*/build/*' --output-file $(BUILD_DIR)/coverage.info; \
+		genhtml $(BUILD_DIR)/coverage.info --output-directory $(BUILD_DIR)/coverage; \
+		echo "==> Coverage report: $(BUILD_DIR)/coverage/index.html"; \
+	else \
+		echo "WARNING: Neither gcovr nor lcov found. Install one for HTML coverage reports."; \
+	fi
+
+# ============================================================================
+# Simulation Run Targets (native host binary, requires `make build` first)
+# ============================================================================
+
+RELEASE_BIN ?= $(BUILD_DIR)/$(CMAKE_PRESET)/src/allen-cahn-cuda
+
+run: ## Run simulation with CONFIG=<path> (default: benchmark_small.json)
+	@if [ ! -x "$(RELEASE_BIN)" ]; then \
+		echo "ERROR: $(RELEASE_BIN) not found. Run 'make build' first, or use 'make cuda-run'."; \
+		exit 1; \
+	fi
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> Running $(RELEASE_BIN) $(CONFIG)"
+	./$(RELEASE_BIN) $(CONFIG)
+
+run-small: CONFIG=config/benchmark_small.json
+run-small: run ## Run small 128^3 benchmark config
+
+run-default: CONFIG=config/default.json
+run-default: run ## Run default 600^3 production config
+
+run-vtk: CONFIG=config/run_vtk.json
+run-vtk: run ## Run custom VTK config (see `make cuda-run-vtk` to autogenerate)
+
+# ============================================================================
+# CUDA Docker Targets (bare-metal host + nvidia-container-toolkit)
+# All cuda-* targets reuse a single prebuilt dev image ($(CUDA_DEV_IMAGE))
+# built once by `make cuda-image`. No host cmake/nvcc required.
+# ============================================================================
+
+cuda-image: ## (docker) Build the prebuilt CUDA dev image (one-time, cached)
+	@if docker image inspect $(CUDA_DEV_IMAGE) >/dev/null 2>&1; then \
+	  echo "==> $(CUDA_DEV_IMAGE) already exists (use 'make cuda-image-rebuild' to force)"; \
+	else \
+	  echo "==> Building $(CUDA_DEV_IMAGE) from $(CUDA_DEV_DOCKERFILE) (one-time, ~1-2 min)"; \
+	  docker build -t $(CUDA_DEV_IMAGE) -f $(CUDA_DEV_DOCKERFILE) .; \
+	fi
+
+cuda-image-rebuild: ## (docker) Force-rebuild the prebuilt CUDA dev image from scratch
+	@echo "==> Rebuilding $(CUDA_DEV_IMAGE) --no-cache"
+	docker build --no-cache -t $(CUDA_DEV_IMAGE) -f $(CUDA_DEV_DOCKERFILE) .
+
+cuda-configure: cuda-image ## (docker) Fresh cmake configure inside CUDA container
+	$(CUDA_DOCKER_RUN) bash -c 'cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
+	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-build: cuda-image ## (docker) Configure + build binary and tests inside CUDA container
+	$(CUDA_DOCKER_RUN) bash -c 'cmake -B $(CUDA_BUILD_DIR) -G Ninja -DCMAKE_BUILD_TYPE=Release \
+	    -DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCH) -DAC_BUILD_TESTS=ON && \
+	  cmake --build $(CUDA_BUILD_DIR) -j$$(nproc); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-test: cuda-build ## (docker) Build and run the full ctest suite
+	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-test-unit: cuda-build ## (docker) Run unit test binary only
+	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^unit[.]"; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-test-integration: cuda-build ## (docker) Run integration test binary only
+	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -j$$(nproc) -R "^integration[.]"; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-test-e2e: cuda-build ## (docker) Run the end-to-end tests (the real binary, the Makefile) only
+	$(CUDA_DOCKER_RUN) bash -c 'AC_REQUIRE_GPU=1 ctest --test-dir $(CUDA_BUILD_DIR) --output-on-failure --no-tests=error -R "^e2e[.]"; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-run: cuda-build ## (docker) Run simulation with CONFIG=<path> inside CUDA container
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> Running ./$(NATIVE_BIN) $(CONFIG) (inside container)"
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $(CONFIG)
+
+cuda-run-small: CONFIG=config/benchmark_small.json
+cuda-run-small: cuda-run ## (docker) 128^3 quick benchmark -> raw output
+
+cuda-run-default: CONFIG=config/default.json
+cuda-run-default: cuda-run ## (docker) 600^3 full production run -> VTS output
+
+cuda-run-vtk: ## (docker) Generate config/run_vtk.json and run -> VTS output in ./out/run_vtk
+	@mkdir -p config $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> Writing config/run_vtk.json"
+	@printf '%s\n' \
+	    '{' \
+	    '  "physics":  { "delta": 0.8, "epsilon": 0.07, "W0": 1.0, "D": 2.0, "d0": 0.5, "willmore_beta": 0.0149 },' \
+	    '  "grid":     { "Nx": 128, "Ny": 128, "Nz": 128, "dx": 0.4, "dy": 0.4, "dz": 0.4 },' \
+	    '  "time":     { "dt": 0.005, "max_steps": 3200, "scheme": "euler", "adaptive": false, "saturation_check_freq": 160 },' \
+	    '  "stencil":  "27pt",' \
+	    '  "output":   { "frequency": 160, "output_dir": "./out/run_vtk", "format": "vts", "async_io": true },' \
+	    '  "checkpoint": { "frequency": 800, "checkpoint_dir": "./checkpoints/run_vtk", "keep_last": 3 },' \
+	    '  "initial":  { "seed_radius": 2.4 },' \
+	    '  "boundary": {' \
+	    '    "phi": { "type": "neumann", "flux": 0.0 },' \
+	    '    "u":   { "type": "dirichlet", "value": -0.8 }' \
+	    '  }' \
+	    '}' > config/run_vtk.json
+	$(MAKE) cuda-run CONFIG=config/run_vtk.json
+
+cuda-run-dendrite: CONFIG=config/run_dendrite.json
+cuda-run-dendrite: cuda-run ## (docker) 160^3 cubic dendrite (27pt, eps=0.12, beta=0.25, euler, dt=0.000625, t/tau0=32) -> VTS
+
+# ── Long resumable dendrite run (with crash-safe checkpointing) ──────────
+# A 192^3 run at eps = 0.15 until the saturation guard stops it (measured:
+# step 112000, t = 35.0; at 14.9 ms per step on an RTX 4090 that is 28
+# minutes of compute). Checkpoints every 48000 steps (11.9 minutes of
+# compute), keep_last=3, so an interrupt loses at most that much.
+#
+# Backgrounding (mandatory for runs longer than your terminal session):
+#   tmux new -s dendrite 'make cuda-run-dendrite-long'
+#   # OR
+#   nohup make cuda-run-dendrite-long > $(LONG_LOG) 2>&1 &
+#
+# After an interrupt (SIGINT, container kill, host suspend, ...), simply:
+#   make cuda-resume-dendrite
+# which runs the binary with --resume: it restarts from the newest checkpoint in the
+# config's checkpoint_dir that it can restore on the config's grid, skipping with a
+# warning any that is truncated, corrupted (header or payload CRC32), of another grid or
+# named after another step than its header's, and starts at step 0 if there is none.
+# The recipe is one command line without $(MAKE), so `make -n` only prints it.
+cuda-run-dendrite-long: cuda-build ## (docker) Long 192^3 dendrite run (eps=0.15) until saturation, with checkpoints
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> LONG dendrite run on 192^3 until saturation (RTX 4090: 28 min of compute, 0.98 GB VTK output)."
+	@echo "    Background it so it survives terminal disconnect:"
+	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-long'"
+	@echo "       # OR"
+	@echo "       nohup make cuda-run-dendrite-long > $(LONG_LOG) 2>&1 &"
+	@echo "    Resume after any interrupt:    make cuda-resume-dendrite"
+	@echo "    Watch progress (nohup mode):   make cuda-watch-dendrite"
+	@echo "    Status check:                  make cuda-status-dendrite"
+	@echo ""
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $(LONG_CONFIG)
+
+cuda-resume-dendrite: cuda-build ## (docker) Resume the long run from its newest intact checkpoint (cold start if none)
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> Resuming ./$(NATIVE_BIN) --resume $(LONG_CONFIG) (inside container)"
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) --resume $(LONG_CONFIG)
+
+# ── Large-box dendrite run (384^3, until saturation) ──────────────────────
+# Tanh initial condition, eps = 0.10 with willmore_beta. Measured on an RTX
+# 4090: 5.70 GiB of GPU memory and 122 ms per step. The saturation guard
+# stops it at step 89600 (t = 112): 182 minutes of compute at that rate.
+# Backgrounding:
+#   tmux new -s dendrite 'make cuda-run-dendrite-large'
+#   nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &
+# Resume after interrupt:  make cuda-resume-dendrite-large
+cuda-run-dendrite-large: cuda-build ## (docker) 384^3 dendrite run until saturation (182 min on an RTX 4090)
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> LARGE dendrite run on 384^3 until saturation (RTX 4090: 182 min of compute, 21 GB VTK output)."
+	@echo "    Background it:"
+	@echo "       tmux new -s dendrite 'make cuda-run-dendrite-large'"
+	@echo "       nohup make cuda-run-dendrite-large > $(LARGE_LOG) 2>&1 &"
+	@echo "    Resume: make cuda-resume-dendrite-large"
+	@echo ""
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) $(LARGE_CONFIG)
+
+cuda-resume-dendrite-large: cuda-build ## (docker) Resume the large run from its newest intact checkpoint (cold start if none)
+	@mkdir -p $(OUT_DIR) $(CHECKPOINT_DIR)
+	@echo "==> Resuming ./$(NATIVE_BIN) --resume $(LARGE_CONFIG) (inside container)"
+	$(CUDA_DOCKER_RUN_SIM) ./$(NATIVE_BIN) --resume $(LARGE_CONFIG)
+
+cuda-watch-dendrite: ## Tail run_long.log (only useful after 'nohup make cuda-run-dendrite-long')
+	@if [ -f $(LONG_LOG) ]; then \
+	  tail -F $(LONG_LOG); \
+	else \
+	  echo "ERROR: $(LONG_LOG) not found."; \
+	  echo "       To get a log file, start with: nohup make cuda-run-dendrite-long > $(LONG_LOG) 2>&1 &"; \
+	  echo "       Or use tmux/screen instead of redirecting output."; \
+	  exit 1; \
+	fi
+
+cuda-status-dendrite: ## Show the long run's checkpoints, the one a resume restarts from, and its frames
+	@python3 scripts/run_status.py $(LONG_CONFIG) $(LONG_LOG)
+
+cuda-shell: ## (docker) Interactive bash shell in the CUDA container (PWD mounted at /work)
+	$(CUDA_DOCKER_RUN_IT) bash
+
+# ── Visualization (PyVista, headless via Xvfb) ──────────────────────────────
+# Renders every $(VIZ_IN)/*.vts snapshot (default: out/run_dendrite) to
+# $(VIZ_OUT)/frame_*.png (default: viz/<name of VIZ_IN>) plus an optional MP4.
+# Uses the prebuilt cuda-dev image — no GPU required, so we use the _FS runner.
+# The script itself calls pv.start_xvfb() to spin up an Xvfb server.
+#
+# Layouts
+#   panels   (default) 1920×1080 composite: cutaway 3D + slice panels +
+#            time-series sidebar with solid fraction & ⟨u⟩ over time.
+#   single   just the 3D cutaway view at the requested window size.
+#
+# NOTE: if `python3 not found` or `Xvfb not found`, your cuda-dev image was
+# built before visualization support was added. Run:  make cuda-image-rebuild
+cuda-visualize: cuda-image ## (docker) Render .vts snapshots to PNGs + MP4 (panels layout)
+	@if [ ! -d $(VIZ_IN) ] || [ -z "$$(ls $(VIZ_IN)/output_*.vts 2>/dev/null)" ]; then \
+	  echo "ERROR: no .vts files in $(VIZ_IN). Run 'make cuda-run-dendrite' first, or set VIZ_IN to a run's output directory (e.g. VIZ_IN=out/run_vtk after 'make cuda-run-vtk')."; \
+	  exit 1; \
+	fi
+	@if ! $(CUDA_DOCKER_RUN_FS) bash -c 'command -v python3 >/dev/null && command -v Xvfb >/dev/null'; then \
+	  echo "ERROR: $(CUDA_DEV_IMAGE) lacks python3/Xvfb — probably built before"; \
+	  echo "       visualization support. Rebuild with: make cuda-image-rebuild"; \
+	  exit 1; \
+	fi
+	@mkdir -p $(VIZ_OUT)
+	@echo "==> Visualizing $(VIZ_IN)/*.vts -> $(VIZ_OUT)/ (layout=$(VIZ_LAYOUT))"
+	$(CUDA_DOCKER_RUN_FS) bash -c ' \
+	  python3 $(VIZ_SCRIPT) \
+	    --input-dir $(VIZ_IN) \
+	    --output-dir $(VIZ_OUT) \
+	    --layout $(VIZ_LAYOUT) \
+	    --window-size $(VIZ_WINDOW_W) $(VIZ_WINDOW_H) \
+	    --smooth-iters $(VIZ_SMOOTH_ITERS) \
+	    --pass-band $(VIZ_PASS_BAND) \
+	    --phi-cmap $(VIZ_PHI_CMAP) \
+	    --u-cmap $(VIZ_U_CMAP) \
+	    --make-video --fps $(VIZ_FPS) \
+	    $(VIZ_EXTRA_ARGS); \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-visualize-single: VIZ_LAYOUT=single
+cuda-visualize-single: cuda-visualize ## (docker) Render only the 3D cutaway view (no sidebar)
+
+cuda-visualize-self-test: cuda-image ## (docker) Run the visualizer's internal smoke test
+	@if ! $(CUDA_DOCKER_RUN_FS) bash -c 'command -v python3 >/dev/null && command -v Xvfb >/dev/null'; then \
+	  echo "ERROR: $(CUDA_DEV_IMAGE) lacks python3/Xvfb — Rebuild with: make cuda-image-rebuild"; \
+	  exit 1; \
+	fi
+	@echo "==> Running visualize_dendrite self-test (synthetic 24^3 grid)"
+	$(CUDA_DOCKER_RUN_FS) bash -c ' \
+	  python3 $(VIZ_SCRIPT) --self-test && \
+	  python3 tests/visualize_smoke.py; \
+	  rc=$$?; $(CUDA_CHOWN); exit $$rc'
+
+cuda-all: ## (docker) Build + test + VTK simulation + visualization end-to-end
+	@$(MAKE) cuda-build
+	@$(MAKE) cuda-test
+	@$(MAKE) cuda-run-vtk
+	@$(MAKE) cuda-visualize VIZ_IN=$(OUT_DIR)/run_vtk
+
+cuda-dendrite-demo: ## (docker) Build + dendrite-friendly run (160^3) + production viz
+	@$(MAKE) cuda-build
+	@$(MAKE) cuda-run-dendrite
+	@$(MAKE) cuda-visualize VIZ_IN=$(OUT_DIR)/run_dendrite VIZ_EXTRA_ARGS="--skip-saturated"
+
+cuda-clean: ## Remove native build dir, simulation outputs, checkpoints, and visualizations
+	@if [ -d $(CUDA_BUILD_DIR) ] || [ -d $(OUT_DIR) ] || [ -d $(CHECKPOINT_DIR) ] || [ -d $(VIZ_ROOT) ]; then \
+		echo "==> Removing $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_ROOT) (inside container to handle root-owned files)"; \
+		$(CUDA_DOCKER_RUN_FS) rm -rf $(CUDA_BUILD_DIR) $(OUT_DIR) $(CHECKPOINT_DIR) $(VIZ_ROOT); \
+	else \
+		echo "==> Nothing to clean."; \
+	fi
+
+# ============================================================================
+# Docker Targets
+# ============================================================================
+
+docker-build-dev: ## Build development Docker image
+	@echo "==> Building dev image..."
+	docker build -f docker/Dockerfile.dev \
+		--build-arg USER_UID=$(HOST_UID) --build-arg USER_GID=$(HOST_GID) \
+		-t $(IMAGE_NAME):dev \
+		-t $(DOCKER_REGISTRY)/$(IMAGE_NAME):dev \
+		$(DOCKER_BUILD_ARGS) .
+
+docker-build-test: ## Build test Docker image
+	@echo "==> Building test image..."
+	docker build -f docker/Dockerfile.test \
+		-t $(IMAGE_NAME):test \
+		-t $(DOCKER_REGISTRY)/$(IMAGE_NAME):test \
+		$(DOCKER_BUILD_ARGS) .
+
+docker-build-prod: ## Build production Docker image
+	@echo "==> Building prod image (tag: $(IMAGE_TAG))..."
+	docker build -f docker/Dockerfile.prod \
+		-t $(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(IMAGE_NAME):latest \
+		-t $(DOCKER_REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(DOCKER_REGISTRY)/$(IMAGE_NAME):latest \
+		$(DOCKER_BUILD_ARGS) .
+
+docker-build-all: docker-build-dev docker-build-test docker-build-prod ## Build all Docker images
+
+docker-test: ## Run the test suite in the test image, rebuilt from this checkout
+	@echo "==> Running tests in Docker..."
+	docker compose --profile test run --rm --build test
+
+docker-run: ## Run the production simulation in the prod image, rebuilt from this checkout (results in ./output)
+	@echo "==> Running simulation in Docker..."
+	@mkdir -p output
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile prod run --rm --build prod
+
+docker-shell: ## Open interactive shell in dev container (image rebuilt for your user IDs)
+	@echo "==> Launching dev shell..."
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev run --rm --build dev /bin/bash
+
+docker-compose-up: ## Start the dev service in the background (image rebuilt for your user IDs)
+	@echo "==> Starting services..."
+	HOST_UID=$(HOST_UID) HOST_GID=$(HOST_GID) docker compose --profile dev up -d --build
+
+docker-compose-down: ## Stop all services and remove containers
+	@echo "==> Stopping services..."
+	docker compose --profile dev --profile test --profile prod down
+
+# ============================================================================
+# Kubernetes Targets
+# ============================================================================
+
+k8s-deploy-dev: ## Deploy to dev Kubernetes environment
+	@echo "==> Deploying to dev (namespace: $(K8S_NAMESPACE_DEV))..."
+	$(KUSTOMIZE) k8s/overlays/dev | $(KUBECTL) apply -f -
+
+k8s-deploy-prod: ## Deploy to prod Kubernetes environment
+	@echo "==> Deploying to prod (namespace: $(K8S_NAMESPACE_PROD))..."
+	$(KUSTOMIZE) k8s/overlays/prod | $(KUBECTL) apply -f -
+
+k8s-undeploy-dev: ## Remove dev Kubernetes deployment
+	@echo "==> Removing dev deployment..."
+	$(KUSTOMIZE) k8s/overlays/dev | $(KUBECTL) delete -f - --ignore-not-found
+
+k8s-undeploy-prod: ## Remove prod Kubernetes deployment
+	@echo "==> Removing prod deployment..."
+	$(KUSTOMIZE) k8s/overlays/prod | $(KUBECTL) delete -f - --ignore-not-found
+
+k8s-status: ## Show status of all Allen-Cahn k8s resources
+	@echo "==> Dev environment ($(K8S_NAMESPACE_DEV)):"
+	-$(KUBECTL) get all -n $(K8S_NAMESPACE_DEV) 2>/dev/null || echo "    Namespace not found or not accessible."
+	@echo ""
+	@echo "==> Prod environment ($(K8S_NAMESPACE_PROD)):"
+	-$(KUBECTL) get all -n $(K8S_NAMESPACE_PROD) 2>/dev/null || echo "    Namespace not found or not accessible."
+
+# kubectl's own messages (No resources found, no cluster) are shown; a failure in one
+# namespace does not stop the other (the leading -).
+k8s-logs: ## Show the logs of the simulation Job's pods (dev and prod namespaces)
+	@echo "==> Fetching logs from dev pods..."
+	-$(KUBECTL) logs -n $(K8S_NAMESPACE_DEV) -l $(K8S_POD_SELECTOR) --tail=100 --all-containers --prefix
+	@echo ""
+	@echo "==> Fetching logs from prod pods..."
+	-$(KUBECTL) logs -n $(K8S_NAMESPACE_PROD) -l $(K8S_POD_SELECTOR) --tail=100 --all-containers --prefix
+
+# ============================================================================
+# Utility Targets
+# ============================================================================
+
+# clang-tidy reads the compile commands of the C++ sources: the CUDA sources (.cu, .cuh)
+# are compiled by nvcc, whose flags it cannot read (unknown argument: '-rdc=true'), so it
+# checks the .cpp and .hpp files of src/, as ci.yml's clang-tidy job does by running this
+# target. Warnings do not fail it (WarningsAsErrors is empty in .clang-tidy); clang-tidy's
+# errors do. -p takes the directory of the compile commands.
+lint: ## Run clang-tidy on the C++ sources of src/ (the .cpp and .hpp files)
+	@if ! command -v $(CLANG_TIDY) >/dev/null 2>&1; then \
+		echo "ERROR: $(CLANG_TIDY) not found. Install clang-tidy to use this target."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(COMPILE_COMMANDS)" ]; then \
+		echo "==> compile_commands.json not found; building debug first..."; \
+		$(MAKE) build-debug; \
+	fi
+	@echo "==> Running clang-tidy..."
+	find src -type f \( -name '*.cpp' -o -name '*.hpp' \) | \
+		xargs $(CLANG_TIDY) -p $(dir $(COMPILE_COMMANDS))
+
+format: ## Run clang-format on all source files
+	@if ! command -v $(CLANG_FORMAT) >/dev/null 2>&1; then \
+		echo "ERROR: $(CLANG_FORMAT) not found. Install clang-format to use this target."; \
+		exit 1; \
+	fi
+	@echo "==> Formatting source files..."
+	find src tests -type f \( -name '*.cpp' -o -name '*.cu' -o -name '*.cuh' -o -name '*.hpp' -o -name '*.h' \) | \
+		xargs $(CLANG_FORMAT) -i
+	@echo "==> Done."
+
+# ============================================================================
+# Help
+# ============================================================================
+
+help: ## Show all available targets with descriptions
+	@echo ""
+	@echo "Allen-Cahn-CUDA Project Makefile"
+	@echo "================================"
+	@echo ""
+	@echo "Usage: make [TARGET] [VARIABLE=value ...]"
+	@echo ""
+	@echo "Targets:"
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Variables (override with VAR=value):"
+	@echo "  BUILD_DIR            Build output directory      [$(BUILD_DIR)]"
+	@echo "  CMAKE_GENERATOR      CMake generator             [$(CMAKE_GENERATOR)]"
+	@echo "  PARALLEL_JOBS        Parallel build jobs         [$(PARALLEL_JOBS)]"
+	@echo "  DOCKER_REGISTRY      Docker registry prefix      [$(DOCKER_REGISTRY)]"
+	@echo "  IMAGE_NAME           Docker image name           [$(IMAGE_NAME)]"
+	@echo "  IMAGE_TAG            Docker image tag            [$(IMAGE_TAG)]"
+	@echo "  K8S_NAMESPACE_DEV    K8s dev namespace           [$(K8S_NAMESPACE_DEV)]"
+	@echo "  K8S_NAMESPACE_PROD   K8s prod namespace          [$(K8S_NAMESPACE_PROD)]"
+	@echo ""

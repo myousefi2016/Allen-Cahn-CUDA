@@ -1,0 +1,16 @@
+{
+    "name": "allen-cahn-cuda",
+    "version": "2.0.0",
+    "description": "Production-grade phase-field simulation of dendritic solidification using CUDA",
+    "dependencies": [
+        {
+            "name": "vtk",
+            "version>=": "9.0"
+        },
+        "nlohmann-json",
+        "spdlog",
+        "gtest"
+    ],
+    "overrides": [],
+    "builtin-baseline": "2024.09.30"
+}

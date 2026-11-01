@@ -1,0 +1,111 @@
+# ============================================================================
+# Allen-Cahn-CUDA Development Image
+# ----------------------------------------------------------------------------
+# Provides a full build environment with all dependencies pre-installed.
+# Source code is mounted as a volume at /workspace -- nothing is COPY'd.
+#
+# Usage:
+#   make docker-shell            (built for your user IDs; docker-compose.yml's dev service)
+#   docker run --gpus all -v $(pwd):/workspace -it allencahn-cuda:dev
+# ============================================================================
+
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS dev
+
+LABEL maintainer="Allen-Cahn-CUDA Contributors"
+LABEL description="Development environment for Allen-Cahn-CUDA simulation"
+
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── NVIDIA container runtime configuration ────────────────────────────────
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# ── Install system packages ───────────────────────────────────────────────
+# Using cache mount to avoid re-downloading packages on rebuilds
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        # Build toolchain
+        cmake \
+        ninja-build \
+        gcc-13 \
+        g++-13 \
+        git \
+        pkg-config \
+        # VTK 9 development libraries
+        libvtk9-dev \
+        # Useful development utilities
+        gdb \
+        valgrind \
+        ccache \
+        curl \
+        ca-certificates \
+        # ctest's e2e tests run Python scripts, and docs_tables.py runs
+        # cmark-gfm (GitHub's Markdown parser)
+        python3 \
+        python3-yaml \
+        cmark-gfm \
+    && \
+    # Set gcc-13/g++-13 as the default compiler
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-13 \
+        --slave /usr/bin/gcov gcov /usr/bin/gcov-13 && \
+    update-alternatives --set gcc /usr/bin/gcc-13
+
+# ── Verify cmake version meets minimum requirement ────────────────────────
+RUN cmake --version | head -1
+
+# ── Create non-root developer user ────────────────────────────────────────
+# `developer` gets exactly USER_UID:USER_GID, the IDs the image is built with: the host
+# user's from `make docker-build-dev`, `make docker-shell` and `make docker-compose-up`,
+# HOST_UID and HOST_GID (1000 when unset) from a plain `docker compose`. With the host
+# user's IDs the checkout bind-mounted at /workspace is readable and writable as on the
+# host. The base image already holds user and group
+# `ubuntu` at 1000 and system groups below 1000 (users is 100): an account that owns
+# USER_UID is renamed developer (keeping its IDs and home, dropping the supplementary
+# groups it carries: adm, sudo, ...), a group that owns USER_GID is reused (renamed
+# developer if it is `ubuntu`), and whatever is missing is created. UID 0 is refused: the
+# image runs as a non-root user. The final check fails the build if the account does not
+# end up with exactly USER_UID:USER_GID.
+# build/ and .ccache/ are named-volume mount points in docker-compose.yml;
+# Docker seeds an empty named volume from the image directory, so they are
+# created here owned by developer. A volume that holds files keeps their owner,
+# so docker-compose.yml names these volumes per HOST_UID and HOST_GID.
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+RUN [ "${USER_UID}" != 0 ] || { echo "USER_UID 0: the dev image runs as a non-root user" >&2; exit 1; } && \
+    owner=$(getent passwd ${USER_UID} | cut -d: -f1) && \
+    if [ -n "$owner" ]; then \
+        usermod --login developer --home /home/developer --move-home --groups "" "$owner"; \
+    fi && \
+    group=$(getent group ${USER_GID} | cut -d: -f1) && \
+    if [ -z "$group" ]; then \
+        groupadd --gid ${USER_GID} developer; \
+    elif [ "$group" = ubuntu ]; then \
+        groupmod --new-name developer ubuntu; \
+    fi && \
+    if getent passwd developer > /dev/null; then \
+        usermod --gid ${USER_GID} developer; \
+    else \
+        useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash developer; \
+    fi && \
+    [ "$(id -u developer):$(id -g developer)" = "${USER_UID}:${USER_GID}" ] && \
+    mkdir -p /workspace/build /workspace/.ccache && \
+    chown -R ${USER_UID}:${USER_GID} /workspace
+
+# ── Configure ccache ──────────────────────────────────────────────────────
+ENV CCACHE_DIR=/workspace/.ccache
+ENV CCACHE_MAXSIZE=2G
+ENV CMAKE_C_COMPILER_LAUNCHER=ccache
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+WORKDIR /workspace
+
+USER developer
+
+# Default command opens a shell for interactive development
+CMD ["/bin/bash"]

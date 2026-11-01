@@ -1,0 +1,65 @@
+{
+    "_comment_physics": "Long-run dendrite config: moderate undercooling (delta = 0.7) and strong cubic anisotropy (epsilon = 0.15 > 1/15, where the unregularised equation is ill-posed, so willmore_beta > 0 is required). willmore_beta = 0.401 = |S| l*^2 with S = (1 + eps)(1 - 15 eps) = -1.4375 and the corner length l* = 0.528 W0 (docs/THEORY.md section 4.3).",
+    "physics": {
+        "delta": 0.7,
+        "epsilon": 0.15,
+        "W0": 1.0,
+        "beta0": 0.0,
+        "D": 2.0,
+        "d0": 0.5,
+        "willmore_beta": 0.401
+    },
+    "_comment_grid": "192^3 = 7.08M points, box 76.4 W0. Measured on an RTX 4090: the solver allocates 0.72 GiB of GPU memory (108 bytes per cell of fields with willmore_beta > 0, plus 7 MiB), 113 MB per checkpoint, up to 88 MB per .vts.",
+    "grid": {
+        "Nx": 192,
+        "Ny": 192,
+        "Nz": 192,
+        "dx": 0.4,
+        "dy": 0.4,
+        "dz": 0.4
+    },
+    "_comment_time": "Euler with the linearly implicit Willmore step. dt = 0.0003125 is the largest of the candidates 0.02, 0.01, 0.005, ... (each half the previous) whose time error does not exceed the spatial error of h = 0.4 in the max norm and in the mean, both measured with this configuration's physics in a box of side 50.4 up to t = 15 (docs/THEORY.md section 4.3). The explicit thermal update is stable for dt <= 0.026087 (27-point stencil, h = 0.4, D = 2; docs/THEORY.md section 10.1). max_steps = 960000 (t = 300) is an upper bound: exit_on_saturation stops the run cleanly, with a final checkpoint and VTK frame, once phi > saturation_threshold next to a wall (measured: step 112000, t = 35.0, when the six <100> tips reach the walls). A step takes 14.9 ms on an RTX 4090 (median of 200 steps), so the 112000 steps to saturation are 28 minutes of compute at that rate.",
+    "time": {
+        "dt": 0.0003125,
+        "dt_min": 1e-6,
+        "dt_max": 0.05,
+        "max_steps": 960000,
+        "scheme": "euler",
+        "adaptive": false,
+        "cfl_safety": 0.9,
+        "exit_on_saturation": true,
+        "saturation_threshold": -0.5,
+        "saturation_check_freq": 1600
+    },
+    "stencil": "27pt",
+    "_comment_output": "VTK every 8000 steps (2.5 time units): 15 frames up to saturation, up to 88 MB each, 0.98 GB in total.",
+    "output": {
+        "frequency": 8000,
+        "output_dir": "./out/run_dendrite_long",
+        "format": "vts",
+        "async_io": true
+    },
+    "_comment_checkpoint": "Checkpoint every 48000 steps (15 time units, 11.9 minutes of compute at 14.9 ms per step on an RTX 4090), keep_last = 3 (340 MB). The resume target picks the latest intact checkpoint.",
+    "checkpoint": {
+        "frequency": 48000,
+        "checkpoint_dir": "./checkpoints/run_dendrite_long",
+        "keep_last": 3
+    },
+    "gpu": {
+        "device_ids": [0],
+        "multi_gpu": false
+    },
+    "initial": {
+        "seed_radius": 2.4
+    },
+    "boundary": {
+        "phi": {
+            "type": "neumann",
+            "flux": 0.0
+        },
+        "u": {
+            "type": "dirichlet",
+            "value": -0.7
+        }
+    }
+}

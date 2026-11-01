@@ -1,0 +1,501 @@
+#include "common/TempDir.hpp"
+#include "core/CheckpointManager.hpp"
+#include "core/FieldData.hpp"
+#include "core/Grid.hpp"
+#include "io/CheckpointIO.hpp"
+#include "logging/Logger.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <gtest/gtest.h>
+#include <memory>
+#include <random>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
+#include <string>
+#include <vector>
+
+using namespace ac;
+
+class CheckpointManagerTest : public ::testing::Test {
+protected:
+    static constexpr int N = 4;
+
+    void SetUp() override {
+        Logger::init(spdlog::level::off);
+        test_dir_ = ac::test::unique_temp_dir("test_ckpt_mgr");
+        std::filesystem::create_directories(test_dir_);
+
+        grid_ = Grid(Dim3{N, N, N}, Spacing{1.0, 1.0, 1.0});
+    }
+
+    void TearDown() override { std::filesystem::remove_all(test_dir_); }
+
+    CheckpointParams make_params(int frequency = 10, int keep_last = 3) {
+        CheckpointParams p;
+        p.frequency = frequency;
+        p.checkpoint_dir = test_dir_;
+        p.keep_last = keep_last;
+        p.restart_file = std::nullopt;
+        return p;
+    }
+
+    void fill_field(FieldData& field, double base) {
+        for (int x = 0; x < N; ++x)
+            for (int y = 0; y < N; ++y)
+                for (int z = 0; z < N; ++z)
+                    field(x, y, z) = base + x * 0.1 + y * 0.01 + z * 0.001;
+    }
+
+    std::filesystem::path test_dir_;
+    Grid grid_;
+};
+
+TEST_F(CheckpointManagerTest, ShouldCheckpoint) {
+    auto params = make_params(10);
+    CheckpointManager mgr(params, grid_);
+
+    // step=0 should never trigger
+    EXPECT_FALSE(mgr.should_checkpoint(0));
+
+    // Non-multiples of 10
+    EXPECT_FALSE(mgr.should_checkpoint(1));
+    EXPECT_FALSE(mgr.should_checkpoint(5));
+    EXPECT_FALSE(mgr.should_checkpoint(9));
+    EXPECT_FALSE(mgr.should_checkpoint(11));
+    EXPECT_FALSE(mgr.should_checkpoint(15));
+
+    // Exact multiples of 10
+    EXPECT_TRUE(mgr.should_checkpoint(10));
+    EXPECT_TRUE(mgr.should_checkpoint(20));
+    EXPECT_TRUE(mgr.should_checkpoint(30));
+    EXPECT_TRUE(mgr.should_checkpoint(100));
+
+    // Frequency = 0 disables checkpointing
+    auto params_disabled = make_params(0);
+    CheckpointManager mgr_disabled(params_disabled, grid_);
+    EXPECT_FALSE(mgr_disabled.should_checkpoint(10));
+    EXPECT_FALSE(mgr_disabled.should_checkpoint(100));
+}
+
+TEST_F(CheckpointManagerTest, SaveCreatesFile) {
+    auto params = make_params(10);
+    CheckpointManager mgr(params, grid_);
+
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+
+    mgr.save(10, 0.1, 0.01, phi, u);
+
+    auto expected_path = test_dir_ / "checkpoint_10.acbin";
+    EXPECT_TRUE(std::filesystem::exists(expected_path));
+    EXPECT_TRUE(CheckpointIO::is_valid_checkpoint(expected_path));
+}
+
+TEST_F(CheckpointManagerTest, RollingRetention) {
+    auto params = make_params(10, 2); // keep_last = 2
+    CheckpointManager mgr(params, grid_);
+
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+
+    // Save 5 checkpoints
+    for (int step = 10; step <= 50; step += 10) {
+        mgr.save(step, step * 0.01, 0.01, phi, u);
+    }
+
+    // Only the last 2 should remain (step 40 and 50)
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_10.acbin"));
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_20.acbin"));
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_30.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_40.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_50.acbin"));
+}
+
+TEST_F(CheckpointManagerTest, RestoreFromExplicitFile) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 7.0);
+    fill_field(u, -3.0);
+
+    auto ckpt_path = test_dir_ / "explicit_checkpoint.acbin";
+    CheckpointIO::write(ckpt_path, 42, 1.234, 0.005, grid_, phi, u);
+
+    auto params = make_params(10);
+    params.restart_file = ckpt_path;
+    CheckpointManager mgr(params, grid_);
+
+    auto data = mgr.restore();
+    EXPECT_EQ(data.step, 42);
+    EXPECT_DOUBLE_EQ(data.time, 1.234);
+    EXPECT_DOUBLE_EQ(data.dt, 0.005);
+
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z) {
+                EXPECT_DOUBLE_EQ(data.phi(x, y, z), phi(x, y, z));
+                EXPECT_DOUBLE_EQ(data.u(x, y, z), u(x, y, z));
+            }
+}
+
+TEST_F(CheckpointManagerTest, RestoreLatestFromDir) {
+    auto params = make_params(10);
+    CheckpointManager mgr(params, grid_);
+
+    // Save 3 checkpoints with different data
+    for (int step = 10; step <= 30; step += 10) {
+        FieldData phi(grid_, "phi"), u(grid_, "u");
+        fill_field(phi, static_cast<double>(step));
+        fill_field(u, static_cast<double>(-step));
+        mgr.save(step, step * 0.01, 0.01, phi, u);
+    }
+
+    // Restore without restart_file should get the latest (step 30)
+    auto data = mgr.restore();
+    EXPECT_EQ(data.step, 30);
+    EXPECT_DOUBLE_EQ(data.time, 0.3);
+
+    // Verify the field data matches step=30
+    FieldData expected_phi(grid_, "phi");
+    fill_field(expected_phi, 30.0);
+    for (int x = 0; x < N; ++x)
+        for (int y = 0; y < N; ++y)
+            for (int z = 0; z < N; ++z) {
+                EXPECT_DOUBLE_EQ(data.phi(x, y, z), expected_phi(x, y, z));
+            }
+}
+
+// restore() without restart_file returns the newest checkpoint of this run's
+// grid that reads back intact: past a newest one that is truncated, has a
+// changed payload byte or a changed header (its time 1e300, a run state in
+// range), and past a newer one of another grid, which retention leaves in the
+// directory. Before, the damaged newest file made restore() throw (or, for the
+// header, restored it), and the other grid's checkpoint was returned.
+TEST_F(CheckpointManagerTest, RestoreFallsBackToTheNewestIntactCheckpointOfThisGrid) {
+    namespace fs = std::filesystem;
+    CheckpointManager mgr(make_params(10), grid_);
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    CheckpointIO::write(test_dir_ / "checkpoint_10.acbin", 10, 0.1, 0.01, grid_, phi, u);
+
+    const auto newest = test_dir_ / "checkpoint_20.acbin";
+    const auto at = [&newest](std::streamoff offset, char flip) {
+        std::fstream f(newest, std::ios::in | std::ios::out | std::ios::binary);
+        char c = 0;
+        f.seekg(offset);
+        f.get(c);
+        f.seekp(offset);
+        f.put(static_cast<char>(c ^ flip));
+    };
+    for (const char* damage : {"truncated", "payload byte", "header time"}) {
+        SCOPED_TRACE(damage);
+        CheckpointIO::write(newest, 20, 0.2, 0.01, grid_, phi, u);
+        if (std::string(damage) == "truncated") {
+            fs::resize_file(newest, fs::file_size(newest) - 8);
+        } else if (std::string(damage) == "payload byte") {
+            at(128 + 40, 0x10);
+        } else {
+            std::fstream f(newest, std::ios::in | std::ios::out | std::ios::binary);
+            const double time = 1e300;
+            f.seekp(56);
+            f.write(reinterpret_cast<const char*>(&time), sizeof time);
+        }
+        const auto data = mgr.restore();
+        EXPECT_EQ(data.step, 10);
+        EXPECT_EQ(data.time, 0.1);
+    }
+    fs::remove(newest);
+
+    const Grid other(Dim3{N + 2, N, N}, Spacing{1.0, 1.0, 1.0});
+    FieldData other_phi(other, "phi"), other_u(other, "u");
+    CheckpointIO::write(test_dir_ / "checkpoint_30.acbin", 30, 0.3, 0.01, other, other_phi,
+                        other_u);
+    const auto data = mgr.restore();
+    EXPECT_EQ(data.step, 10);
+    EXPECT_EQ(data.grid.Nx(), N);
+
+    fs::remove(test_dir_ / "checkpoint_10.acbin");
+    EXPECT_THROW((void)mgr.restore(), std::runtime_error);
+}
+
+// A checkpoint's step is the one of its name: retention orders and deletes by it. A newest
+// file whose header records another step (a copy of step 15 named checkpoint_30) is
+// skipped like a damaged one, as the resume helper skips it. Restored, it would restart the
+// run at step 15, and the first save after it would delete checkpoint_20 as a checkpoint
+// left above the restart point.
+TEST_F(CheckpointManagerTest, RestoreSkipsACheckpointWhoseHeaderStepIsNotItsName) {
+    CheckpointManager mgr(make_params(10), grid_);
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    CheckpointIO::write(test_dir_ / "checkpoint_20.acbin", 20, 0.2, 0.01, grid_, phi, u);
+    CheckpointIO::write(test_dir_ / "checkpoint_30.acbin", 15, 0.15, 0.01, grid_, phi, u);
+
+    const auto latest = mgr.restore_latest();
+    ASSERT_TRUE(latest.has_value());
+    EXPECT_EQ(latest->step, 20);
+    EXPECT_EQ(latest->time, 0.2);
+    EXPECT_EQ(mgr.restore().step, 20);
+
+    mgr.save(latest->step + 1, latest->time + 0.01, 0.01, phi, u);
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_20.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_21.acbin"));
+}
+
+TEST_F(CheckpointManagerTest, RestoreEmptyDirThrows) {
+    // Create a fresh empty directory
+    auto empty_dir = ac::test::unique_temp_dir("test_ckpt_empty");
+    std::filesystem::create_directories(empty_dir);
+
+    CheckpointParams params;
+    params.frequency = 10;
+    params.checkpoint_dir = empty_dir;
+    params.keep_last = 3;
+    params.restart_file = std::nullopt;
+
+    CheckpointManager mgr(params, grid_);
+
+    EXPECT_THROW((void)mgr.restore(), std::runtime_error);
+
+    std::filesystem::remove_all(empty_dir);
+}
+
+// A resumed run rewrites steps that already exist in checkpoint_dir. The old
+// retention kept a list seeded from the directory and appended every save,
+// so the rewritten path appeared twice and, with keep_last = 1, the
+// checkpoint that had just been written was deleted.
+TEST_F(CheckpointManagerTest, RetentionKeepsTheCheckpointJustWritten) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    CheckpointIO::write(test_dir_ / "checkpoint_20.acbin", 20, 0.2, 0.01, grid_, phi, u);
+
+    CheckpointManager mgr(make_params(10, 1), grid_);
+    mgr.save(20, 0.2, 0.01, phi, u);
+
+    EXPECT_TRUE(CheckpointIO::is_valid_checkpoint(test_dir_ / "checkpoint_20.acbin"));
+}
+
+// After a restart from step 20 of a directory holding steps 10..50, the
+// directory must hold one consistent trajectory: the checkpoint just written,
+// keep_last - 1 older ones, and nothing above it (steps 30..50 came from the
+// earlier run, and "resume from latest" would otherwise jump back to them).
+TEST_F(CheckpointManagerTest, RetentionAfterRestartKeepsOneTrajectory) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    for (int step = 10; step <= 50; step += 10)
+        CheckpointIO::write(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin"), step,
+                            step * 0.01, 0.01, grid_, phi, u);
+
+    CheckpointManager mgr(make_params(10, 2), grid_);
+    auto present = [&] {
+        std::vector<std::string> names;
+        for (const auto& e : std::filesystem::directory_iterator(test_dir_))
+            names.push_back(e.path().filename().string());
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+
+    mgr.save(20, 0.2, 0.01, phi, u);
+    EXPECT_EQ(present(), (std::vector<std::string>{"checkpoint_10.acbin", "checkpoint_20.acbin"}));
+    mgr.save(30, 0.3, 0.01, phi, u);
+    EXPECT_EQ(present(), (std::vector<std::string>{"checkpoint_20.acbin", "checkpoint_30.acbin"}));
+}
+
+// Only checkpoint_<digits>.acbin files are managed; anything else is left alone.
+TEST_F(CheckpointManagerTest, RetentionIgnoresUnrelatedFiles) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    for (const char* name : {"notes.txt", "checkpoint_x.acbin", "checkpoint_5.acbin.tmp"})
+        std::ofstream(test_dir_ / name) << "keep";
+
+    CheckpointManager mgr(make_params(10, 1), grid_);
+    mgr.save(10, 0.1, 0.01, phi, u);
+    mgr.save(20, 0.2, 0.01, phi, u);
+
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_10.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_20.acbin"));
+    for (const char* name : {"notes.txt", "checkpoint_x.acbin", "checkpoint_5.acbin.tmp"})
+        EXPECT_TRUE(std::filesystem::exists(test_dir_ / name)) << name;
+}
+
+// Checkpoints of another grid in the same directory (another configuration's
+// run) are not this trajectory: retention leaves them alone, even those with
+// higher steps, and they do not count toward keep_last. Before, a 160^3 demo
+// writing step 12000 deleted the 384^3 run's checkpoints 16000..30000.
+TEST_F(CheckpointManagerTest, RetentionLeavesCheckpointsOfOtherGridsAlone) {
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    const Grid other(Dim3{N + 2, N, N}, Spacing{1.0, 1.0, 1.0});
+    const Grid spacing(Dim3{N, N, N}, Spacing{0.5, 1.0, 1.0});
+    FieldData phi_o(other, "phi"), u_o(other, "u"), phi_s(spacing, "phi"), u_s(spacing, "u");
+    for (int step : {16000, 24000, 30000})
+        CheckpointIO::write(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin"), step,
+                            step * 0.01, 0.01, other, phi_o, u_o);
+    CheckpointIO::write(test_dir_ / "checkpoint_14000.acbin", 14000, 140.0, 0.01, spacing, phi_s,
+                        u_s);
+
+    CheckpointManager mgr(make_params(4000, 1), grid_);
+    mgr.save(4000, 40.0, 0.01, phi, u);
+    mgr.save(8000, 80.0, 0.01, phi, u);
+    mgr.save(12000, 120.0, 0.01, phi, u);
+
+    for (int step : {14000, 16000, 24000, 30000})
+        EXPECT_TRUE(
+            std::filesystem::exists(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin")))
+            << step;
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_4000.acbin"));
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_8000.acbin"));
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ / "checkpoint_12000.acbin"));
+}
+
+// The manager tells this run's checkpoints from another grid's by all six header fields.
+// The tests above use a cubic run and foreign grids that differ in Nx or in dx. A header
+// that recorded dx as dy and dz, or a comparison that dropped dy or dz, still passed them.
+// Here the run's grid has three different dimensions and three different spacings
+// (4x5x6, 0.3/0.4/0.5). Six checkpoints each differ from it in exactly one field, all at
+// steps above the run's. Retention leaves every one of them alone and restore_latest()
+// passes over them. Meanwhile the run's own checkpoints rotate (keep_last = 1), and the
+// newest one restores with exactly its grid and fields.
+TEST_F(CheckpointManagerTest, EachGridFieldSeparatesThisRunFromAnother) {
+    const Grid grid(Dim3{4, 5, 6}, Spacing{0.3, 0.4, 0.5});
+    struct Foreign {
+        const char* field;
+        Grid grid;
+        int step;
+    };
+    const Foreign foreign[] = {
+        {"Nx", Grid(Dim3{5, 5, 6}, Spacing{0.3, 0.4, 0.5}), 110},
+        {"Ny", Grid(Dim3{4, 6, 6}, Spacing{0.3, 0.4, 0.5}), 120},
+        {"Nz", Grid(Dim3{4, 5, 7}, Spacing{0.3, 0.4, 0.5}), 130},
+        {"dx", Grid(Dim3{4, 5, 6}, Spacing{0.35, 0.4, 0.5}), 140},
+        {"dy", Grid(Dim3{4, 5, 6}, Spacing{0.3, 0.45, 0.5}), 150},
+        {"dz", Grid(Dim3{4, 5, 6}, Spacing{0.3, 0.4, 0.55}), 160},
+    };
+    const auto file = [this](int step) {
+        return test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin");
+    };
+    for (const Foreign& f : foreign) {
+        FieldData phi_f(f.grid, "phi"), u_f(f.grid, "u");
+        phi_f.fill(0.5);
+        u_f.fill(-0.5);
+        CheckpointIO::write(file(f.step), f.step, 0.01 * f.step, 0.01, f.grid, phi_f, u_f);
+    }
+
+    CheckpointManager mgr(make_params(10, 1), grid);
+    FieldData phi(grid, "phi"), u(grid, "u");
+    for (std::size_t i = 0; i < phi.size(); ++i) {
+        phi.data()[i] = 0.001 * static_cast<double>(i);
+        u.data()[i] = -0.002 * static_cast<double>(i);
+    }
+    mgr.save(10, 0.1, 0.01, phi, u);
+    mgr.save(20, 0.2, 0.01, phi, u);
+
+    EXPECT_FALSE(std::filesystem::exists(file(10))) << "this run's older checkpoint (keep_last 1)";
+    EXPECT_TRUE(std::filesystem::exists(file(20)));
+    for (const Foreign& f : foreign)
+        EXPECT_TRUE(std::filesystem::exists(file(f.step)))
+            << "the checkpoint of another " << f.field;
+
+    const auto latest = mgr.restore_latest();
+    ASSERT_TRUE(latest.has_value());
+    EXPECT_EQ(latest->step, 20);
+    EXPECT_EQ(latest->grid.Nx(), 4);
+    EXPECT_EQ(latest->grid.Ny(), 5);
+    EXPECT_EQ(latest->grid.Nz(), 6);
+    EXPECT_EQ(latest->grid.dx(), 0.3);
+    EXPECT_EQ(latest->grid.dy(), 0.4);
+    EXPECT_EQ(latest->grid.dz(), 0.5);
+    ASSERT_EQ(latest->phi.size(), phi.size());
+    int differ = 0;
+    for (std::size_t i = 0; i < phi.size(); ++i)
+        differ += latest->phi.data()[i] != phi.data()[i];
+    EXPECT_EQ(differ, 0);
+}
+
+// Checkpoints of another grid and files named like checkpoints whose header
+// cannot be read are left alone and do not count toward keep_last: with
+// keep_last = 2 the run keeps its two newest. Retention walks the directory
+// newest first, so the foreign files at 25 and 27 are met before checkpoint
+// 20 and would push it out if they counted; those at 10 and 15 sit between
+// this run's steps. The manager warns once about them, not at every save.
+TEST_F(CheckpointManagerTest, ForeignAndUnreadableCheckpointsDoNotCountAndWarnOnce) {
+    auto stream = std::make_shared<std::ostringstream>();
+    auto logger = std::make_shared<spdlog::logger>(
+        "capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(*stream));
+    logger->set_level(spdlog::level::info);
+    const auto previous = spdlog::default_logger();
+    spdlog::set_default_logger(logger);
+
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    const Grid other(Dim3{N + 2, N, N}, Spacing{1.0, 1.0, 1.0});
+    FieldData phi_o(other, "phi"), u_o(other, "u");
+    for (int step : {10, 25})
+        CheckpointIO::write(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin"), step,
+                            0.01 * step, 0.01, other, phi_o, u_o);
+    for (int step : {15, 27})
+        std::ofstream(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin"))
+            << "not a checkpoint header";
+
+    CheckpointManager mgr(make_params(10, 2), grid_);
+    mgr.save(5, 0.05, 0.01, phi, u);
+    mgr.save(20, 0.2, 0.01, phi, u);
+    mgr.save(30, 0.3, 0.01, phi, u);
+    spdlog::set_default_logger(previous);
+
+    for (int step : {10, 15, 20, 25, 27, 30})
+        EXPECT_TRUE(
+            std::filesystem::exists(test_dir_ / ("checkpoint_" + std::to_string(step) + ".acbin")))
+            << step;
+    EXPECT_FALSE(std::filesystem::exists(test_dir_ / "checkpoint_5.acbin"));
+    const std::string log = stream->str();
+    const std::string warning = "also holds checkpoints that are not of this run's";
+    const auto first = log.find(warning);
+    ASSERT_NE(first, std::string::npos) << log;
+    EXPECT_EQ(log.find(warning, first + 1), std::string::npos) << log;
+}
+
+// Removals are logged at info level, the console level of the binary: the
+// user sees which checkpoint was deleted and why.
+TEST_F(CheckpointManagerTest, RemovalsAreLoggedAtInfoLevel) {
+    auto stream = std::make_shared<std::ostringstream>();
+    auto logger = std::make_shared<spdlog::logger>(
+        "capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(*stream));
+    logger->set_level(spdlog::level::info);
+    const auto previous = spdlog::default_logger();
+    spdlog::set_default_logger(logger);
+
+    FieldData phi(grid_, "phi"), u(grid_, "u");
+    fill_field(phi, 1.0);
+    fill_field(u, -0.5);
+    CheckpointManager mgr(make_params(10, 1), grid_);
+    mgr.save(10, 0.1, 0.01, phi, u);
+    mgr.save(20, 0.2, 0.01, phi, u);
+    spdlog::set_default_logger(previous);
+
+    EXPECT_NE(stream->str().find("Removed checkpoint"), std::string::npos) << stream->str();
+    EXPECT_NE(stream->str().find("checkpoint_10.acbin (beyond keep_last)"), std::string::npos)
+        << stream->str();
+}
+
+// A configured restart_file that does not exist must stop the run: the old
+// has_restart_file() returned false, the engine cold-started from step 0 and
+// its retention then rotated the real checkpoints away.
+TEST_F(CheckpointManagerTest, MissingRestartFileIsAnError) {
+    auto params = make_params(10);
+    params.restart_file = test_dir_ / "checkpoint_999.acbin";
+    CheckpointManager mgr(params, grid_);
+
+    EXPECT_TRUE(mgr.restart_requested());
+    EXPECT_THROW((void)mgr.restore(), std::runtime_error);
+}

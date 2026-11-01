@@ -1,0 +1,5 @@
+pyvista>=0.44,<0.45
+numpy>=1.26
+imageio[ffmpeg]>=2.34
+pillow>=10.0
+matplotlib>=3.8

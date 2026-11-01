@@ -1,0 +1,51 @@
+# ── Build artifacts ─────────────────────────────────────────────────────────
+build/
+out/
+cmake-build-*/
+
+# ── Version control ────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitmodules
+
+# ── IDE / Editor files ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+
+# ── Docker ────────────────────────────────────────────────────────────────
+# docker-compose.yml stays in the context: the test image's end-to-end tests
+# read it (makefile_dev_user.py). Local override files stay out.
+docker-compose.*.yml
+.dockerignore
+
+# ── CI ────────────────────────────────────────────────────────────────────
+# README.md and docs/ stay in the context: the test image's end-to-end tests
+# check the configurations their examples give (validate_shipped_configs.py)
+# and their tables (docs_tables.py).
+.github/
+LICENSE
+PULL_REQUEST_TEMPLATE.md
+
+# ── Simulation output ─────────────────────────────────────────────────────
+output/
+result/
+checkpoints/
+viz/
+*.vti
+*.vtu
+*.vtk
+*.vts
+*.h5
+*.hdf5
+*.mp4
+*.png
+
+# ── Misc ───────────────────────────────────────────────────────────────────
+.ccache/
+.env
+*.log
+vcpkg_installed/

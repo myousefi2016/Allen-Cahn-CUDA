@@ -1,0 +1,119 @@
+# ============================================================================
+# Allen-Cahn-CUDA Docker Compose Configuration
+# ----------------------------------------------------------------------------
+# Profiles:
+#   dev   - Interactive development environment with source mounted
+#   test  - Run the full test suite in a clean environment
+#   prod  - Run production simulation
+#
+# Examples:
+#   make docker-shell        (dev, built with your user IDs; see the dev service)
+#   make docker-test         docker compose --profile test run --rm --build test
+#   mkdir -p output && HOST_UID=$(id -u) HOST_GID=$(id -g) \
+#     docker compose --profile prod run --rm --build prod /app/config/default.json
+# Each builds its image first: compose otherwise runs an existing one, and the test and
+# prod images carry the tree they were built from (Docker Compose 2.13 or later for
+# `run --build`).
+#
+# The prod image runs from /output (the volume), so results land in
+# ./output/<the config's output_dir and checkpoint_dir>, e.g. ./output/out/default
+# and ./output/checkpoints/default; configs must be absolute paths.
+# ============================================================================
+
+services:
+
+  # ── Development Environment ───────────────────────────────────────────────
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+      # The container user gets these IDs when the image is built (1000 when
+      # HOST_UID and HOST_GID are unset), and the bind-mounted checkout is
+      # writable when they are the host user's: `make docker-shell` and `make
+      # docker-compose-up` set them to the caller's and pass --build, since
+      # compose otherwise reuses an existing allencahn-cuda:dev. By hand (a shell, as
+      # make docker-shell):
+      #   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile dev run --rm --build dev
+      args:
+        USER_UID: "${HOST_UID:-1000}"
+        USER_GID: "${HOST_GID:-1000}"
+    image: allencahn-cuda:dev
+    container_name: allencahn-dev
+    profiles:
+      - dev
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/workspace
+      # Named volumes, per HOST_UID and HOST_GID (volumes: below): build artifacts survive
+      # container restarts, and ccache persists across sessions
+      - dev-build-cache:/workspace/build
+      - dev-ccache:/workspace/.ccache
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Test Runner ───────────────────────────────────────────────────────────
+  test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    image: allencahn-cuda:test
+    container_name: allencahn-test
+    profiles:
+      - test
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Production Simulation ─────────────────────────────────────────────────
+  prod:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.prod
+    image: allencahn-cuda:prod
+    container_name: allencahn-prod
+    profiles:
+      - prod
+    # Run as the invoking host user so the process can write the bind-mounted
+    # ./output (`make docker-run` exports HOST_UID/HOST_GID and creates the
+    # directory first; otherwise Docker creates it root-owned). Defaults to
+    # the image's simulator user, 1000:1000.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      # Bind-mount for simulation output on the host
+      - ./output:/output
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  # The dev service's build directory and ccache, a pair per project and per HOST_UID and
+  # HOST_GID. Docker seeds an empty named volume from the image, owned by `developer`, but a
+  # volume that holds files keeps their owner: one filled by a dev image built for other IDs
+  # (1000:1000 when HOST_UID and HOST_GID are unset) is not writable for this one.
+  dev-build-cache:
+    name: "${COMPOSE_PROJECT_NAME}_dev-build-cache-${HOST_UID:-1000}-${HOST_GID:-1000}"
+  dev-ccache:
+    name: "${COMPOSE_PROJECT_NAME}_dev-ccache-${HOST_UID:-1000}-${HOST_GID:-1000}"
